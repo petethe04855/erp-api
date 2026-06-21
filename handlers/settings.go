@@ -8,10 +8,38 @@ import (
 )
 
 type UpdateSettingsRequest struct {
-	Company       *models.CompanySettings       `json:"company"`
+	Company       *models.CompanySettings      `json:"company"`
 	Notifications *models.NotificationSettings `json:"notifications"`
 	Modules       *models.ModuleSettings       `json:"modules"`
 	LivePayroll   *models.LivePayrollSettings  `json:"livePayroll"`
+}
+
+// GET /api/settings
+func GetSettings(c *fiber.Ctx) error {
+	var company models.CompanySettings
+	var notifications models.NotificationSettings
+	var modules models.ModuleSettings
+	var livePayroll models.LivePayrollSettings
+
+	if err := database.DB.First(&company).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	if err := database.DB.First(&notifications).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	if err := database.DB.First(&modules).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	if err := database.DB.First(&livePayroll).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.JSON(fiber.Map{
+		"company":       company,
+		"notifications": notifications,
+		"modules":       modules,
+		"livePayroll":   livePayroll,
+	})
 }
 
 // PUT /api/settings
