@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"fmt"
+	"math"
 	"time"
 
 	"chawy-erp-api/database"
@@ -55,11 +56,20 @@ func CreateGoodsIssue(c *fiber.Ctx) error {
 			var comps []models.BundleComponent
 			if err := tx.Where("bundle_sku = ?", product.SKU).Find(&comps).Error; err == nil {
 				for _, comp := range comps {
+					if comp.ComponentType == "expense" {
+						continue
+					}
 					var cp models.Product
 					if err := tx.First(&cp, "sku = ?", comp.ComponentSku).Error; err != nil {
 						return fmt.Errorf("Component %s not found", comp.ComponentSku)
 					}
-					needed := comp.Qty * req.Qty
+					required := comp.Qty
+					if comp.Unit == "g" && cp.BaseUnit == "kg" {
+						required /= 1000
+					} else if comp.Unit == "kg" && cp.BaseUnit == "g" {
+						required *= 1000
+					}
+					needed := int(math.Ceil(required * float64(req.Qty)))
 					if cp.Stock-cp.ReservedQty < needed {
 						return fmt.Errorf("Component %s stock not sufficient", comp.ComponentSku)
 					}

@@ -366,6 +366,11 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 			// Update product stock balance
 			var p models.Product
 			if err := tx.First(&p, "sku = ?", item.SKU).Error; err == nil {
+				oldStock := p.Stock
+				if oldStock+item.QtyReceived > 0 {
+					p.Cost = ((float64(oldStock) * p.Cost) + (float64(item.QtyReceived) * poItem.UnitCost)) /
+						float64(oldStock+item.QtyReceived)
+				}
 				p.Stock += item.QtyReceived
 				if err := tx.Save(&p).Error; err != nil {
 					return err

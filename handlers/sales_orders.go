@@ -166,7 +166,20 @@ func UpdateSalesOrderStatus(c *fiber.Ctx) error {
 					var comps []models.BundleComponent
 					if err := tx.Where("bundle_sku = ?", product.SKU).Find(&comps).Error; err == nil {
 						for _, comp := range comps {
-							neededQty := comp.Qty * line.Qty
+							if comp.ComponentType == "expense" {
+								continue
+							}
+							var componentProduct models.Product
+							if err := tx.First(&componentProduct, "sku = ?", comp.ComponentSku).Error; err != nil {
+								return err
+							}
+							required := comp.Qty
+							if comp.Unit == "g" && componentProduct.BaseUnit == "kg" {
+								required /= 1000
+							} else if comp.Unit == "kg" && componentProduct.BaseUnit == "g" {
+								required *= 1000
+							}
+							neededQty := int(math.Ceil(required * float64(line.Qty)))
 							if err := deductFefoStock(tx, comp.ComponentSku, neededQty, so.ID, username.(string)); err != nil {
 								return err
 							}

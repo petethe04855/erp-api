@@ -17,12 +17,16 @@ type Product struct {
 	IsBundle       bool    `json:"isBundle"`
 	IsActive       bool    `json:"isActive"`
 	Note           string  `json:"note"`
+	BaseUnit       string  `gorm:"not null;default:'piece'" json:"baseUnit"`
 }
 
 // BundleComponent maps bundle products to component SKUs
 type BundleComponent struct {
-	ID           uint   `gorm:"primaryKey" json:"-"`
-	BundleSku    string `gorm:"index" json:"bundleSku"`
-	ComponentSku string `json:"componentSku"`
-	Qty          int    `json:"qty"`
+	ID               uint    `gorm:"primaryKey" json:"-"`
+	BundleSku        string  `gorm:"index" json:"bundleSku"`
+	ComponentSku     string  `json:"componentSku"`
+	Qty              float64 `json:"qty"`
+	Unit             string  `gorm:"not null;default:'piece'" json:"unit"`
+	ComponentType    string  `gorm:"not null;default:'material'" json:"componentType"`
+	UnitCostOverride float64 `json:"unitCostOverride"`
 }

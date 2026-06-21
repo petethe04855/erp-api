@@ -3,6 +3,7 @@ package handlers
 import (
 	"chawy-erp-api/database"
 	"chawy-erp-api/models"
+	"fmt"
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 )
@@ -84,8 +85,11 @@ func DeleteProduct(c *fiber.Ctx) error {
 type SetBundleComponentsRequest struct {
 	BundleSku  string `json:"bundleSku"`
 	Components []struct {
-		ComponentSku string `json:"componentSku"`
-		Qty          int    `json:"qty"`
+		ComponentSku     string  `json:"componentSku"`
+		Qty              float64 `json:"qty"`
+		Unit             string  `json:"unit"`
+		ComponentType    string  `json:"componentType"`
+		UnitCostOverride float64 `json:"unitCostOverride"`
 	} `json:"components"`
 }
 
@@ -105,10 +109,19 @@ func SetBundleComponents(c *fiber.Ctx) error {
 
 		// Insert new components
 		for _, comp := range req.Components {
+			if comp.Qty <= 0 {
+				return fmt.Errorf("component qty must be greater than zero")
+			}
+			if comp.ComponentType != "expense" && comp.ComponentSku == "" {
+				return fmt.Errorf("component SKU is required")
+			}
 			bc := models.BundleComponent{
-				BundleSku:    req.BundleSku,
-				ComponentSku: comp.ComponentSku,
-				Qty:          comp.Qty,
+				BundleSku:        req.BundleSku,
+				ComponentSku:     comp.ComponentSku,
+				Qty:              comp.Qty,
+				Unit:             comp.Unit,
+				ComponentType:    comp.ComponentType,
+				UnitCostOverride: comp.UnitCostOverride,
 			}
 			if err := tx.Create(&bc).Error; err != nil {
 				return err
@@ -122,5 +135,42 @@ func SetBundleComponents(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
+	var bundle models.Product
+	if err := database.DB.First(&bundle, "sku = ?", req.BundleSku).Error; err == nil {
+		cost, err := calculateBOMCost(database.DB, bundleComponents)
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		}
+		bundle.Cost = cost
+		database.DB.Save(&bundle)
+	}
+
 	return c.JSON(bundleComponents)
+}
+
+func calculateBOMCost(db *gorm.DB, components []models.BundleComponent) (float64, error) {
+	total := 0.0
+	for _, comp := range components {
+		if comp.ComponentType == "expense" {
+			total += comp.Qty * comp.UnitCostOverride
+			continue
+		}
+		var product models.Product
+		if err := db.First(&product, "sku = ?", comp.ComponentSku).Error; err != nil {
+			return 0, fmt.Errorf("component product %s not found", comp.ComponentSku)
+		}
+		factor := 1.0
+		switch comp.Unit {
+		case "g":
+			if product.BaseUnit == "kg" {
+				factor = 0.001
+			}
+		case "kg":
+			if product.BaseUnit == "g" {
+				factor = 1000
+			}
+		}
+		total += comp.Qty * factor * product.Cost
+	}
+	return total, nil
 }
