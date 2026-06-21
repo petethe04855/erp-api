@@ -38,6 +38,8 @@ type StockReturn struct {
 	Date       string `json:"date"`
 	ReturnedBy string `json:"returnedBy"`
 	Refunded   bool   `json:"refunded"`
+	Channel    string `json:"channel"`
+	Status     string `json:"status"` // Pending, Completed, Cancelled
 }
 
 // StockAdjustment represents physical count changes

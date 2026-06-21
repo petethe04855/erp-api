@@ -121,6 +121,7 @@ func CreateStockReturn(c *fiber.Ctx) error {
 		Condition string `json:"condition"`
 		Reason    string `json:"reason"`
 		Note      string `json:"note"`
+		Channel   string `json:"channel"`
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
@@ -143,6 +144,14 @@ func CreateStockReturn(c *fiber.Ctx) error {
 			return err
 		}
 
+		channel := req.Channel
+		if req.SoRef != "" {
+			var so models.SalesOrder
+			if err := tx.First(&so, "id = ?", req.SoRef).Error; err == nil {
+				channel = string(so.Channel)
+			}
+		}
+
 		sr = models.StockReturn{
 			ID:         id,
 			SoRef:      req.SoRef,
@@ -155,33 +164,12 @@ func CreateStockReturn(c *fiber.Ctx) error {
 			Date:       time.Now().Format("2006-01-02"),
 			ReturnedBy: username.(string),
 			Refunded:   false,
+			Channel:    channel,
+			Status:     "Pending",
 		}
 
 		if err := tx.Create(&sr).Error; err != nil {
 			return err
-		}
-
-		// Create Stock Movement
-		movement := models.StockMovement{
-			ID:        fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), req.SKU),
-			SKU:       req.SKU,
-			Type:      "IN",
-			Qty:       req.Qty,
-			RefDoc:    id,
-			Date:      sr.Date,
-			Note:      fmt.Sprintf("รับคืน: %s", req.Reason),
-			ChangedBy: username.(string),
-		}
-		if err := tx.Create(&movement).Error; err != nil {
-			return err
-		}
-
-		// Increment stock if condition is good ("ดี")
-		if req.Condition == "ดี" {
-			product.Stock += req.Qty
-			if err := tx.Save(&product).Error; err != nil {
-				return err
-			}
 		}
 
 		return nil
@@ -191,6 +179,66 @@ func CreateStockReturn(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
+	return c.JSON(sr)
+}
+
+// PUT /api/stock-returns/:id/status
+func UpdateStockReturnStatus(c *fiber.Ctx) error {
+	id := c.Params("id")
+	var req struct {
+		Status string `json:"status"` // Completed, Cancelled
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	username := c.Locals("name")
+	if username == nil {
+		username = "System"
+	}
+	var sr models.StockReturn
+	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.First(&sr, "id = ?", id).Error; err != nil {
+			return err
+		}
+		if sr.Status != "Pending" {
+			return fmt.Errorf("return is already processed")
+		}
+		sr.Status = req.Status
+		if req.Status == "Completed" {
+			var product models.Product
+			if err := tx.First(&product, "sku = ?", sr.SKU).Error; err != nil {
+				return err
+			}
+			if sr.Condition == "ดี" {
+				product.Stock += sr.Qty
+				if err := tx.Save(&product).Error; err != nil {
+					return err
+				}
+				movement := models.StockMovement{
+					ID:        fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), sr.SKU),
+					SKU:       sr.SKU,
+					Type:      "IN",
+					Qty:       sr.Qty,
+					RefDoc:    sr.ID,
+					Date:      time.Now().Format("2006-01-02"),
+					Note:      fmt.Sprintf("รับคืน: %s - สภาพดี", sr.Reason),
+					ChangedBy: username.(string),
+				}
+				if err := tx.Create(&movement).Error; err != nil {
+					return err
+				}
+			} else if sr.Condition == "เสียหาย" {
+				// Do not add stock or create movements for damaged return
+			}
+		}
+		if err := tx.Save(&sr).Error; err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
 	return c.JSON(sr)
 }
 

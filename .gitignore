@@ -9,8 +9,9 @@
 *.test
 
 # Output of the go build command
-server
+/server
 main
+.gocache/
 
 # Environment files
 .env

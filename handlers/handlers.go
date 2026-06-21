@@ -90,7 +90,9 @@ func InitState(c *fiber.Ctx) error {
 	database.DB.Find(&liveSessions)
 	database.DB.Find(&contentSchedule)
 	database.DB.Find(&manualOrders)
-	database.DB.Find(&users)
+	if role, _ := c.Locals("role").(string); role == "owner" {
+		database.DB.Find(&users)
+	}
 
 	// Fetch settings or create defaults
 	if err := database.DB.First(&company).Error; err != nil {
