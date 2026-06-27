@@ -88,6 +88,13 @@ func main() {
 	api.Post("/bundle-components", handlers.SetBundleComponents)
 	api.Get("/bundle-components", handlers.ListResource(func() interface{} { return &[]models.BundleComponent{} }))
 	api.Get("/bundle-components/:sku", handlers.ListResourceWhere(func() interface{} { return &[]models.BundleComponent{} }, "bundle_sku", "sku"))
+	api.Get("/boms", handlers.ListBOMs)
+	api.Post("/boms", handlers.CreateBOM)
+	api.Get("/boms/:sku", handlers.GetBOM)
+	api.Put("/boms/:sku", handlers.SaveBOM)
+	api.Post("/boms/:sku/purchase-request", handlers.CreatePurchaseRequestFromBOM)
+	api.Post("/boms/:sku/recalculate", handlers.RecalculateBOMCost)
+	api.Post("/boms/:sku/duplicate", handlers.DuplicateBOM)
 
 	// Quotations
 	api.Get("/quotations", handlers.ListResource(func() interface{} { return &[]models.Quotation{} }, "Lines"))

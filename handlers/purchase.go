@@ -375,6 +375,14 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 				if err := tx.Save(&p).Error; err != nil {
 					return err
 				}
+
+				// Recalculate any parent BOMs that use this raw material SKU
+				var parentComponents []models.BundleComponent
+				if err := tx.Where("component_sku = ?", item.SKU).Find(&parentComponents).Error; err == nil {
+					for _, pc := range parentComponents {
+						_ = recalculateProductBOMCost(tx, pc.BundleSku)
+					}
+				}
 			}
 
 			// Create Stock Movement
@@ -451,4 +459,25 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 
 	database.DB.Preload("Items").Preload("AuditTrail").First(&gr, "id = ?", gr.ID)
 	return c.JSON(gr)
+}
+
+func recalculateProductBOMCost(tx *gorm.DB, parentSku string) error {
+	var parentProduct models.Product
+	if err := tx.First(&parentProduct, "sku = ?", parentSku).Error; err != nil {
+		return err
+	}
+
+	var comps []models.BundleComponent
+	if err := tx.Where("bundle_sku = ?", parentSku).Find(&comps).Error; err != nil {
+		return err
+	}
+
+	cost, err := calculateBOMCost(tx, comps)
+	if err != nil {
+		return err
+	}
+
+	parentProduct.Cost = cost
+
+	return tx.Save(&parentProduct).Error
 }

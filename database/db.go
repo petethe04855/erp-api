@@ -112,6 +112,7 @@ func ConnectDB() {
 		&models.ModuleSettings{},
 		&models.LivePayrollSettings{},
 		&models.Product{},
+		&models.BOM{},
 		&models.BundleComponent{},
 		&models.StockLot{},
 		&models.GoodsIssue{},
