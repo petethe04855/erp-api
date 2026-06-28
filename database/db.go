@@ -125,6 +125,7 @@ func ConnectDB() {
 		&models.PurchaseRequest{},
 		&models.PurchaseOrder{},
 		&models.GoodsReceive{},
+		&models.LandedCostLine{},
 		&models.StockMovement{},
 		&models.Expense{},
 		&models.MonthBudget{},

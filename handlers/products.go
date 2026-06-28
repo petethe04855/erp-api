@@ -170,7 +170,11 @@ func calculateBOMCost(db *gorm.DB, components []models.BundleComponent) (float64
 				factor = 1000
 			}
 		}
-		total += comp.Qty * factor * product.Cost
+		yield := comp.YieldFactor
+		if yield <= 0 {
+			yield = 1
+		}
+		total += (comp.Qty / yield) * factor * product.Cost
 	}
 	return total, nil
 }

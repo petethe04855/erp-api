@@ -50,4 +50,5 @@ type BundleComponent struct {
 	Unit             string  `gorm:"not null;default:'piece'" json:"unit"`
 	ComponentType    string  `gorm:"not null;default:'material'" json:"componentType"`
 	UnitCostOverride float64 `json:"unitCostOverride"`
+	YieldFactor      float64 `gorm:"default:1" json:"yieldFactor"` // 1 = ดิบ 1 ได้แห้ง 1, 0.25 = ดิบ 4 ได้แห้ง 1
 }
