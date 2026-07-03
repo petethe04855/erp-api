@@ -316,6 +316,34 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 		}
 		gr.ID = id
 
+		// Assign ReceiveID to LandedCosts
+		for idx := range gr.LandedCosts {
+			gr.LandedCosts[idx].ReceiveID = id
+		}
+
+		// รวมค่า landed ที่ allocatable
+		totalLanded := 0.0
+		for _, lc := range gr.LandedCosts {
+			if lc.Allocatable {
+				totalLanded += lc.Amount
+			}
+		}
+
+		// มูลค่ารวมของที่รับ (ใช้ราคา PO เป็นฐานการปัน)
+		totalValue := 0.0
+		for i := range gr.Items {
+			var poItem *models.PurchaseOrderItem
+			for j := range po.Items {
+				if po.Items[j].SKU == gr.Items[i].SKU {
+					poItem = &po.Items[j]
+					break
+				}
+			}
+			if poItem != nil {
+				totalValue += float64(gr.Items[i].QtyReceived) * poItem.UnitCost
+			}
+		}
+
 		for i := range gr.Items {
 			item := &gr.Items[i]
 			item.ReceiveID = id
@@ -340,6 +368,18 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 			if item.QtyReceived > (poItem.Qty - poItem.ReceivedQty) {
 				return fmt.Errorf("Cannot receive more than ordered qty for item %s", item.SKU)
 			}
+
+			// มูลค่าของบรรทัดนี้
+			lineValue := float64(item.QtyReceived) * poItem.UnitCost
+
+			// ค่าขนส่งที่ปันมาที่บรรทัดนี้
+			allocatedFreight := 0.0
+			if totalValue > 0 {
+				allocatedFreight = totalLanded * (lineValue / totalValue)
+			}
+
+			// ต้นทุนรวมต่อหน่วย = (ราคาซื้อ + ค่าขนส่งปัน) / จำนวน
+			item.LandedUnitCost = (lineValue + allocatedFreight) / float64(item.QtyReceived)
 
 			// Update PO item received quantity
 			poItem.ReceivedQty += item.QtyReceived
@@ -368,12 +408,20 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 			if err := tx.First(&p, "sku = ?", item.SKU).Error; err == nil {
 				oldStock := p.Stock
 				if oldStock+item.QtyReceived > 0 {
-					p.Cost = ((float64(oldStock) * p.Cost) + (float64(item.QtyReceived) * poItem.UnitCost)) /
+					p.Cost = ((float64(oldStock) * p.Cost) + (float64(item.QtyReceived) * item.LandedUnitCost)) /
 						float64(oldStock+item.QtyReceived)
 				}
 				p.Stock += item.QtyReceived
 				if err := tx.Save(&p).Error; err != nil {
 					return err
+				}
+
+				// Recalculate any parent BOMs that use this raw material SKU
+				var parentComponents []models.BundleComponent
+				if err := tx.Where("component_sku = ?", item.SKU).Find(&parentComponents).Error; err == nil {
+					for _, pc := range parentComponents {
+						_ = recalculateProductBOMCost(tx, pc.BundleSku)
+					}
 				}
 			}
 
@@ -449,6 +497,27 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	database.DB.Preload("Items").Preload("AuditTrail").First(&gr, "id = ?", gr.ID)
+	database.DB.Preload("Items").Preload("LandedCosts").Preload("AuditTrail").First(&gr, "id = ?", gr.ID)
 	return c.JSON(gr)
+}
+
+func recalculateProductBOMCost(tx *gorm.DB, parentSku string) error {
+	var parentProduct models.Product
+	if err := tx.First(&parentProduct, "sku = ?", parentSku).Error; err != nil {
+		return err
+	}
+
+	var comps []models.BundleComponent
+	if err := tx.Where("bundle_sku = ?", parentSku).Find(&comps).Error; err != nil {
+		return err
+	}
+
+	cost, err := calculateBOMCost(tx, comps)
+	if err != nil {
+		return err
+	}
+
+	parentProduct.Cost = cost
+
+	return tx.Save(&parentProduct).Error
 }
