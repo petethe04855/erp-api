@@ -1,6 +1,10 @@
 package handlers
 
 import (
+	"fmt"
+	"net"
+	"net/mail"
+	"net/smtp"
 	"os"
 	"strings"
 	"time"
@@ -33,7 +37,8 @@ func Login(c *fiber.Ctx) error {
 	}
 
 	var user models.AppUser
-	result := database.DB.Where("id = ? OR name = ?", req.Username, req.Username).First(&user)
+	username := strings.TrimSpace(req.Username)
+	result := database.DB.Where("id = ? OR name = ? OR email = ?", username, username, strings.ToLower(username)).First(&user)
 	if result.Error != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 			"error": "Invalid username or password",
@@ -79,6 +84,7 @@ func Login(c *fiber.Ctx) error {
 		"token": tokenString,
 		"user": fiber.Map{
 			"id":          user.ID,
+			"email":       user.Email,
 			"name":        user.Name,
 			"role":        user.Role,
 			"isActive":    user.IsActive,
@@ -99,6 +105,7 @@ func GetCurrentUser(c *fiber.Ctx) error {
 
 	return c.JSON(fiber.Map{
 		"id":          user.ID,
+		"email":       user.Email,
 		"name":        user.Name,
 		"role":        user.Role,
 		"isActive":    user.IsActive,
@@ -110,9 +117,14 @@ var validRoles = map[string]bool{
 	"owner": true, "sales": true, "warehouse": true, "accountant": true,
 }
 
-func validateUserFields(name, role, password string, passwordRequired bool) string {
+func validateUserFields(name, email, role, password string, emailRequired, passwordRequired bool) string {
 	if strings.TrimSpace(name) == "" {
 		return "Display name is required"
+	}
+	if emailRequired || strings.TrimSpace(email) != "" {
+		if !isRealEmailAddress(email) {
+			return "A valid email address is required"
+		}
 	}
 	if !validRoles[role] {
 		return "Invalid user role"
@@ -125,6 +137,7 @@ func validateUserFields(name, role, password string, passwordRequired bool) stri
 
 type CreateUserRequest struct {
 	ID       string `json:"id"`
+	Email    string `json:"email"`
 	Name     string `json:"name"`
 	Role     string `json:"role"`
 	Password string `json:"password"`
@@ -137,11 +150,12 @@ func CreateUser(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid body"})
 	}
 	req.ID = strings.TrimSpace(req.ID)
+	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
 	req.Name = strings.TrimSpace(req.Name)
-	if req.ID == "" || req.Name == "" || req.Role == "" || req.Password == "" {
+	if req.ID == "" || req.Email == "" || req.Name == "" || req.Role == "" || req.Password == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "All fields are required"})
 	}
-	if message := validateUserFields(req.Name, req.Role, req.Password, true); message != "" {
+	if message := validateUserFields(req.Name, req.Email, req.Role, req.Password, true, true); message != "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": message})
 	}
 
@@ -149,6 +163,10 @@ func CreateUser(c *fiber.Ctx) error {
 	database.DB.Model(&models.AppUser{}).Where("id = ?", req.ID).Count(&count)
 	if count > 0 {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "User ID already exists"})
+	}
+	database.DB.Model(&models.AppUser{}).Where("email = ?", req.Email).Count(&count)
+	if count > 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Email already exists"})
 	}
 
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
@@ -158,6 +176,7 @@ func CreateUser(c *fiber.Ctx) error {
 
 	user := models.AppUser{
 		ID:       req.ID,
+		Email:    req.Email,
 		Name:     req.Name,
 		Role:     req.Role,
 		Password: string(hashedPassword),
@@ -166,11 +185,15 @@ func CreateUser(c *fiber.Ctx) error {
 	if err := database.DB.Create(&user).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
+	if err := sendUserCreatedEmail(user, req.Password); err != nil {
+		user.EmailWarning = fmt.Sprintf("ส่งอีเมลแจ้งเตือนไม่สำเร็จ: %v", err)
+	}
 
 	return c.JSON(user)
 }
 
 type UpdateUserRequest struct {
+	Email    string `json:"email"`
 	Name     string `json:"name"`
 	Role     string `json:"role"`
 	Password string `json:"password"`
@@ -193,12 +216,23 @@ func UpdateUser(c *fiber.Ctx) error {
 	if strings.TrimSpace(req.Name) != "" {
 		nextName = strings.TrimSpace(req.Name)
 	}
+	nextEmail := user.Email
+	if strings.TrimSpace(req.Email) != "" {
+		nextEmail = strings.ToLower(strings.TrimSpace(req.Email))
+	}
 	nextRole := user.Role
 	if req.Role != "" {
 		nextRole = req.Role
 	}
-	if message := validateUserFields(nextName, nextRole, req.Password, false); message != "" {
+	if message := validateUserFields(nextName, nextEmail, nextRole, req.Password, false, false); message != "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": message})
+	}
+	if nextEmail != user.Email {
+		var count int64
+		database.DB.Model(&models.AppUser{}).Where("email = ? AND id <> ?", nextEmail, user.ID).Count(&count)
+		if count > 0 {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Email already exists"})
+		}
 	}
 	if user.Role == "owner" && nextRole != "owner" {
 		var ownerCount int64
@@ -210,6 +244,9 @@ func UpdateUser(c *fiber.Ctx) error {
 
 	if req.Name != "" {
 		user.Name = req.Name
+	}
+	if strings.TrimSpace(req.Email) != "" {
+		user.Email = nextEmail
 	}
 	if req.Role != "" {
 		user.Role = req.Role
@@ -263,4 +300,68 @@ func UpdateUserStatus(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(user)
+}
+
+// DeleteUser permanently removes an account while protecting the current user and last owner.
+func DeleteUser(c *fiber.Ctx) error {
+	id := c.Params("id")
+	currentUserID, _ := c.Locals("userID").(string)
+	if id == currentUserID {
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "You cannot delete your own account"})
+	}
+
+	var user models.AppUser
+	if err := database.DB.First(&user, "id = ?", id).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "User not found"})
+	}
+	if user.Role == "owner" && user.IsActive {
+		var ownerCount int64
+		database.DB.Model(&models.AppUser{}).Where("role = ? AND is_active = ?", "owner", true).Count(&ownerCount)
+		if ownerCount <= 1 {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "The last active owner cannot be deleted"})
+		}
+	}
+
+	if err := database.DB.Delete(&user).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"id": id})
+}
+
+func isRealEmailAddress(value string) bool {
+	address, err := mail.ParseAddress(strings.TrimSpace(value))
+	if err != nil || address.Address != strings.TrimSpace(value) {
+		return false
+	}
+	parts := strings.Split(address.Address, "@")
+	if len(parts) != 2 || parts[0] == "" || !strings.Contains(parts[1], ".") {
+		return false
+	}
+	_, err = net.LookupMX(parts[1])
+	return err == nil
+}
+
+func sendUserCreatedEmail(user models.AppUser, plainPassword string) error {
+	host := strings.TrimSpace(os.Getenv("SMTP_HOST"))
+	port := strings.TrimSpace(os.Getenv("SMTP_PORT"))
+	username := strings.TrimSpace(os.Getenv("SMTP_USERNAME"))
+	password := os.Getenv("SMTP_PASSWORD")
+	from := strings.TrimSpace(os.Getenv("EMAIL_SEND"))
+	if host == "" || port == "" || username == "" || password == "" || from == "" {
+		return fmt.Errorf("SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, and EMAIL_SEND must be configured")
+	}
+
+	body := fmt.Sprintf("Hello %s,\r\n\r\nYour Chawy ERP account has been created.\r\n\r\nUsername: %s\r\nEmail: %s\r\nTemporary password: %s\r\n\r\nPlease sign in and change your password.\r\n", user.Name, user.ID, user.Email, plainPassword)
+	message := strings.Join([]string{
+		fmt.Sprintf("From: %s", from),
+		fmt.Sprintf("To: %s", user.Email),
+		"Subject: Your Chawy ERP account is ready",
+		"MIME-Version: 1.0",
+		"Content-Type: text/plain; charset=UTF-8",
+		"",
+		body,
+	}, "\r\n")
+
+	auth := smtp.PlainAuth("", username, password, host)
+	return smtp.SendMail(net.JoinHostPort(host, port), auth, from, []string{user.Email}, []byte(message))
 }

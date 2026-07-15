@@ -3,6 +3,7 @@ package database
 import (
 	"fmt"
 	"log"
+	"strings"
 
 	"chawy-erp-api/models"
 
@@ -74,6 +75,9 @@ func SeedData() {
 			{ID: "admin", Name: "Admin User", Role: "owner", Password: hashedPasswordStr},
 		}
 		for _, u := range users {
+			if u.Email == "" {
+				u.Email = strings.ToLower(u.ID) + "@chawypet.local"
+			}
 			DB.Create(&u)
 		}
 	}

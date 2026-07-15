@@ -64,6 +64,7 @@ func main() {
 	api.Post("/users", middleware.RequireRoles("owner"), handlers.CreateUser)
 	api.Put("/users/:id", middleware.RequireRoles("owner"), handlers.UpdateUser)
 	api.Put("/users/:id/status", middleware.RequireRoles("owner"), handlers.UpdateUserStatus)
+	api.Delete("/users/:id", middleware.RequireRoles("owner"), handlers.DeleteUser)
 
 	// Exports
 	api.Get("/export/sales-orders", handlers.ExportSalesOrders)
