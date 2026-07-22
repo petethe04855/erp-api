@@ -42,6 +42,9 @@ func CreateSalesOrder(c *fiber.Ctx) error {
 			if err := tx.First(&p, "sku = ?", line.SKU).Error; err != nil {
 				return fmt.Errorf("Product %s not found", line.SKU)
 			}
+			if !isSellableProduct(p) {
+				return fmt.Errorf("sales item %s must be a Finished Product", line.SKU)
+			}
 			available := p.Stock - p.ReservedQty
 			if available < line.Qty {
 				return fmt.Errorf("สต็อคไม่พอ: %s มีพร้อมขาย %d ชิ้น", p.Name, available)
@@ -262,6 +265,10 @@ func deductFefoStock(tx *gorm.DB, sku string, qty int, refDoc string, by string)
 	}
 
 	// Update overall product stock count
+	if rem > 0 {
+		return fmt.Errorf("lot stock not sufficient for %s: missing %d", sku, rem)
+	}
+
 	var prod models.Product
 	if err := tx.First(&prod, "sku = ?", sku).Error; err == nil {
 		prod.Stock -= qty
@@ -274,6 +281,10 @@ func deductFefoStock(tx *gorm.DB, sku string, qty int, refDoc string, by string)
 	}
 
 	return nil
+}
+
+func isSellableProduct(product models.Product) bool {
+	return product.Type == "Finished Product" || product.Type == "Bundle" || product.Type == "Cat" || product.Type == "Dog"
 }
 
 // POST /api/invoices

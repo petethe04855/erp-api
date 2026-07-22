@@ -22,6 +22,9 @@ func CreateGoodsIssue(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
+	if req.Qty <= 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "qty must be greater than zero"})
+	}
 
 	var product models.Product
 	if err := database.DB.First(&product, "sku = ?", req.SKU).Error; err != nil {
@@ -73,6 +76,10 @@ func CreateGoodsIssue(c *fiber.Ctx) error {
 					if cp.Stock-cp.ReservedQty < needed {
 						return fmt.Errorf("Component %s stock not sufficient", comp.ComponentSku)
 					}
+					if err := deductFefoStock(tx, comp.ComponentSku, needed, id, username.(string)); err != nil {
+						return err
+					}
+					continue
 
 					// Deduct stock
 					cp.Stock -= needed

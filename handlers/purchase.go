@@ -25,6 +25,9 @@ func CreatePurchaseRequest(c *fiber.Ctx) error {
 		if item.Qty <= 0 {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "All PR items must have qty > 0"})
 		}
+		if err := validatePurchasableItem(database.DB, item.SKU); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		}
 	}
 
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
@@ -202,6 +205,9 @@ func CreatePurchaseOrder(c *fiber.Ctx) error {
 		for i := range po.Items {
 			po.Items[i].OrderID = id
 			po.Items[i].ReceivedQty = 0
+			if err := validatePurchasableItem(tx, po.Items[i].SKU); err != nil {
+				return err
+			}
 			totalCost += float64(po.Items[i].Qty) * po.Items[i].UnitCost
 		}
 		po.TotalCost = totalCost
@@ -364,6 +370,9 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 			if poItem == nil {
 				return fmt.Errorf("Item %s not found in PO %s", item.SKU, gr.PoRef)
 			}
+			if err := validatePurchasableItem(tx, item.SKU); err != nil {
+				return err
+			}
 
 			if item.QtyReceived > (poItem.Qty - poItem.ReceivedQty) {
 				return fmt.Errorf("Cannot receive more than ordered qty for item %s", item.SKU)
@@ -389,15 +398,16 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 
 			// Create Stock Lot
 			lot := models.StockLot{
-				ID:           fmt.Sprintf("LOT-%d-%s", time.Now().UnixNano(), item.Lot),
-				SKU:          item.SKU,
-				Lot:          item.Lot,
-				Qty:          item.QtyReceived,
-				RemainingQty: item.QtyReceived,
-				ExpiryDate:   item.ExpiryDate,
-				ReceivedDate: gr.ReceiveDate,
-				GrRef:        id,
-				PoRef:        gr.PoRef,
+				ID:             fmt.Sprintf("LOT-%d-%s", time.Now().UnixNano(), item.Lot),
+				SKU:            item.SKU,
+				Lot:            item.Lot,
+				Qty:            item.QtyReceived,
+				RemainingQty:   item.QtyReceived,
+				LandedUnitCost: item.LandedUnitCost,
+				ExpiryDate:     item.ExpiryDate,
+				ReceivedDate:   gr.ReceiveDate,
+				GrRef:          id,
+				PoRef:          gr.PoRef,
 			}
 			if err := tx.Create(&lot).Error; err != nil {
 				return err
@@ -520,4 +530,15 @@ func recalculateProductBOMCost(tx *gorm.DB, parentSku string) error {
 	parentProduct.Cost = cost
 
 	return tx.Save(&parentProduct).Error
+}
+
+func validatePurchasableItem(tx *gorm.DB, sku string) error {
+	var product models.Product
+	if err := tx.First(&product, "sku = ?", sku).Error; err != nil {
+		return fmt.Errorf("purchase item %s not found in Item Master", sku)
+	}
+	if product.Type != "Raw Material" && product.Type != "Packaging" {
+		return fmt.Errorf("purchase item %s must be Raw Material or Packaging", sku)
+	}
+	return nil
 }

@@ -2,15 +2,16 @@ package models
 
 // StockLot represents tracking at a lot level (for FEFO)
 type StockLot struct {
-	ID           string `gorm:"primaryKey" json:"id"`
-	SKU          string `gorm:"index" json:"sku"`
-	Lot          string `json:"lot"`
-	Qty          int    `json:"qty"`
-	RemainingQty int    `json:"remainingQty"`
-	ExpiryDate   string `json:"expiryDate"`
-	ReceivedDate string `json:"receivedDate"`
-	GrRef        string `json:"grRef"`
-	PoRef        string `json:"poRef"`
+	ID             string  `gorm:"primaryKey" json:"id"`
+	SKU            string  `gorm:"index" json:"sku"`
+	Lot            string  `json:"lot"`
+	Qty            int     `json:"qty"`
+	RemainingQty   int     `json:"remainingQty"`
+	LandedUnitCost float64 `json:"landedUnitCost"`
+	ExpiryDate     string  `json:"expiryDate"`
+	ReceivedDate   string  `json:"receivedDate"`
+	GrRef          string  `json:"grRef"`
+	PoRef          string  `json:"poRef"`
 }
 
 // GoodsIssue represents stock issues not related to orders
@@ -44,11 +45,11 @@ type StockReturn struct {
 
 // StockAdjustment represents physical count changes
 type StockAdjustment struct {
-	ID        string                 `gorm:"primaryKey" json:"id"`
-	Date      string                 `json:"date"`
-	CheckedBy string                 `json:"checkedBy"`
-	Note      string                 `json:"note"`
-	Items     []StockAdjustmentItem  `gorm:"foreignKey:AdjustmentID" json:"items"`
+	ID        string                `gorm:"primaryKey" json:"id"`
+	Date      string                `json:"date"`
+	CheckedBy string                `json:"checkedBy"`
+	Note      string                `json:"note"`
+	Items     []StockAdjustmentItem `gorm:"foreignKey:AdjustmentID" json:"items"`
 }
 
 // StockAdjustmentItem contains details of adjusted stocks
