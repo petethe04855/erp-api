@@ -10,9 +10,19 @@ import (
 
 // POST /api/products
 func CreateProduct(c *fiber.Ctx) error {
+	var body map[string]interface{}
+	if err := c.BodyParser(&body); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+
 	var prod models.Product
 	if err := c.BodyParser(&prod); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	// Default IsActive to true if not explicitly passed in payload
+	if _, exists := body["isActive"]; !exists {
+		prod.IsActive = true
 	}
 
 	if prod.SKU == "" {
@@ -41,16 +51,23 @@ func UpdateProduct(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Product not found"})
 	}
 
-	if err := c.BodyParser(&prod); err != nil {
+	var updateData map[string]interface{}
+	if err := c.BodyParser(&updateData); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	// Always keep primary key SKU
-	prod.SKU = sku
+	// Prevent overwriting primary key / SKU from JSON payload
+	delete(updateData, "id")
+	delete(updateData, "sku")
 
-	if err := database.DB.Save(&prod).Error; err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	if len(updateData) > 0 {
+		if err := database.DB.Model(&prod).Updates(updateData).Error; err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
 	}
+
+	// Reload updated product
+	database.DB.First(&prod, "sku = ?", sku)
 
 	return c.JSON(prod)
 }

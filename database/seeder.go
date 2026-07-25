@@ -61,6 +61,7 @@ func SeedData() {
 	if userCount == 0 {
 		log.Println("Seeding default Admin and Roles...")
 		// Hash password "admin123"
+
 		hashedPassword, err := bcrypt.GenerateFromPassword([]byte("admin123"), bcrypt.DefaultCost)
 		if err != nil {
 			log.Fatalf("Failed to hash password: %v", err)
@@ -68,12 +69,9 @@ func SeedData() {
 		hashedPasswordStr := string(hashedPassword)
 
 		users := []models.AppUser{
-			{ID: 1, Firstname: "Admin", Lastname: "System", Role: "owner", Password: hashedPasswordStr},
+			{Email: "admin@mail.com", Firstname: "Admin", Lastname: "System", Role: "owner", Password: hashedPasswordStr},
 		}
 		for _, u := range users {
-			if u.Email == "" {
-				u.Email = fmt.Sprintf("user%d@chawypet.local", u.ID)
-			}
 			DB.Create(&u)
 		}
 	}

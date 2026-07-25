@@ -18,13 +18,19 @@ func CreateSamplingCampaign(c *fiber.Ctx) error {
 	}
 
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
-		id, err := NextID(tx, "SAMP-", &models.SamplingCampaign{}, "id")
+		code, err := NextCode(tx, "SAMP-", &models.SamplingCampaign{}, "code")
 		if err != nil {
 			return err
 		}
-		campaign.ID = id
+		campaign.Code = code
 		campaign.GivenQty = 0
 		campaign.Status = "Active"
+
+		var product models.Product
+		if err := tx.First(&product, "sku = ?", campaign.SKU).Error; err == nil {
+			campaign.ProductID = &product.ID
+			campaign.SkuName = product.Name
+		}
 
 		if err := tx.Create(&campaign).Error; err != nil {
 			return err
@@ -36,7 +42,7 @@ func CreateSamplingCampaign(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	database.DB.Preload("Recipients").First(&campaign, "id = ?", campaign.ID)
+	database.DB.Preload("Recipients").First(&campaign, campaign.ID)
 	return c.JSON(campaign)
 }
 
@@ -49,7 +55,7 @@ func AddSamplingRecipient(c *fiber.Ctx) error {
 	}
 
 	var campaign models.SamplingCampaign
-	if err := database.DB.Preload("Recipients").First(&campaign, "id = ?", campaignID).Error; err != nil {
+	if err := database.DB.Preload("Recipients").First(&campaign, "id = ? OR code = ?", campaignID, campaignID).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Sampling campaign not found"})
 	}
 
@@ -63,8 +69,7 @@ func AddSamplingRecipient(c *fiber.Ctx) error {
 	}
 
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
-		recipient.ID = fmt.Sprintf("RCP-%d", time.Now().UnixNano())
-		recipient.CampaignID = campaignID
+		recipient.SamplingCampaignID = campaign.ID
 		if recipient.Date == "" {
 			recipient.Date = time.Now().Format("2006-01-02")
 		}
@@ -92,14 +97,17 @@ func AddSamplingRecipient(c *fiber.Ctx) error {
 
 			// Create OUT Stock Movement
 			movement := models.StockMovement{
-				ID:        fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), campaign.SKU),
-				SKU:       campaign.SKU,
-				Type:      "OUT",
-				Qty:       recipient.QtyGiven,
-				RefDoc:    campaignID,
-				Date:      recipient.Date,
-				Note:      fmt.Sprintf("ฟรีแซมพลิง: %s ให้กับ %s", campaign.Name, recipient.Name),
-				ChangedBy: username.(string),
+				Code:       fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), campaign.SKU),
+				ProductID:  product.ID,
+				SKU:        campaign.SKU,
+				Type:       "OUT",
+				Qty:        recipient.QtyGiven,
+				RefDoc:     campaign.Code,
+				RefDocType: "sampling_campaigns",
+				RefDocID:   &campaign.ID,
+				Date:       recipient.Date,
+				Note:       fmt.Sprintf("ฟรีแซมพลิง: %s ให้กับ %s", campaign.Name, recipient.Name),
+				ChangedBy:  username.(string),
 			}
 			if err := tx.Create(&movement).Error; err != nil {
 				return err
@@ -113,7 +121,7 @@ func AddSamplingRecipient(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	database.DB.Preload("Recipients").First(&campaign, "id = ?", campaignID)
+	database.DB.Preload("Recipients").First(&campaign, campaign.ID)
 	return c.JSON(campaign)
 }
 
@@ -128,7 +136,7 @@ func UpdateSamplingStatus(c *fiber.Ctx) error {
 	}
 
 	var campaign models.SamplingCampaign
-	if err := database.DB.First(&campaign, "id = ?", id).Error; err != nil {
+	if err := database.DB.First(&campaign, "id = ? OR code = ?", id, id).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Sampling campaign not found"})
 	}
 
@@ -137,6 +145,6 @@ func UpdateSamplingStatus(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	database.DB.Preload("Recipients").First(&campaign, "id = ?", id)
+	database.DB.Preload("Recipients").First(&campaign, campaign.ID)
 	return c.JSON(campaign)
 }

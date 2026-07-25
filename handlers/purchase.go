@@ -31,21 +31,23 @@ func CreatePurchaseRequest(c *fiber.Ctx) error {
 	}
 
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
-		id, err := NextID(tx, "PR-2026-", &models.PurchaseRequest{}, "id")
+		code, err := NextCode(tx, "PR-2026-", &models.PurchaseRequest{}, "code")
 		if err != nil {
 			return err
 		}
-		pr.ID = id
+		pr.Code = code
 		pr.Date = time.Now().Format("2006-01-02")
 		pr.Status = "Pending Approval"
-
-		for i := range pr.Items {
-			pr.Items[i].RequestID = id
-		}
 
 		if err := tx.Create(&pr).Error; err != nil {
 			return err
 		}
+
+		for i := range pr.Items {
+			pr.Items[i].PurchaseRequestID = pr.ID
+			tx.Model(&pr.Items[i]).Update("purchase_request_id", pr.ID)
+		}
+
 		return nil
 	})
 
@@ -53,7 +55,7 @@ func CreatePurchaseRequest(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	database.DB.Preload("Items").First(&pr, "id = ?", pr.ID)
+	database.DB.Preload("Items").First(&pr, pr.ID)
 	return c.JSON(pr)
 }
 
@@ -68,7 +70,7 @@ func UpdatePRStatus(c *fiber.Ctx) error {
 	}
 
 	var pr models.PurchaseRequest
-	if err := database.DB.First(&pr, "id = ?", id).Error; err != nil {
+	if err := database.DB.First(&pr, "id = ? OR code = ?", id, id).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "PR not found"})
 	}
 
@@ -77,7 +79,7 @@ func UpdatePRStatus(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	database.DB.Preload("Items").First(&pr, "id = ?", id)
+	database.DB.Preload("Items").First(&pr, pr.ID)
 	return c.JSON(pr)
 }
 
@@ -91,7 +93,7 @@ type ConvertPRtoPORequest struct {
 func ConvertPRtoPO(c *fiber.Ctx) error {
 	id := c.Params("id")
 	var pr models.PurchaseRequest
-	if err := database.DB.Preload("Items").First(&pr, "id = ?", id).Error; err != nil {
+	if err := database.DB.Preload("Items").First(&pr, "id = ? OR code = ?", id, id).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "PR not found"})
 	}
 
@@ -111,8 +113,22 @@ func ConvertPRtoPO(c *fiber.Ctx) error {
 
 	var po models.PurchaseOrder
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
-		poID, err := NextID(tx, "PO-2026-", &models.PurchaseOrder{}, "id")
+		code, err := NextCode(tx, "PO-2026-", &models.PurchaseOrder{}, "code")
 		if err != nil {
+			return err
+		}
+
+		po = models.PurchaseOrder{
+			Code:              code,
+			Supplier:          req.Supplier,
+			EtaDate:           req.EtaDate,
+			Date:              time.Now().Format("2006-01-02"),
+			Status:            "Draft",
+			PurchaseRequestID: &pr.ID,
+			PrRef:             pr.Code,
+		}
+
+		if err := tx.Create(&po).Error; err != nil {
 			return err
 		}
 
@@ -120,34 +136,30 @@ func ConvertPRtoPO(c *fiber.Ctx) error {
 		var totalCost float64
 		for _, item := range pr.Items {
 			cost := req.ItemCosts[item.SKU]
-			poItems = append(poItems, models.PurchaseOrderItem{
-				OrderID:     poID,
-				SKU:         item.SKU,
-				Name:        item.Name,
-				Qty:         item.Qty,
-				UnitCost:    cost,
-				ReceivedQty: 0,
-			})
+			poItem := models.PurchaseOrderItem{
+				PurchaseOrderID: po.ID,
+				ProductID:       item.ProductID,
+				SKU:             item.SKU,
+				Name:            item.Name,
+				Qty:             item.Qty,
+				UnitCost:        cost,
+				ReceivedQty:     0,
+			}
+			if err := tx.Create(&poItem).Error; err != nil {
+				return err
+			}
+			poItems = append(poItems, poItem)
 			totalCost += float64(item.Qty) * cost
 		}
 
-		po = models.PurchaseOrder{
-			ID:        poID,
-			Supplier:  req.Supplier,
-			EtaDate:   req.EtaDate,
-			Date:      time.Now().Format("2006-01-02"),
-			Items:     poItems,
-			Status:    "Draft",
-			PrRef:     pr.ID,
-			TotalCost: totalCost,
-		}
-
-		if err := tx.Create(&po).Error; err != nil {
+		po.Items = poItems
+		po.TotalCost = totalCost
+		if err := tx.Save(&po).Error; err != nil {
 			return err
 		}
 
 		// Update PR poRef
-		pr.PoRef = poID
+		pr.PoRef = po.Code
 		if err := tx.Save(&pr).Error; err != nil {
 			return err
 		}
@@ -159,7 +171,7 @@ func ConvertPRtoPO(c *fiber.Ctx) error {
 			Action:    "Created",
 			By:        username.(string),
 			At:        getNowStr(),
-			Note:      fmt.Sprintf("แปลงจาก %s", pr.ID),
+			Note:      fmt.Sprintf("แปลงจาก %s", pr.Code),
 		}
 		if err := tx.Create(&audit).Error; err != nil {
 			return err
@@ -172,7 +184,7 @@ func ConvertPRtoPO(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	database.DB.Preload("Items").Preload("AuditTrail").First(&po, "id = ?", po.ID)
+	database.DB.Preload("Items").Preload("AuditTrail").First(&po, po.ID)
 	return c.JSON(po)
 }
 
@@ -193,26 +205,30 @@ func CreatePurchaseOrder(c *fiber.Ctx) error {
 	}
 
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
-		id, err := NextID(tx, "PO-2026-", &models.PurchaseOrder{}, "id")
+		code, err := NextCode(tx, "PO-2026-", &models.PurchaseOrder{}, "code")
 		if err != nil {
 			return err
 		}
-		po.ID = id
+		po.Code = code
 		po.Date = time.Now().Format("2006-01-02")
 		po.Status = "Draft"
 
+		if err := tx.Create(&po).Error; err != nil {
+			return err
+		}
+
 		var totalCost float64
 		for i := range po.Items {
-			po.Items[i].OrderID = id
+			po.Items[i].PurchaseOrderID = po.ID
 			po.Items[i].ReceivedQty = 0
 			if err := validatePurchasableItem(tx, po.Items[i].SKU); err != nil {
 				return err
 			}
+			tx.Model(&po.Items[i]).Update("purchase_order_id", po.ID)
 			totalCost += float64(po.Items[i].Qty) * po.Items[i].UnitCost
 		}
 		po.TotalCost = totalCost
-
-		if err := tx.Create(&po).Error; err != nil {
+		if err := tx.Save(&po).Error; err != nil {
 			return err
 		}
 
@@ -235,7 +251,7 @@ func CreatePurchaseOrder(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	database.DB.Preload("Items").Preload("AuditTrail").First(&po, "id = ?", po.ID)
+	database.DB.Preload("Items").Preload("AuditTrail").First(&po, po.ID)
 	return c.JSON(po)
 }
 
@@ -250,7 +266,7 @@ func UpdatePOStatus(c *fiber.Ctx) error {
 	}
 
 	var po models.PurchaseOrder
-	if err := database.DB.Preload("Items").First(&po, "id = ?", id).Error; err != nil {
+	if err := database.DB.Preload("Items").First(&po, "id = ? OR code = ?", id, id).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "PO not found"})
 	}
 
@@ -285,7 +301,7 @@ func UpdatePOStatus(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	database.DB.Preload("Items").Preload("AuditTrail").First(&po, "id = ?", id)
+	database.DB.Preload("Items").Preload("AuditTrail").First(&po, po.ID)
 	return c.JSON(po)
 }
 
@@ -296,12 +312,12 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	if gr.PoRef == "" || gr.ReceiveDate == "" || len(gr.Items) == 0 {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "GR requires poRef, receiveDate, and at least one item"})
+	if (gr.PoRef == "" && gr.PurchaseOrderID == nil) || gr.ReceiveDate == "" || len(gr.Items) == 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "GR requires PO reference, receiveDate, and at least one item"})
 	}
 
 	var po models.PurchaseOrder
-	if err := database.DB.Preload("Items").First(&po, "id = ?", gr.PoRef).Error; err != nil {
+	if err := database.DB.Preload("Items").First(&po, "id = ? OR code = ?", gr.PoRef, gr.PoRef).Error; err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Matching PO not found"})
 	}
 
@@ -309,22 +325,29 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "PO must be Sent or Partial Received status to receive goods"})
 	}
 
+	gr.PurchaseOrderID = &po.ID
+	gr.PoRef = po.Code
+
 	username := c.Locals("name")
 	if username == nil {
 		username = "System"
 	}
 
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
-		// Generate GR ID
-		id, err := NextID(tx, "GR-2026-", &models.GoodsReceive{}, "id")
+		code, err := NextCode(tx, "GR-2026-", &models.GoodsReceive{}, "code")
 		if err != nil {
 			return err
 		}
-		gr.ID = id
+		gr.Code = code
 
-		// Assign ReceiveID to LandedCosts
+		if err := tx.Create(&gr).Error; err != nil {
+			return err
+		}
+
+		// Assign GoodsReceiveID to LandedCosts
 		for idx := range gr.LandedCosts {
-			gr.LandedCosts[idx].ReceiveID = id
+			gr.LandedCosts[idx].GoodsReceiveID = gr.ID
+			tx.Model(&gr.LandedCosts[idx]).Update("goods_receive_id", gr.ID)
 		}
 
 		// รวมค่า landed ที่ allocatable
@@ -352,7 +375,7 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 
 		for i := range gr.Items {
 			item := &gr.Items[i]
-			item.ReceiveID = id
+			item.GoodsReceiveID = gr.ID
 
 			if item.QtyReceived <= 0 {
 				return fmt.Errorf("Invalid QtyReceived for item %s", item.SKU)
@@ -398,7 +421,7 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 
 			// Create Stock Lot
 			lot := models.StockLot{
-				ID:             fmt.Sprintf("LOT-%d-%s", time.Now().UnixNano(), item.Lot),
+				Code:           fmt.Sprintf("LOT-%d-%s", time.Now().UnixNano(), item.Lot),
 				SKU:            item.SKU,
 				Lot:            item.Lot,
 				Qty:            item.QtyReceived,
@@ -406,8 +429,10 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 				LandedUnitCost: item.LandedUnitCost,
 				ExpiryDate:     item.ExpiryDate,
 				ReceivedDate:   gr.ReceiveDate,
-				GrRef:          id,
-				PoRef:          gr.PoRef,
+				GoodsReceiveID: &gr.ID,
+				GrRef:          gr.Code,
+				PurchaseOrderID: &po.ID,
+				PoRef:          po.Code,
 			}
 			if err := tx.Create(&lot).Error; err != nil {
 				return err
@@ -437,23 +462,20 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 
 			// Create Stock Movement
 			movement := models.StockMovement{
-				ID:        fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), item.SKU),
-				SKU:       item.SKU,
-				Type:      "IN",
-				Qty:       item.QtyReceived,
-				RefDoc:    id,
-				Date:      gr.ReceiveDate,
-				Note:      fmt.Sprintf("รับจาก %s (%s) lot %s exp %s", po.Supplier, gr.PoRef, item.Lot, item.ExpiryDate),
-				ChangedBy: username.(string),
+				Code:       fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), item.SKU),
+				SKU:        item.SKU,
+				Type:       "IN",
+				Qty:        item.QtyReceived,
+				RefDoc:     gr.Code,
+				RefDocType: "goods_receives",
+				RefDocID:   &gr.ID,
+				Date:       gr.ReceiveDate,
+				Note:       fmt.Sprintf("รับจาก %s (%s) lot %s exp %s", po.Supplier, gr.PoRef, item.Lot, item.ExpiryDate),
+				ChangedBy:  username.(string),
 			}
 			if err := tx.Create(&movement).Error; err != nil {
 				return err
 			}
-		}
-
-		// Save GR
-		if err := tx.Create(&gr).Error; err != nil {
-			return err
 		}
 
 		// Check if PO completed
@@ -494,7 +516,7 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 			Action:    newStatus,
 			By:        username.(string),
 			At:        getNowStr(),
-			Note:      fmt.Sprintf("รับสินค้า %s", gr.ID),
+			Note:      fmt.Sprintf("รับสินค้า %s", gr.Code),
 		}
 		if err := tx.Create(&poAudit).Error; err != nil {
 			return err
@@ -507,7 +529,7 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	database.DB.Preload("Items").Preload("LandedCosts").Preload("AuditTrail").First(&gr, "id = ?", gr.ID)
+	database.DB.Preload("Items").Preload("LandedCosts").Preload("AuditTrail").First(&gr, gr.ID)
 	return c.JSON(gr)
 }
 

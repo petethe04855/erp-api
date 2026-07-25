@@ -18,23 +18,26 @@ func CreateQuotation(c *fiber.Ctx) error {
 	}
 
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
-		// Generate custom ID
-		id, err := NextID(tx, "QT-2026-", &models.Quotation{}, "id")
+		code, err := NextCode(tx, "QT-2026-", &models.Quotation{}, "code")
 		if err != nil {
 			return err
 		}
-		qt.ID = id
+		qt.Code = code
 
 		// Recalculate amount if lines exist
 		var totalAmount float64
 		for i := range qt.Lines {
-			qt.Lines[i].QuotationID = id
 			totalAmount += float64(qt.Lines[i].Qty) * qt.Lines[i].Price
 		}
 		qt.Amount = totalAmount
 
 		if err := tx.Create(&qt).Error; err != nil {
 			return err
+		}
+
+		for i := range qt.Lines {
+			qt.Lines[i].QuotationID = qt.ID
+			tx.Model(&qt.Lines[i]).Update("quotation_id", qt.ID)
 		}
 		return nil
 	})
@@ -43,7 +46,7 @@ func CreateQuotation(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	database.DB.Preload("Lines").First(&qt, "id = ?", qt.ID)
+	database.DB.Preload("Lines").First(&qt, qt.ID)
 	return c.JSON(qt)
 }
 
@@ -59,7 +62,7 @@ func UpdateQuotationStatus(c *fiber.Ctx) error {
 	}
 
 	var qt models.Quotation
-	if err := database.DB.First(&qt, "id = ?", id).Error; err != nil {
+	if err := database.DB.First(&qt, "id = ? OR code = ?", id, id).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Quotation not found"})
 	}
 
@@ -68,7 +71,7 @@ func UpdateQuotationStatus(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	database.DB.Preload("Lines").First(&qt, "id = ?", id)
+	database.DB.Preload("Lines").First(&qt, qt.ID)
 	return c.JSON(qt)
 }
 
@@ -76,7 +79,7 @@ func UpdateQuotationStatus(c *fiber.Ctx) error {
 func ConvertQuotationToSalesOrder(c *fiber.Ctx) error {
 	id := c.Params("id")
 	var qt models.Quotation
-	if err := database.DB.Preload("Lines").First(&qt, "id = ?", id).Error; err != nil {
+	if err := database.DB.Preload("Lines").First(&qt, "id = ? OR code = ?", id, id).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Quotation not found"})
 	}
 
@@ -93,20 +96,41 @@ func ConvertQuotationToSalesOrder(c *fiber.Ctx) error {
 			return err
 		}
 
-		// Generate Next SO ID
-		soID, err := NextID(tx, "SO-2026-", &models.SalesOrder{}, "id")
+		// Generate Next SO Code
+		soCode, err := NextCode(tx, "SO-2026-", &models.SalesOrder{}, "code")
 		if err != nil {
+			return err
+		}
+
+		so = models.SalesOrder{
+			Code:        soCode,
+			Customer:    qt.Customer,
+			Date:        time.Now().Format("2006-01-02"),
+			Amount:      qt.Amount,
+			Status:      "Pending Payment",
+			Channel:     "Manual",
+			QuotationID: &qt.ID,
+			QtRef:       qt.Code,
+			SourceRef:   "",
+		}
+
+		if err := tx.Create(&so).Error; err != nil {
 			return err
 		}
 
 		totalItems := 0
 		var soLines []models.SalesOrderLine
 		for _, ql := range qt.Lines {
-			soLines = append(soLines, models.SalesOrderLine{
-				OrderID: soID,
-				SKU:     ql.SKU,
-				Qty:     ql.Qty,
-			})
+			soLine := models.SalesOrderLine{
+				SalesOrderID: so.ID,
+				ProductID:    ql.ProductID,
+				SKU:          ql.SKU,
+				Qty:          ql.Qty,
+			}
+			if err := tx.Create(&soLine).Error; err != nil {
+				return err
+			}
+			soLines = append(soLines, soLine)
 			totalItems += ql.Qty
 
 			// Update ReservedQty on products
@@ -119,20 +143,9 @@ func ConvertQuotationToSalesOrder(c *fiber.Ctx) error {
 			}
 		}
 
-		so = models.SalesOrder{
-			ID:        soID,
-			Customer:  qt.Customer,
-			Date:      time.Now().Format("2006-01-02"),
-			Amount:    qt.Amount,
-			Status:    "Pending Payment",
-			Channel:   "Manual",
-			Items:     totalItems,
-			Lines:     soLines,
-			QtRef:     qt.ID,
-			SourceRef: "",
-		}
-
-		if err := tx.Create(&so).Error; err != nil {
+		so.Items = totalItems
+		so.Lines = soLines
+		if err := tx.Save(&so).Error; err != nil {
 			return err
 		}
 
@@ -143,7 +156,7 @@ func ConvertQuotationToSalesOrder(c *fiber.Ctx) error {
 			Action:    "Created",
 			By:        username.(string),
 			At:        getNowStr(),
-			Note:      fmt.Sprintf("Converted from Quotation %s", qt.ID),
+			Note:      fmt.Sprintf("Converted from Quotation %s", qt.Code),
 		}
 		if err := tx.Create(&audit).Error; err != nil {
 			return err
@@ -156,6 +169,6 @@ func ConvertQuotationToSalesOrder(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	database.DB.Preload("Lines").Preload("AuditTrail").First(&so, "id = ?", so.ID)
+	database.DB.Preload("Lines").Preload("AuditTrail").First(&so, so.ID)
 	return c.JSON(so)
 }

@@ -19,31 +19,33 @@ import (
 )
 
 type LoginRequest struct {
-	Username string `json:"username"`
+	Email    string `json:"email"`
 	Password string `json:"password"`
 }
 
 // Login verifies credentials and returns a signed JWT token
 func Login(c *fiber.Ctx) error {
 	var req LoginRequest
+	fmt.Println("Login Request: ", c.Body())
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "Invalid JSON body",
 		})
 	}
 
-	if req.Username == "" || req.Password == "" {
+	if req.Email == "" || req.Password == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Username and password are required",
+			"error": "Email and password are required",
 		})
 	}
 
 	var user models.AppUser
-	username := strings.TrimSpace(req.Username)
-	result := database.DB.Where("id = ? OR name = ? OR email = ?", username, username, strings.ToLower(username)).First(&user)
+	Email := strings.TrimSpace(req.Email)
+	fmt.Println("Login Email: ", Email)
+	result := database.DB.Where("LOWER(email) = ?", strings.ToLower(Email)).First(&user)
 	if result.Error != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-			"error": "Invalid username or password",
+			"error": "Invalid Email or password",
 		})
 	}
 	if !user.IsActive {
@@ -54,7 +56,7 @@ func Login(c *fiber.Ctx) error {
 	err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password))
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-			"error": "Invalid username or password",
+			"error": "Invalid Email or password",
 		})
 	}
 
@@ -99,7 +101,7 @@ func Login(c *fiber.Ctx) error {
 
 // GetCurrentUser returns the user info of the currently logged-in user
 func GetCurrentUser(c *fiber.Ctx) error {
-	userID := c.Locals("userID").(string)
+	userID := c.Locals("userID")
 	var user models.AppUser
 	if err := database.DB.First(&user, "id = ?", userID).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
@@ -362,14 +364,14 @@ func isRealEmailAddress(value string) bool {
 func sendUserCreatedEmail(user models.AppUser, plainPassword string) error {
 	host := strings.TrimSpace(os.Getenv("SMTP_HOST"))
 	port := strings.TrimSpace(os.Getenv("SMTP_PORT"))
-	username := strings.TrimSpace(os.Getenv("SMTP_USERNAME"))
+	Email := strings.TrimSpace(os.Getenv("SMTP_USERNAME"))
 	password := os.Getenv("SMTP_PASSWORD")
 	from := strings.TrimSpace(os.Getenv("EMAIL_SEND"))
-	if host == "" || port == "" || username == "" || password == "" || from == "" {
+	if host == "" || port == "" || Email == "" || password == "" || from == "" {
 		return fmt.Errorf("SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, and EMAIL_SEND must be configured")
 	}
 
-	body := fmt.Sprintf("Hello %s %s,\r\n\r\nYour Chawy ERP account has been created.\r\n\r\nUsername: %s\r\nEmail: %s\r\nTemporary password: %s\r\n\r\nPlease sign in and change your password.\r\n", user.Firstname, user.Lastname, user.ID, user.Email, plainPassword)
+	body := fmt.Sprintf("Hello %s %s,\r\n\r\nYour Chawy ERP account has been created.\r\n\r\nUser ID: %d\r\nEmail: %s\r\nTemporary password: %s\r\n\r\nPlease sign in and change your password.\r\n", user.Firstname, user.Lastname, user.ID, user.Email, plainPassword)
 	message := strings.Join([]string{
 		fmt.Sprintf("From: %s", from),
 		fmt.Sprintf("To: %s", user.Email),
@@ -380,6 +382,6 @@ func sendUserCreatedEmail(user models.AppUser, plainPassword string) error {
 		body,
 	}, "\r\n")
 
-	auth := smtp.PlainAuth("", username, password, host)
+	auth := smtp.PlainAuth("", Email, password, host)
 	return smtp.SendMail(net.JoinHostPort(host, port), auth, from, []string{user.Email}, []byte(message))
 }

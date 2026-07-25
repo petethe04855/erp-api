@@ -296,23 +296,27 @@ func CreatePurchaseRequestFromBOM(c *fiber.Ctx) error {
 	}
 
 	err = database.DB.Transaction(func(tx *gorm.DB) error {
-		id, err := NextID(tx, "PR-2026-", &models.PurchaseRequest{}, "id")
+		code, err := NextCode(tx, "PR-2026-", &models.PurchaseRequest{}, "code")
 		if err != nil {
 			return err
 		}
-		pr.ID = id
+		pr.Code = code
 		pr.Date = time.Now().Format("2006-01-02")
 		pr.Status = "Pending Approval"
-		for i := range pr.Items {
-			pr.Items[i].RequestID = id
+		if err := tx.Create(&pr).Error; err != nil {
+			return err
 		}
-		return tx.Create(&pr).Error
+		for i := range pr.Items {
+			pr.Items[i].PurchaseRequestID = pr.ID
+			tx.Model(&pr.Items[i]).Update("purchase_request_id", pr.ID)
+		}
+		return nil
 	})
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	database.DB.Preload("Items").First(&pr, "id = ?", pr.ID)
+	database.DB.Preload("Items").First(&pr, pr.ID)
 	return c.JSON(pr)
 }
 
