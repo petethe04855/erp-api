@@ -51,6 +51,7 @@ type BundleComponent struct {
 	ComponentName      string  `json:"componentName"`
 	Qty                float64 `json:"qty"`
 	Unit               string  `gorm:"not null;default:'piece'" json:"unit"`
+	ScrapRate          float64 `gorm:"default:0" json:"scrapRate"`
 	BOMLevel           int     `gorm:"default:1" json:"bomLevel"`
 	Description        string  `json:"description"`
 	ProcurementMethod  string  `gorm:"default:'Buy'" json:"procurementMethod"`

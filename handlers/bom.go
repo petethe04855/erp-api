@@ -70,6 +70,7 @@ type BOMComponentInput struct {
 	ComponentName     string  `json:"componentName"`
 	Qty               float64 `json:"qty"`
 	Unit              string  `json:"unit"`
+	ScrapRate         float64 `json:"scrapRate"`
 	BOMLevel          int     `json:"bomLevel"`
 	Description       string  `json:"description"`
 	ProcurementMethod string  `json:"procurementMethod"`
@@ -89,6 +90,7 @@ type BOMComponentResponse struct {
 	ComponentName     string  `json:"componentName"`
 	Qty               float64 `json:"qty"`
 	Unit              string  `json:"unit"`
+	ScrapRate         float64 `json:"scrapRate"`
 	BOMLevel          int     `json:"bomLevel"`
 	Description       string  `json:"description"`
 	ProcurementMethod string  `json:"procurementMethod"`
@@ -398,8 +400,10 @@ func buildBOMLine(component models.BundleComponent, productionQty int) (BOMLineR
 	if componentUnit == "" {
 		componentUnit = "piece"
 	}
-	requiredQty := convertBOMQty(component.Qty*float64(productionQty), componentUnit, componentProduct.BaseUnit)
-	qtyPerUnit := convertBOMQty(component.Qty, componentUnit, componentProduct.BaseUnit)
+	batchSize := componentQtyBatchSize(component.BundleSku)
+	netRequiredQty := component.Qty * (float64(productionQty) / batchSize)
+	requiredQty := convertBOMQty(grossBOMQty(netRequiredQty, component.ScrapRate), componentUnit, componentProduct.BaseUnit)
+	qtyPerUnit := convertBOMQty(grossBOMQty(component.Qty/batchSize, component.ScrapRate), componentUnit, componentProduct.BaseUnit)
 	stockQty := float64(componentProduct.Stock)
 	shortage := math.Max(requiredQty-stockQty, 0)
 	unitCost := componentProduct.Cost
@@ -434,6 +438,21 @@ func convertBOMQty(qty float64, fromUnit string, toUnit string) float64 {
 		return qty * 1000
 	}
 	return qty
+}
+
+func grossBOMQty(netQty float64, scrapRate float64) float64 {
+	if scrapRate <= 0 {
+		return netQty
+	}
+	return netQty / (1 - (scrapRate / 100))
+}
+
+func componentQtyBatchSize(fgSku string) float64 {
+	var bom models.BOM
+	if err := database.DB.Where("fg_sku = ? AND status = 'Active'", fgSku).First(&bom).Error; err == nil && bom.OutputQty > 0 {
+		return bom.OutputQty
+	}
+	return 1
 }
 
 type SaveBOMInput struct {
@@ -628,6 +647,9 @@ func validateAndBuildBOMComponent(tx *gorm.DB, bundleSku string, comp BOMCompone
 	if comp.ComponentType == "" {
 		comp.ComponentType = "material"
 	}
+	if comp.ScrapRate < 0 || comp.ScrapRate >= 100 {
+		return models.BundleComponent{}, fmt.Errorf("component scrapRate must be >= 0 and < 100")
+	}
 	if comp.BOMLevel <= 0 {
 		comp.BOMLevel = 1
 	}
@@ -665,6 +687,7 @@ func validateAndBuildBOMComponent(tx *gorm.DB, bundleSku string, comp BOMCompone
 		ComponentName:     comp.ComponentName,
 		Qty:               comp.Qty,
 		Unit:              comp.Unit,
+		ScrapRate:         comp.ScrapRate,
 		BOMLevel:          comp.BOMLevel,
 		Description:       comp.Description,
 		ProcurementMethod: comp.ProcurementMethod,
@@ -703,10 +726,7 @@ func calculateStandaloneBOMLineCost(tx *gorm.DB, bom models.BOM, comp models.Bun
 	if yield <= 0 {
 		yield = 1
 	}
-	qty := convertBOMQty(comp.Qty/yield, comp.Unit, product.BaseUnit)
-	if bom.Waste > 0 {
-		qty *= 1 + (bom.Waste / 100)
-	}
+	qty := convertBOMQty(grossBOMQty(comp.Qty/yield, comp.ScrapRate), comp.Unit, product.BaseUnit)
 	return qty * unitCost, nil
 }
 
@@ -739,6 +759,7 @@ func buildStandaloneBOMComponents(tx *gorm.DB, bom models.BOM) ([]BOMComponentRe
 			ComponentName:     name,
 			Qty:               comp.Qty,
 			Unit:              comp.Unit,
+			ScrapRate:         comp.ScrapRate,
 			BOMLevel:          comp.BOMLevel,
 			Description:       comp.Description,
 			ProcurementMethod: comp.ProcurementMethod,
