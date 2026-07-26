@@ -26,7 +26,6 @@ type LoginRequest struct {
 // Login verifies credentials and returns a signed JWT token
 func Login(c *fiber.Ctx) error {
 	var req LoginRequest
-	fmt.Println("Login Request: ", c.Body())
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "Invalid JSON body",
@@ -41,7 +40,6 @@ func Login(c *fiber.Ctx) error {
 
 	var user models.AppUser
 	Email := strings.TrimSpace(req.Email)
-	fmt.Println("Login Email: ", Email)
 	result := database.DB.Where("LOWER(email) = ?", strings.ToLower(Email)).First(&user)
 	if result.Error != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
@@ -63,7 +61,7 @@ func Login(c *fiber.Ctx) error {
 	// Generate JWT Token
 	jwtSecret := os.Getenv("JWT_SECRET")
 	if jwtSecret == "" {
-		jwtSecret = "supersecretjwtkeyforchawyerp2026"
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Authentication is not configured"})
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{

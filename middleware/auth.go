@@ -30,7 +30,7 @@ func AuthRequired(c *fiber.Ctx) error {
 	tokenStr := parts[1]
 	jwtSecret := os.Getenv("JWT_SECRET")
 	if jwtSecret == "" {
-		jwtSecret = "supersecretjwtkeyforchawyerp2026"
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Authentication is not configured"})
 	}
 
 	token, err := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
