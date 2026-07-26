@@ -91,6 +91,7 @@ func main() {
 	api.Get("/bundle-components/:sku", handlers.ListResourceWhere(func() interface{} { return &[]models.BundleComponent{} }, "bundle_sku", "sku"))
 	api.Get("/boms", handlers.ListBOMs)
 	api.Post("/boms", handlers.CreateBOM)
+	api.Delete("/boms/:id", handlers.DeleteBOM)
 	api.Get("/boms/:sku", handlers.GetBOM)
 	api.Put("/boms/:sku", handlers.SaveBOM)
 	api.Post("/boms/:sku/purchase-request", handlers.CreatePurchaseRequestFromBOM)

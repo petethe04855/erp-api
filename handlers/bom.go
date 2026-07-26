@@ -65,18 +65,66 @@ type BOMPurchaseRequestInput struct {
 	ProductionQty int    `json:"productionQty"`
 }
 
+type BOMComponentInput struct {
+	ComponentSku      string  `json:"componentSku"`
+	ComponentName     string  `json:"componentName"`
+	Qty               float64 `json:"qty"`
+	Unit              string  `json:"unit"`
+	ScrapRate         float64 `json:"scrapRate"`
+	BOMLevel          int     `json:"bomLevel"`
+	Description       string  `json:"description"`
+	ProcurementMethod string  `json:"procurementMethod"`
+	Note              string  `json:"note"`
+	ComponentType     string  `json:"componentType"`
+	UnitCostOverride  float64 `json:"unitCostOverride"`
+	YieldFactor       float64 `json:"yieldFactor"`
+}
+
+type BOMCreateInput struct {
+	models.BOM
+	Components []BOMComponentInput `json:"components"`
+}
+
+type BOMComponentResponse struct {
+	ComponentSku      string  `json:"componentSku"`
+	ComponentName     string  `json:"componentName"`
+	Qty               float64 `json:"qty"`
+	Unit              string  `json:"unit"`
+	ScrapRate         float64 `json:"scrapRate"`
+	BOMLevel          int     `json:"bomLevel"`
+	Description       string  `json:"description"`
+	ProcurementMethod string  `json:"procurementMethod"`
+	Note              string  `json:"note"`
+	ComponentType     string  `json:"componentType"`
+	UnitCostOverride  float64 `json:"unitCostOverride"`
+	YieldFactor       float64 `json:"yieldFactor"`
+	UnitCost          float64 `json:"unitCost"`
+	LineCost          float64 `json:"lineCost"`
+	IsSubComponent    bool    `json:"isSubComponent"`
+}
+
+type BOMListResponse struct {
+	models.BOM
+	Components []BOMComponentResponse `json:"components"`
+}
+
 // GET /api/boms — list standalone BOM records
 func ListBOMs(c *fiber.Ctx) error {
 	var boms []models.BOM
 	if err := database.DB.Order("id DESC").Find(&boms).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(boms)
+	result := make([]BOMListResponse, 0, len(boms))
+	for _, bom := range boms {
+		components, _ := buildStandaloneBOMComponents(database.DB, bom)
+		result = append(result, BOMListResponse{BOM: bom, Components: components})
+	}
+	return c.JSON(result)
 }
 
 // POST /api/boms — create a standalone BOM record
 func CreateBOM(c *fiber.Ctx) error {
-	var input models.BOM
+	var input BOMCreateInput
 	if err := c.BodyParser(&input); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -86,15 +134,95 @@ func CreateBOM(c *fiber.Ctx) error {
 	if input.Name == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "name is required"})
 	}
-	if input.Status == "" {
-		input.Status = "Draft"
+	if input.FgSku == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "fgSku is required"})
 	}
-	if err := database.DB.Create(&input).Error; err != nil {
+	if input.OutputQty <= 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "outputQty must be greater than zero"})
+	}
+	if len(input.Components) == 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "BOM requires at least one component"})
+	}
+	if input.Status == "" {
+		input.Status = "Active"
+	}
+	if input.Kind == "" {
+		input.Kind = "finished"
+	}
+	if input.Version <= 0 {
+		input.Version = 1
+	}
+
+	var output models.Product
+	if err := database.DB.First(&output, "sku = ?", input.FgSku).Error; err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "fgSku must exist in Item Master"})
+	}
+	if input.Kind == "subcomponent" && output.Type != "Sub-component" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "subcomponent BOM output must use a Sub-component item"})
+	}
+	if input.Kind != "subcomponent" && output.Type != "Finished Product" && output.Type != "Bundle" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "finished BOM output must use a Finished Product item"})
+	}
+
+	bom := input.BOM
+	bom.Cost = 0
+	bom.ComponentCount = len(input.Components)
+
+	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if bom.Status == "Active" {
+			if err := tx.Model(&models.BOM{}).
+				Where("fg_sku = ? AND status = 'Active'", bom.FgSku).
+				Update("status", "Inactive").Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Create(&bom).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("bundle_sku = ?", bom.FgSku).Delete(&models.BundleComponent{}).Error; err != nil {
+			return err
+		}
+		components := make([]models.BundleComponent, 0, len(input.Components))
+		for _, comp := range input.Components {
+			bc, err := validateAndBuildBOMComponent(tx, bom.FgSku, comp)
+			if err != nil {
+				return err
+			}
+			if err := tx.Create(&bc).Error; err != nil {
+				return err
+			}
+			components = append(components, bc)
+		}
+		cost, err := calculateStandaloneBOMCost(tx, bom, components)
+		if err != nil {
+			return err
+		}
+		bom.Cost = cost
+		if err := tx.Save(&bom).Error; err != nil {
+			return err
+		}
+		output.IsBundle = true
+		output.Cost = cost / bom.OutputQty
+		return tx.Save(&output).Error
+	})
+	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.Status(fiber.StatusCreated).JSON(input)
+	components, _ := buildStandaloneBOMComponents(database.DB, bom)
+	return c.Status(fiber.StatusCreated).JSON(BOMListResponse{BOM: bom, Components: components})
 }
 
+// DELETE /api/boms/:id — delete a BOM record by ID or Code
+func DeleteBOM(c *fiber.Ctx) error {
+	id := c.Params("id")
+	if id == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID or Code is required"})
+	}
+	if err := database.DB.Where("id = ? OR code = ?", id, id).Delete(&models.BOM{}).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"message": "BOM deleted successfully"})
+}
 
 // GET /api/boms/:sku?productionQty=5000
 func GetBOM(c *fiber.Ctx) error {
@@ -170,23 +298,27 @@ func CreatePurchaseRequestFromBOM(c *fiber.Ctx) error {
 	}
 
 	err = database.DB.Transaction(func(tx *gorm.DB) error {
-		id, err := NextID(tx, "PR-2026-", &models.PurchaseRequest{}, "id")
+		code, err := NextCode(tx, "PR-2026-", &models.PurchaseRequest{}, "code")
 		if err != nil {
 			return err
 		}
-		pr.ID = id
+		pr.Code = code
 		pr.Date = time.Now().Format("2006-01-02")
 		pr.Status = "Pending Approval"
-		for i := range pr.Items {
-			pr.Items[i].RequestID = id
+		if err := tx.Create(&pr).Error; err != nil {
+			return err
 		}
-		return tx.Create(&pr).Error
+		for i := range pr.Items {
+			pr.Items[i].PurchaseRequestID = pr.ID
+			tx.Model(&pr.Items[i]).Update("purchase_request_id", pr.ID)
+		}
+		return nil
 	})
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	database.DB.Preload("Items").First(&pr, "id = ?", pr.ID)
+	database.DB.Preload("Items").First(&pr, pr.ID)
 	return c.JSON(pr)
 }
 
@@ -268,8 +400,10 @@ func buildBOMLine(component models.BundleComponent, productionQty int) (BOMLineR
 	if componentUnit == "" {
 		componentUnit = "piece"
 	}
-	requiredQty := convertBOMQty(component.Qty*float64(productionQty), componentUnit, componentProduct.BaseUnit)
-	qtyPerUnit := convertBOMQty(component.Qty, componentUnit, componentProduct.BaseUnit)
+	batchSize := componentQtyBatchSize(component.BundleSku)
+	netRequiredQty := component.Qty * (float64(productionQty) / batchSize)
+	requiredQty := convertBOMQty(grossBOMQty(netRequiredQty, component.ScrapRate), componentUnit, componentProduct.BaseUnit)
+	qtyPerUnit := convertBOMQty(grossBOMQty(component.Qty/batchSize, component.ScrapRate), componentUnit, componentProduct.BaseUnit)
 	stockQty := float64(componentProduct.Stock)
 	shortage := math.Max(requiredQty-stockQty, 0)
 	unitCost := componentProduct.Cost
@@ -306,14 +440,29 @@ func convertBOMQty(qty float64, fromUnit string, toUnit string) float64 {
 	return qty
 }
 
+func grossBOMQty(netQty float64, scrapRate float64) float64 {
+	if scrapRate <= 0 {
+		return netQty
+	}
+	return netQty / (1 - (scrapRate / 100))
+}
+
+func componentQtyBatchSize(fgSku string) float64 {
+	var bom models.BOM
+	if err := database.DB.Where("fg_sku = ? AND status = 'Active'", fgSku).First(&bom).Error; err == nil && bom.OutputQty > 0 {
+		return bom.OutputQty
+	}
+	return 1
+}
+
 type SaveBOMInput struct {
-	BomCode          string `json:"bomCode"`
-	BomName          string `json:"bomName"`
+	BomCode          string  `json:"bomCode"`
+	BomName          string  `json:"bomName"`
 	BomOutputQty     float64 `json:"bomOutputQty"`
-	BomUnit          string `json:"bomUnit"`
-	BomStatus        string `json:"bomStatus"`
-	BomEffectiveDate string `json:"bomEffectiveDate"`
-	Components []struct {
+	BomUnit          string  `json:"bomUnit"`
+	BomStatus        string  `json:"bomStatus"`
+	BomEffectiveDate string  `json:"bomEffectiveDate"`
+	Components       []struct {
 		ComponentSku     string  `json:"componentSku"`
 		ComponentName    string  `json:"componentName"`
 		Qty              float64 `json:"qty"`
@@ -488,4 +637,140 @@ func DuplicateBOM(c *fiber.Ctx) error {
 	return c.JSON(detail)
 }
 
+func validateAndBuildBOMComponent(tx *gorm.DB, bundleSku string, comp BOMComponentInput) (models.BundleComponent, error) {
+	if comp.Qty <= 0 {
+		return models.BundleComponent{}, fmt.Errorf("component qty must be greater than zero")
+	}
+	if comp.Unit == "" {
+		comp.Unit = "piece"
+	}
+	if comp.ComponentType == "" {
+		comp.ComponentType = "material"
+	}
+	if comp.ScrapRate < 0 || comp.ScrapRate >= 100 {
+		return models.BundleComponent{}, fmt.Errorf("component scrapRate must be >= 0 and < 100")
+	}
+	if comp.BOMLevel <= 0 {
+		comp.BOMLevel = 1
+	}
+	if comp.ProcurementMethod == "" {
+		comp.ProcurementMethod = "Buy"
+	}
+	if comp.YieldFactor <= 0 {
+		comp.YieldFactor = 1
+	}
+	if comp.ComponentType != "expense" {
+		if comp.ComponentSku == "" {
+			return models.BundleComponent{}, fmt.Errorf("component SKU is required")
+		}
+		var componentProduct models.Product
+		if err := tx.First(&componentProduct, "sku = ?", comp.ComponentSku).Error; err != nil {
+			return models.BundleComponent{}, fmt.Errorf("component SKU %s must exist in Item Master", comp.ComponentSku)
+		}
+		if componentProduct.Type != "Raw Material" &&
+			componentProduct.Type != "Packaging" &&
+			componentProduct.Type != "Sub-component" &&
+			componentProduct.Type != "Bundle" &&
+			componentProduct.Type != "Cat" &&
+			componentProduct.Type != "Dog" &&
+			componentProduct.Type != "Other" {
+			return models.BundleComponent{}, fmt.Errorf("component SKU %s has unsupported item type %s", comp.ComponentSku, componentProduct.Type)
+		}
+		if comp.ComponentName == "" {
+			comp.ComponentName = componentProduct.Name
+		}
+	}
 
+	return models.BundleComponent{
+		BundleSku:         bundleSku,
+		ComponentSku:      comp.ComponentSku,
+		ComponentName:     comp.ComponentName,
+		Qty:               comp.Qty,
+		Unit:              comp.Unit,
+		ScrapRate:         comp.ScrapRate,
+		BOMLevel:          comp.BOMLevel,
+		Description:       comp.Description,
+		ProcurementMethod: comp.ProcurementMethod,
+		Note:              comp.Note,
+		ComponentType:     comp.ComponentType,
+		UnitCostOverride:  comp.UnitCostOverride,
+		YieldFactor:       comp.YieldFactor,
+	}, nil
+}
+
+func calculateStandaloneBOMCost(tx *gorm.DB, bom models.BOM, components []models.BundleComponent) (float64, error) {
+	total := 0.0
+	for _, comp := range components {
+		lineCost, err := calculateStandaloneBOMLineCost(tx, bom, comp)
+		if err != nil {
+			return 0, err
+		}
+		total += lineCost
+	}
+	return total, nil
+}
+
+func calculateStandaloneBOMLineCost(tx *gorm.DB, bom models.BOM, comp models.BundleComponent) (float64, error) {
+	if comp.ComponentType == "expense" {
+		return comp.Qty * comp.UnitCostOverride, nil
+	}
+	var product models.Product
+	if err := tx.First(&product, "sku = ?", comp.ComponentSku).Error; err != nil {
+		return 0, fmt.Errorf("component product %s not found", comp.ComponentSku)
+	}
+	unitCost := product.Cost
+	if unitCost == 0 && comp.UnitCostOverride > 0 {
+		unitCost = comp.UnitCostOverride
+	}
+	yield := comp.YieldFactor
+	if yield <= 0 {
+		yield = 1
+	}
+	qty := convertBOMQty(grossBOMQty(comp.Qty/yield, comp.ScrapRate), comp.Unit, product.BaseUnit)
+	return qty * unitCost, nil
+}
+
+func buildStandaloneBOMComponents(tx *gorm.DB, bom models.BOM) ([]BOMComponentResponse, error) {
+	if bom.FgSku == "" {
+		return []BOMComponentResponse{}, nil
+	}
+	var components []models.BundleComponent
+	if err := tx.Where("bundle_sku = ?", bom.FgSku).Order("id ASC").Find(&components).Error; err != nil {
+		return nil, err
+	}
+	result := make([]BOMComponentResponse, 0, len(components))
+	for _, comp := range components {
+		unitCost := comp.UnitCostOverride
+		name := comp.ComponentName
+		isSubComponent := false
+		if comp.ComponentType != "expense" && comp.ComponentSku != "" {
+			var product models.Product
+			if err := tx.First(&product, "sku = ?", comp.ComponentSku).Error; err == nil {
+				if name == "" {
+					name = product.Name
+				}
+				unitCost = product.Cost
+				isSubComponent = product.Type == "Sub-component" || product.IsBundle
+			}
+		}
+		lineCost, _ := calculateStandaloneBOMLineCost(tx, bom, comp)
+		result = append(result, BOMComponentResponse{
+			ComponentSku:      comp.ComponentSku,
+			ComponentName:     name,
+			Qty:               comp.Qty,
+			Unit:              comp.Unit,
+			ScrapRate:         comp.ScrapRate,
+			BOMLevel:          comp.BOMLevel,
+			Description:       comp.Description,
+			ProcurementMethod: comp.ProcurementMethod,
+			Note:              comp.Note,
+			ComponentType:     comp.ComponentType,
+			UnitCostOverride:  comp.UnitCostOverride,
+			YieldFactor:       comp.YieldFactor,
+			UnitCost:          unitCost,
+			LineCost:          lineCost,
+			IsSubComponent:    isSubComponent,
+		})
+	}
+	return result, nil
+}

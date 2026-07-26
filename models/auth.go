@@ -4,9 +4,10 @@ import "time"
 
 // AppUser represents a user of the ERP system
 type AppUser struct {
-	ID           string     `gorm:"primaryKey" json:"id"`
+	ID           int        `gorm:"primaryKey;autoIncrement" json:"id"`
 	Email        string     `json:"email"`
-	Name         string     `json:"name"`
+	Firstname    string     `json:"firstname"`
+	Lastname     string     `json:"lastname"`
 	Role         string     `json:"role"` // owner, sales, warehouse, accountant
 	Password     string     `json:"-"`    // Hashed password, not returned in JSON
 	IsActive     bool       `gorm:"not null;default:true" json:"isActive"`

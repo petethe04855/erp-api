@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"fmt"
+	"math/rand"
 	"net"
 	"net/mail"
 	"net/smtp"
@@ -11,37 +12,40 @@ import (
 
 	"chawy-erp-api/database"
 	"chawy-erp-api/models"
+
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 )
 
 type LoginRequest struct {
-	Username string `json:"username"`
+	Email    string `json:"email"`
 	Password string `json:"password"`
 }
 
 // Login verifies credentials and returns a signed JWT token
 func Login(c *fiber.Ctx) error {
 	var req LoginRequest
+	fmt.Println("Login Request: ", c.Body())
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "Invalid JSON body",
 		})
 	}
 
-	if req.Username == "" || req.Password == "" {
+	if req.Email == "" || req.Password == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Username and password are required",
+			"error": "Email and password are required",
 		})
 	}
 
 	var user models.AppUser
-	username := strings.TrimSpace(req.Username)
-	result := database.DB.Where("id = ? OR name = ? OR email = ?", username, username, strings.ToLower(username)).First(&user)
+	Email := strings.TrimSpace(req.Email)
+	fmt.Println("Login Email: ", Email)
+	result := database.DB.Where("LOWER(email) = ?", strings.ToLower(Email)).First(&user)
 	if result.Error != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-			"error": "Invalid username or password",
+			"error": "Invalid Email or password",
 		})
 	}
 	if !user.IsActive {
@@ -52,7 +56,7 @@ func Login(c *fiber.Ctx) error {
 	err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password))
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-			"error": "Invalid username or password",
+			"error": "Invalid Email or password",
 		})
 	}
 
@@ -63,10 +67,11 @@ func Login(c *fiber.Ctx) error {
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"userId": user.ID,
-		"name":   user.Name,
-		"role":   user.Role,
-		"exp":    time.Now().Add(time.Hour * 24).Unix(),
+		"userId":    user.ID,
+		"firstname": user.Firstname,
+		"lastname":  user.Lastname,
+		"role":      user.Role,
+		"exp":       time.Now().Add(time.Hour * 24).Unix(),
 	})
 
 	tokenString, err := token.SignedString([]byte(jwtSecret))
@@ -85,7 +90,8 @@ func Login(c *fiber.Ctx) error {
 		"user": fiber.Map{
 			"id":          user.ID,
 			"email":       user.Email,
-			"name":        user.Name,
+			"firstname":   user.Firstname,
+			"lastname":    user.Lastname,
 			"role":        user.Role,
 			"isActive":    user.IsActive,
 			"lastLoginAt": user.LastLoginAt,
@@ -95,7 +101,7 @@ func Login(c *fiber.Ctx) error {
 
 // GetCurrentUser returns the user info of the currently logged-in user
 func GetCurrentUser(c *fiber.Ctx) error {
-	userID := c.Locals("userID").(string)
+	userID := c.Locals("userID")
 	var user models.AppUser
 	if err := database.DB.First(&user, "id = ?", userID).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
@@ -106,7 +112,8 @@ func GetCurrentUser(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"id":          user.ID,
 		"email":       user.Email,
-		"name":        user.Name,
+		"firstname":   user.Firstname,
+		"lastname":    user.Lastname,
 		"role":        user.Role,
 		"isActive":    user.IsActive,
 		"lastLoginAt": user.LastLoginAt,
@@ -117,8 +124,8 @@ var validRoles = map[string]bool{
 	"owner": true, "sales": true, "warehouse": true, "accountant": true,
 }
 
-func validateUserFields(name, email, role, password string, emailRequired, passwordRequired bool) string {
-	if strings.TrimSpace(name) == "" {
+func validateUserFields(firstname, lastname, email, role, password string, emailRequired, passwordRequired bool) string {
+	if strings.TrimSpace(firstname) == "" || strings.TrimSpace(lastname) == "" {
 		return "Display name is required"
 	}
 	if emailRequired || strings.TrimSpace(email) != "" {
@@ -136,11 +143,11 @@ func validateUserFields(name, email, role, password string, emailRequired, passw
 }
 
 type CreateUserRequest struct {
-	ID       string `json:"id"`
-	Email    string `json:"email"`
-	Name     string `json:"name"`
-	Role     string `json:"role"`
-	Password string `json:"password"`
+	Email     string `json:"email"`
+	Firstname string `json:"firstname"`
+	Lastname  string `json:"lastname"`
+	Role      string `json:"role"`
+	Password  string `json:"password"`
 }
 
 // CreateUser handles registration of new accounts
@@ -149,21 +156,26 @@ func CreateUser(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid body"})
 	}
-	req.ID = strings.TrimSpace(req.ID)
 	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
-	req.Name = strings.TrimSpace(req.Name)
-	if req.ID == "" || req.Email == "" || req.Name == "" || req.Role == "" || req.Password == "" {
+	req.Firstname = strings.TrimSpace(req.Firstname)
+	req.Lastname = strings.TrimSpace(req.Lastname)
+
+	if req.Password == "" {
+		const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%"
+		b := make([]byte, 10)
+		for i := range b {
+			b[i] = chars[rand.Intn(len(chars))]
+		}
+		req.Password = string(b)
+	}
+	if req.Email == "" || req.Firstname == "" || req.Lastname == "" || req.Role == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "All fields are required"})
 	}
-	if message := validateUserFields(req.Name, req.Email, req.Role, req.Password, true, true); message != "" {
+	if message := validateUserFields(req.Firstname, req.Lastname, req.Email, req.Role, req.Password, true, true); message != "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": message})
 	}
 
 	var count int64
-	database.DB.Model(&models.AppUser{}).Where("id = ?", req.ID).Count(&count)
-	if count > 0 {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "User ID already exists"})
-	}
 	database.DB.Model(&models.AppUser{}).Where("email = ?", req.Email).Count(&count)
 	if count > 0 {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Email already exists"})
@@ -175,12 +187,12 @@ func CreateUser(c *fiber.Ctx) error {
 	}
 
 	user := models.AppUser{
-		ID:       req.ID,
-		Email:    req.Email,
-		Name:     req.Name,
-		Role:     req.Role,
-		Password: string(hashedPassword),
-		IsActive: true,
+		Email:     req.Email,
+		Firstname: req.Firstname,
+		Lastname:  req.Lastname,
+		Role:      req.Role,
+		Password:  string(hashedPassword),
+		IsActive:  true,
 	}
 	if err := database.DB.Create(&user).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
@@ -193,10 +205,11 @@ func CreateUser(c *fiber.Ctx) error {
 }
 
 type UpdateUserRequest struct {
-	Email    string `json:"email"`
-	Name     string `json:"name"`
-	Role     string `json:"role"`
-	Password string `json:"password"`
+	Email     string `json:"email"`
+	Firstname string `json:"firstname"`
+	Lastname  string `json:"lastname"`
+	Role      string `json:"role"`
+	Password  string `json:"password"`
 }
 
 // UpdateUser handles updating display name, role, or password of an account
@@ -212,9 +225,13 @@ func UpdateUser(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "User not found"})
 	}
 
-	nextName := user.Name
-	if strings.TrimSpace(req.Name) != "" {
-		nextName = strings.TrimSpace(req.Name)
+	nextFirstname := user.Firstname
+	if strings.TrimSpace(req.Firstname) != "" {
+		nextFirstname = strings.TrimSpace(req.Firstname)
+	}
+	nextLastname := user.Lastname
+	if strings.TrimSpace(req.Lastname) != "" {
+		nextLastname = strings.TrimSpace(req.Lastname)
 	}
 	nextEmail := user.Email
 	if strings.TrimSpace(req.Email) != "" {
@@ -224,7 +241,7 @@ func UpdateUser(c *fiber.Ctx) error {
 	if req.Role != "" {
 		nextRole = req.Role
 	}
-	if message := validateUserFields(nextName, nextEmail, nextRole, req.Password, false, false); message != "" {
+	if message := validateUserFields(nextFirstname, nextLastname, nextEmail, nextRole, req.Password, false, false); message != "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": message})
 	}
 	if nextEmail != user.Email {
@@ -242,8 +259,11 @@ func UpdateUser(c *fiber.Ctx) error {
 		}
 	}
 
-	if req.Name != "" {
-		user.Name = req.Name
+	if req.Firstname != "" {
+		user.Firstname = req.Firstname
+	}
+	if req.Lastname != "" {
+		user.Lastname = req.Lastname
 	}
 	if strings.TrimSpace(req.Email) != "" {
 		user.Email = nextEmail
@@ -344,14 +364,14 @@ func isRealEmailAddress(value string) bool {
 func sendUserCreatedEmail(user models.AppUser, plainPassword string) error {
 	host := strings.TrimSpace(os.Getenv("SMTP_HOST"))
 	port := strings.TrimSpace(os.Getenv("SMTP_PORT"))
-	username := strings.TrimSpace(os.Getenv("SMTP_USERNAME"))
+	Email := strings.TrimSpace(os.Getenv("SMTP_USERNAME"))
 	password := os.Getenv("SMTP_PASSWORD")
 	from := strings.TrimSpace(os.Getenv("EMAIL_SEND"))
-	if host == "" || port == "" || username == "" || password == "" || from == "" {
+	if host == "" || port == "" || Email == "" || password == "" || from == "" {
 		return fmt.Errorf("SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, and EMAIL_SEND must be configured")
 	}
 
-	body := fmt.Sprintf("Hello %s,\r\n\r\nYour Chawy ERP account has been created.\r\n\r\nUsername: %s\r\nEmail: %s\r\nTemporary password: %s\r\n\r\nPlease sign in and change your password.\r\n", user.Name, user.ID, user.Email, plainPassword)
+	body := fmt.Sprintf("Hello %s %s,\r\n\r\nYour Chawy ERP account has been created.\r\n\r\nUser ID: %d\r\nEmail: %s\r\nTemporary password: %s\r\n\r\nPlease sign in and change your password.\r\n", user.Firstname, user.Lastname, user.ID, user.Email, plainPassword)
 	message := strings.Join([]string{
 		fmt.Sprintf("From: %s", from),
 		fmt.Sprintf("To: %s", user.Email),
@@ -362,6 +382,6 @@ func sendUserCreatedEmail(user models.AppUser, plainPassword string) error {
 		body,
 	}, "\r\n")
 
-	auth := smtp.PlainAuth("", username, password, host)
+	auth := smtp.PlainAuth("", Email, password, host)
 	return smtp.SendMail(net.JoinHostPort(host, port), auth, from, []string{user.Email}, []byte(message))
 }

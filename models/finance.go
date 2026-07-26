@@ -2,7 +2,8 @@ package models
 
 // Expense represents an expense record
 type Expense struct {
-	ID          string  `gorm:"primaryKey" json:"id"`
+	ID          uint    `gorm:"primaryKey;autoIncrement" json:"id"`
+	Code        string  `gorm:"uniqueIndex;not null" json:"code"`
 	Date        string  `json:"date"`
 	Category    string  `json:"category"`
 	Channel     string  `json:"channel"`
@@ -15,7 +16,7 @@ type Expense struct {
 
 // MonthBudget represents financial boundaries
 type MonthBudget struct {
-	ID           string  `gorm:"primaryKey" json:"id"`
+	ID           uint    `gorm:"primaryKey;autoIncrement" json:"id"`
 	Year         int     `json:"year"`
 	Month        int     `json:"month"`
 	Category     string  `json:"category"`

@@ -53,13 +53,23 @@ func AuthRequired(c *fiber.Ctx) error {
 		})
 	}
 
-	userID, ok := claims["userId"].(string)
-	if !ok || userID == "" {
+	userIDVal := claims["userId"]
+	var userIDValStr string
+	switch v := userIDVal.(type) {
+	case float64:
+		userIDValStr = fmt.Sprintf("%.0f", v)
+	case string:
+		userIDValStr = v
+	default:
+		userIDValStr = fmt.Sprintf("%v", v)
+	}
+
+	if userIDValStr == "" || userIDValStr == "<nil>" {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid token claims"})
 	}
 
 	var user models.AppUser
-	if err := database.DB.Select("id", "role", "is_active").First(&user, "id = ?", userID).Error; err != nil || !user.IsActive {
+	if err := database.DB.Select("id", "role", "is_active").First(&user, "id = ?", userIDValStr).Error; err != nil || !user.IsActive {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Account is disabled or no longer exists"})
 	}
 

@@ -22,6 +22,9 @@ func CreateGoodsIssue(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
+	if req.Qty <= 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "qty must be greater than zero"})
+	}
 
 	var product models.Product
 	if err := database.DB.First(&product, "sku = ?", req.SKU).Error; err != nil {
@@ -35,20 +38,25 @@ func CreateGoodsIssue(c *fiber.Ctx) error {
 
 	var gi models.GoodsIssue
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
-		id, err := NextID(tx, "GI-2026-", &models.GoodsIssue{}, "id")
+		code, err := NextCode(tx, "GI-2026-", &models.GoodsIssue{}, "code")
 		if err != nil {
 			return err
 		}
 
 		gi = models.GoodsIssue{
-			ID:       id,
-			SKU:      req.SKU,
-			SkuName:  product.Name,
-			Qty:      req.Qty,
-			Reason:   req.Reason,
-			Note:     req.Note,
-			Date:     time.Now().Format("2006-01-02"),
-			IssuedBy: username.(string),
+			Code:      code,
+			ProductID: product.ID,
+			SKU:       req.SKU,
+			SkuName:   product.Name,
+			Qty:       req.Qty,
+			Reason:    req.Reason,
+			Note:      req.Note,
+			Date:      time.Now().Format("2006-01-02"),
+			IssuedBy:  username.(string),
+		}
+
+		if err := tx.Create(&gi).Error; err != nil {
+			return err
 		}
 
 		if product.IsBundle {
@@ -73,25 +81,7 @@ func CreateGoodsIssue(c *fiber.Ctx) error {
 					if cp.Stock-cp.ReservedQty < needed {
 						return fmt.Errorf("Component %s stock not sufficient", comp.ComponentSku)
 					}
-
-					// Deduct stock
-					cp.Stock -= needed
-					if err := tx.Save(&cp).Error; err != nil {
-						return err
-					}
-
-					// Create Stock Movement
-					movement := models.StockMovement{
-						ID:        fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), comp.ComponentSku),
-						SKU:       comp.ComponentSku,
-						Type:      "OUT",
-						Qty:       needed,
-						RefDoc:    id,
-						Date:      gi.Date,
-						Note:      fmt.Sprintf("Bundle GI: %s × %d → %s", product.SKU, req.Qty, comp.ComponentSku),
-						ChangedBy: username.(string),
-					}
-					if err := tx.Create(&movement).Error; err != nil {
+					if err := deductFefoStock(tx, comp.ComponentSku, needed, gi.Code, &gi.ID, username.(string)); err != nil {
 						return err
 					}
 				}
@@ -103,13 +93,9 @@ func CreateGoodsIssue(c *fiber.Ctx) error {
 				return fmt.Errorf("Stock not sufficient for %s", product.Name)
 			}
 
-			if err := deductFefoStock(tx, req.SKU, req.Qty, id, username.(string)); err != nil {
+			if err := deductFefoStock(tx, req.SKU, req.Qty, gi.Code, &gi.ID, username.(string)); err != nil {
 				return err
 			}
-		}
-
-		if err := tx.Create(&gi).Error; err != nil {
-			return err
 		}
 
 		return nil
@@ -149,33 +135,37 @@ func CreateStockReturn(c *fiber.Ctx) error {
 
 	var sr models.StockReturn
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
-		id, err := NextID(tx, "RET-2026-", &models.StockReturn{}, "id")
+		code, err := NextCode(tx, "RET-2026-", &models.StockReturn{}, "code")
 		if err != nil {
 			return err
 		}
 
 		channel := req.Channel
+		var soID *uint
 		if req.SoRef != "" {
 			var so models.SalesOrder
-			if err := tx.First(&so, "id = ?", req.SoRef).Error; err == nil {
+			if err := tx.First(&so, "id = ? OR code = ?", req.SoRef, req.SoRef).Error; err == nil {
+				soID = &so.ID
 				channel = string(so.Channel)
 			}
 		}
 
 		sr = models.StockReturn{
-			ID:         id,
-			SoRef:      req.SoRef,
-			SKU:        req.SKU,
-			SkuName:    product.Name,
-			Qty:        req.Qty,
-			Condition:  req.Condition,
-			Reason:     req.Reason,
-			Note:       req.Note,
-			Date:       time.Now().Format("2006-01-02"),
-			ReturnedBy: username.(string),
-			Refunded:   false,
-			Channel:    channel,
-			Status:     "Pending",
+			Code:         code,
+			SalesOrderID: soID,
+			SoRef:        req.SoRef,
+			ProductID:    product.ID,
+			SKU:          req.SKU,
+			SkuName:      product.Name,
+			Qty:          req.Qty,
+			Condition:    req.Condition,
+			Reason:       req.Reason,
+			Note:         req.Note,
+			Date:         time.Now().Format("2006-01-02"),
+			ReturnedBy:   username.(string),
+			Refunded:     false,
+			Channel:      channel,
+			Status:       "Pending",
 		}
 
 		if err := tx.Create(&sr).Error; err != nil {
@@ -207,7 +197,7 @@ func UpdateStockReturnStatus(c *fiber.Ctx) error {
 	}
 	var sr models.StockReturn
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.First(&sr, "id = ?", id).Error; err != nil {
+		if err := tx.First(&sr, "id = ? OR code = ?", id, id).Error; err != nil {
 			return err
 		}
 		if sr.Status != "Pending" {
@@ -225,14 +215,17 @@ func UpdateStockReturnStatus(c *fiber.Ctx) error {
 					return err
 				}
 				movement := models.StockMovement{
-					ID:        fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), sr.SKU),
-					SKU:       sr.SKU,
-					Type:      "IN",
-					Qty:       sr.Qty,
-					RefDoc:    sr.ID,
-					Date:      time.Now().Format("2006-01-02"),
-					Note:      fmt.Sprintf("รับคืน: %s - สภาพดี", sr.Reason),
-					ChangedBy: username.(string),
+					Code:       fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), sr.SKU),
+					ProductID:  product.ID,
+					SKU:        sr.SKU,
+					Type:       "IN",
+					Qty:        sr.Qty,
+					RefDoc:     sr.Code,
+					RefDocType: "stock_returns",
+					RefDocID:   &sr.ID,
+					Date:       time.Now().Format("2006-01-02"),
+					Note:       fmt.Sprintf("รับคืน: %s - สภาพดี", sr.Reason),
+					ChangedBy:  username.(string),
 				}
 				if err := tx.Create(&movement).Error; err != nil {
 					return err
@@ -274,16 +267,20 @@ func CreateStockAdjustment(c *fiber.Ctx) error {
 
 	var adj models.StockAdjustment
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
-		id, err := NextID(tx, "ADJ-2026-", &models.StockAdjustment{}, "id")
+		code, err := NextCode(tx, "ADJ-2026-", &models.StockAdjustment{}, "code")
 		if err != nil {
 			return err
 		}
 
 		adj = models.StockAdjustment{
-			ID:        id,
+			Code:      code,
 			Date:      time.Now().Format("2006-01-02"),
 			CheckedBy: username.(string),
 			Note:      req.Note,
+		}
+
+		if err := tx.Create(&adj).Error; err != nil {
+			return err
 		}
 
 		var items []models.StockAdjustmentItem
@@ -295,12 +292,16 @@ func CreateStockAdjustment(c *fiber.Ctx) error {
 
 			variance := item.ActualQty - p.Stock
 			adjItem := models.StockAdjustmentItem{
-				AdjustmentID: id,
-				SKU:          item.SKU,
-				SkuName:      p.Name,
-				SystemQty:    p.Stock,
-				ActualQty:    item.ActualQty,
-				Variance:     variance,
+				StockAdjustmentID: adj.ID,
+				ProductID:         p.ID,
+				SKU:               item.SKU,
+				SkuName:           p.Name,
+				SystemQty:         p.Stock,
+				ActualQty:         item.ActualQty,
+				Variance:          variance,
+			}
+			if err := tx.Create(&adjItem).Error; err != nil {
+				return err
 			}
 			items = append(items, adjItem)
 
@@ -322,14 +323,17 @@ func CreateStockAdjustment(c *fiber.Ctx) error {
 
 				// Create Stock Movement
 				movement := models.StockMovement{
-					ID:        fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), item.SKU),
-					SKU:       item.SKU,
-					Type:      moveType,
-					Qty:       absVar,
-					RefDoc:    id,
-					Date:      adj.Date,
-					Note:      fmt.Sprintf("ปรับสต๊อก: นับจริง %d", item.ActualQty),
-					ChangedBy: username.(string),
+					Code:       fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), item.SKU),
+					ProductID:  p.ID,
+					SKU:        item.SKU,
+					Type:       moveType,
+					Qty:        absVar,
+					RefDoc:     adj.Code,
+					RefDocType: "stock_adjustments",
+					RefDocID:   &adj.ID,
+					Date:       adj.Date,
+					Note:       fmt.Sprintf("ปรับสต๊อก: นับจริง %d", item.ActualQty),
+					ChangedBy:  username.(string),
 				}
 				if err := tx.Create(&movement).Error; err != nil {
 					return err
@@ -338,7 +342,7 @@ func CreateStockAdjustment(c *fiber.Ctx) error {
 		}
 
 		adj.Items = items
-		if err := tx.Create(&adj).Error; err != nil {
+		if err := tx.Save(&adj).Error; err != nil {
 			return err
 		}
 
@@ -349,7 +353,7 @@ func CreateStockAdjustment(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	database.DB.Preload("Items").First(&adj, "id = ?", adj.ID)
+	database.DB.Preload("Items").First(&adj, adj.ID)
 	return c.JSON(adj)
 }
 
@@ -382,13 +386,14 @@ func CreateStockTransfer(c *fiber.Ctx) error {
 
 	var st models.StockTransfer
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
-		id, err := NextID(tx, "TRF-2026-", &models.StockTransfer{}, "id")
+		code, err := NextCode(tx, "TRF-2026-", &models.StockTransfer{}, "code")
 		if err != nil {
 			return err
 		}
 
 		st = models.StockTransfer{
-			ID:            id,
+			Code:          code,
+			ProductID:     product.ID,
 			SKU:           req.SKU,
 			SkuName:       product.Name,
 			Qty:           req.Qty,
@@ -405,14 +410,17 @@ func CreateStockTransfer(c *fiber.Ctx) error {
 
 		// Create Stock Movement
 		movement := models.StockMovement{
-			ID:        fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), req.SKU),
-			SKU:       req.SKU,
-			Type:      "OUT",
-			Qty:       req.Qty,
-			RefDoc:    id,
-			Date:      st.Date,
-			Note:      fmt.Sprintf("โอนย้าย %s → %s", req.FromLocation, req.ToLocation),
-			ChangedBy: username.(string),
+			Code:       fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), req.SKU),
+			ProductID:  product.ID,
+			SKU:        req.SKU,
+			Type:       "OUT",
+			Qty:        req.Qty,
+			RefDoc:     st.Code,
+			RefDocType: "stock_transfers",
+			RefDocID:   &st.ID,
+			Date:       st.Date,
+			Note:       fmt.Sprintf("โอนย้าย %s → %s", req.FromLocation, req.ToLocation),
+			ChangedBy:  username.(string),
 		}
 		if err := tx.Create(&movement).Error; err != nil {
 			return err

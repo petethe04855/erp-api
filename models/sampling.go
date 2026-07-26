@@ -2,8 +2,10 @@ package models
 
 // SamplingCampaign represents free sampling drives
 type SamplingCampaign struct {
-	ID         string              `gorm:"primaryKey" json:"id"`
+	ID         uint                `gorm:"primaryKey;autoIncrement" json:"id"`
+	Code       string              `json:"code"`
 	Name       string              `json:"name"`
+	ProductID  *uint               `gorm:"index" json:"productId,omitempty"`
 	SKU        string              `json:"sku"`
 	SkuName    string              `json:"skuName"`
 	TargetQty  int                 `json:"targetQty"`
@@ -12,17 +14,17 @@ type SamplingCampaign struct {
 	StartDate  string              `json:"startDate"`
 	EndDate    string              `json:"endDate"`
 	Status     string              `json:"status"` // Active, Completed, Cancelled
-	Recipients []SamplingRecipient `gorm:"foreignKey:CampaignID" json:"recipients"`
+	Recipients []SamplingRecipient `gorm:"foreignKey:SamplingCampaignID" json:"recipients"`
 }
 
 // SamplingRecipient represents users registered to get trial packs
 type SamplingRecipient struct {
-	ID         string `gorm:"primaryKey" json:"id"`
-	CampaignID string `gorm:"index" json:"-"`
-	Name       string `json:"name"`
-	Contact    string `json:"contact"`
-	QtyGiven   int    `json:"qtyGiven"`
-	Date       string `json:"date"`
-	Feedback   string `json:"feedback"`
-	Converted  bool   `json:"converted"`
+	ID                 uint   `gorm:"primaryKey;autoIncrement" json:"id"`
+	SamplingCampaignID uint   `gorm:"index" json:"samplingCampaignId"`
+	Name               string `json:"name"`
+	Contact            string `json:"contact"`
+	QtyGiven           int    `json:"qtyGiven"`
+	Date               string `json:"date"`
+	Feedback           string `json:"feedback"`
+	Converted          bool   `json:"converted"`
 }

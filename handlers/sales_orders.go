@@ -37,15 +37,20 @@ func CreateSalesOrder(c *fiber.Ctx) error {
 
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
 		// Verify and reserve stock
-		for _, line := range so.Lines {
+		for i, line := range so.Lines {
 			var p models.Product
 			if err := tx.First(&p, "sku = ?", line.SKU).Error; err != nil {
 				return fmt.Errorf("Product %s not found", line.SKU)
+			}
+			if !isSellableProduct(p) {
+				return fmt.Errorf("sales item %s must be a Finished Product", line.SKU)
 			}
 			available := p.Stock - p.ReservedQty
 			if available < line.Qty {
 				return fmt.Errorf("สต็อคไม่พอ: %s มีพร้อมขาย %d ชิ้น", p.Name, available)
 			}
+
+			so.Lines[i].ProductID = p.ID
 
 			// Apply reserve qty
 			p.ReservedQty += line.Qty
@@ -54,12 +59,11 @@ func CreateSalesOrder(c *fiber.Ctx) error {
 			}
 		}
 
-		// Generate ID
-		id, err := NextID(tx, "SO-2026-", &models.SalesOrder{}, "id")
+		code, err := NextCode(tx, "SO-2026-", &models.SalesOrder{}, "code")
 		if err != nil {
 			return err
 		}
-		so.ID = id
+		so.Code = code
 		so.Items = len(so.Lines)
 
 		if so.Date == "" {
@@ -72,12 +76,13 @@ func CreateSalesOrder(c *fiber.Ctx) error {
 			so.Channel = "Manual"
 		}
 
-		for i := range so.Lines {
-			so.Lines[i].OrderID = id
-		}
-
 		if err := tx.Create(&so).Error; err != nil {
 			return err
+		}
+
+		for i := range so.Lines {
+			so.Lines[i].SalesOrderID = so.ID
+			tx.Model(&so.Lines[i]).Update("sales_order_id", so.ID)
 		}
 
 		// Create Audit Event
@@ -100,7 +105,7 @@ func CreateSalesOrder(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	database.DB.Preload("Lines").Preload("AuditTrail").First(&so, "id = ?", so.ID)
+	database.DB.Preload("Lines").Preload("AuditTrail").First(&so, so.ID)
 	return c.JSON(so)
 }
 
@@ -115,7 +120,7 @@ func UpdateSalesOrderStatus(c *fiber.Ctx) error {
 	}
 
 	var so models.SalesOrder
-	if err := database.DB.Preload("Lines").First(&so, "id = ?", id).Error; err != nil {
+	if err := database.DB.Preload("Lines").First(&so, "id = ? OR code = ?", id, id).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Sales order not found"})
 	}
 
@@ -180,13 +185,13 @@ func UpdateSalesOrderStatus(c *fiber.Ctx) error {
 								required *= 1000
 							}
 							neededQty := int(math.Ceil(required * float64(line.Qty)))
-							if err := deductFefoStock(tx, comp.ComponentSku, neededQty, so.ID, username.(string)); err != nil {
+							if err := deductFefoStock(tx, comp.ComponentSku, neededQty, so.Code, &so.ID, username.(string)); err != nil {
 								return err
 							}
 						}
 					}
 				} else {
-					if err := deductFefoStock(tx, line.SKU, line.Qty, so.ID, username.(string)); err != nil {
+					if err := deductFefoStock(tx, line.SKU, line.Qty, so.Code, &so.ID, username.(string)); err != nil {
 						return err
 					}
 				}
@@ -213,12 +218,12 @@ func UpdateSalesOrderStatus(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	database.DB.Preload("Lines").Preload("AuditTrail").First(&so, "id = ?", so.ID)
+	database.DB.Preload("Lines").Preload("AuditTrail").First(&so, so.ID)
 	return c.JSON(so)
 }
 
 // Helper: Deduct stock from earliest expiry lots (FEFO)
-func deductFefoStock(tx *gorm.DB, sku string, qty int, refDoc string, by string) error {
+func deductFefoStock(tx *gorm.DB, sku string, qty int, refDocCode string, refDocID *uint, by string) error {
 	var lots []models.StockLot
 	// Query non-empty lots, sorting by expiryDate ascending, empty dates at the end
 	err := tx.Where("sku = ? AND remaining_qty > 0", sku).
@@ -227,6 +232,9 @@ func deductFefoStock(tx *gorm.DB, sku string, qty int, refDoc string, by string)
 	if err != nil {
 		return err
 	}
+
+	var prod models.Product
+	_ = tx.First(&prod, "sku = ?", sku)
 
 	rem := qty
 	for i := range lots {
@@ -247,14 +255,17 @@ func deductFefoStock(tx *gorm.DB, sku string, qty int, refDoc string, by string)
 
 		// Create Stock Movement
 		movement := models.StockMovement{
-			ID:        fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), lot.Lot),
-			SKU:       sku,
-			Type:      "OUT",
-			Qty:       deduct,
-			RefDoc:    refDoc,
-			Date:      time.Now().Format("2006-01-02"),
-			Note:      fmt.Sprintf("FEFO: lot %s exp %s", lot.Lot, lot.ExpiryDate),
-			ChangedBy: by,
+			Code:       fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), lot.Lot),
+			ProductID:  prod.ID,
+			SKU:        sku,
+			Type:       "OUT",
+			Qty:        deduct,
+			RefDoc:     refDocCode,
+			RefDocType: "sales_orders",
+			RefDocID:   refDocID,
+			Date:       time.Now().Format("2006-01-02"),
+			Note:       fmt.Sprintf("FEFO: lot %s exp %s", lot.Lot, lot.ExpiryDate),
+			ChangedBy:  by,
 		}
 		if err := tx.Create(&movement).Error; err != nil {
 			return err
@@ -262,8 +273,11 @@ func deductFefoStock(tx *gorm.DB, sku string, qty int, refDoc string, by string)
 	}
 
 	// Update overall product stock count
-	var prod models.Product
-	if err := tx.First(&prod, "sku = ?", sku).Error; err == nil {
+	if rem > 0 {
+		return fmt.Errorf("lot stock not sufficient for %s: missing %d", sku, rem)
+	}
+
+	if prod.ID > 0 {
 		prod.Stock -= qty
 		if prod.Stock < 0 {
 			prod.Stock = 0
@@ -274,6 +288,10 @@ func deductFefoStock(tx *gorm.DB, sku string, qty int, refDoc string, by string)
 	}
 
 	return nil
+}
+
+func isSellableProduct(product models.Product) bool {
+	return product.Type == "Finished Product" || product.Type == "Bundle" || product.Type == "Cat" || product.Type == "Dog"
 }
 
 // POST /api/invoices
@@ -304,11 +322,11 @@ func CreateInvoice(c *fiber.Ctx) error {
 			}
 		}
 
-		id, err := NextID(tx, "INV-2026-", &models.Invoice{}, "id")
+		code, err := NextCode(tx, "INV-2026-", &models.Invoice{}, "code")
 		if err != nil {
 			return err
 		}
-		inv.ID = id
+		inv.Code = code
 		if inv.IssueDate == "" {
 			inv.IssueDate = time.Now().Format("2006-01-02")
 		}
@@ -343,7 +361,7 @@ func CreateInvoice(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	database.DB.Preload("AuditTrail").First(&inv, "id = ?", inv.ID)
+	database.DB.Preload("AuditTrail").First(&inv, inv.ID)
 	return c.JSON(inv)
 }
 
@@ -351,7 +369,7 @@ func CreateInvoice(c *fiber.Ctx) error {
 func CreateInvoiceFromSO(c *fiber.Ctx) error {
 	soID := c.Params("soId")
 	var so models.SalesOrder
-	if err := database.DB.Preload("Lines").First(&so, "id = ?", soID).Error; err != nil {
+	if err := database.DB.Preload("Lines").First(&so, "id = ? OR code = ?", soID, soID).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Sales order not found"})
 	}
 
@@ -363,26 +381,27 @@ func CreateInvoiceFromSO(c *fiber.Ctx) error {
 
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
 		var count int64
-		tx.Model(&models.Invoice{}).Where("so_ref = ?", soID).Count(&count)
+		tx.Model(&models.Invoice{}).Where("sales_order_id = ? OR so_ref = ?", so.ID, so.Code).Count(&count)
 		if count > 0 {
-			tx.Preload("AuditTrail").First(&inv, "so_ref = ?", soID)
+			tx.Preload("AuditTrail").First(&inv, "sales_order_id = ? OR so_ref = ?", so.ID, so.Code)
 			return nil
 		}
 
-		id, err := NextID(tx, "INV-2026-", &models.Invoice{}, "id")
+		code, err := NextCode(tx, "INV-2026-", &models.Invoice{}, "code")
 		if err != nil {
 			return err
 		}
 
 		inv = models.Invoice{
-			ID:        id,
-			SoRef:     so.ID,
-			Customer:  so.Customer,
-			IssueDate: time.Now().Format("2006-01-02"),
-			DueDate:   time.Now().AddDate(0, 0, 14).Format("2006-01-02"),
-			Amount:    so.Amount,
-			Paid:      0,
-			Status:    "Unpaid",
+			Code:         code,
+			SalesOrderID: &so.ID,
+			SoRef:        so.Code,
+			Customer:     so.Customer,
+			IssueDate:    time.Now().Format("2006-01-02"),
+			DueDate:      time.Now().AddDate(0, 0, 14).Format("2006-01-02"),
+			Amount:       so.Amount,
+			Paid:         0,
+			Status:       "Unpaid",
 		}
 
 		if err := tx.Create(&inv).Error; err != nil {
@@ -390,7 +409,7 @@ func CreateInvoiceFromSO(c *fiber.Ctx) error {
 		}
 
 		// Update sales order invRef link
-		so.InvRef = inv.ID
+		so.InvRef = inv.Code
 		if err := tx.Save(&so).Error; err != nil {
 			return err
 		}
@@ -401,7 +420,7 @@ func CreateInvoiceFromSO(c *fiber.Ctx) error {
 			Action:    "Created",
 			By:        username.(string),
 			At:        getNowStr(),
-			Note:      fmt.Sprintf("สร้างใบแจ้งหนี้จาก SO %s", soID),
+			Note:      fmt.Sprintf("สร้างใบแจ้งหนี้จาก SO %s", so.Code),
 		}
 		if err := tx.Create(&audit).Error; err != nil {
 			return err
@@ -414,7 +433,7 @@ func CreateInvoiceFromSO(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	database.DB.Preload("AuditTrail").First(&inv, "id = ?", inv.ID)
+	database.DB.Preload("AuditTrail").First(&inv, inv.ID)
 	return c.JSON(inv)
 }
 
@@ -429,7 +448,7 @@ func RecordPayment(c *fiber.Ctx) error {
 	}
 
 	var inv models.Invoice
-	if err := database.DB.Preload("AuditTrail").First(&inv, "id = ?", id).Error; err != nil {
+	if err := database.DB.Preload("AuditTrail").First(&inv, "id = ? OR code = ?", id, id).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Invoice not found"})
 	}
 
@@ -473,6 +492,6 @@ func RecordPayment(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	database.DB.Preload("AuditTrail").First(&inv, "id = ?", inv.ID)
+	database.DB.Preload("AuditTrail").First(&inv, inv.ID)
 	return c.JSON(inv)
 }

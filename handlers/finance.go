@@ -22,11 +22,11 @@ func CreateExpense(c *fiber.Ctx) error {
 	}
 
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
-		id, err := NextID(tx, "EXP-2026-", &models.Expense{}, "id")
+		code, err := NextCode(tx, "EXP-2026-", &models.Expense{}, "code")
 		if err != nil {
 			return err
 		}
-		exp.ID = id
+		exp.Code = code
 		if exp.Date == "" {
 			exp.Date = time.Now().Format("2006-01-02")
 		}
@@ -65,12 +65,7 @@ func UpsertBudget(c *fiber.Ctx) error {
 			}
 		} else if err == gorm.ErrRecordNotFound {
 			// Create new
-			id, err := NextID(tx, "BUD-", &models.MonthBudget{}, "id")
-			if err != nil {
-				return err
-			}
 			budget = models.MonthBudget{
-				ID:           id,
 				Year:         req.Year,
 				Month:        req.Month,
 				Category:     req.Category,

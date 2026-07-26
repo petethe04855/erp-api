@@ -3,7 +3,6 @@ package database
 import (
 	"fmt"
 	"log"
-	"strings"
 
 	"chawy-erp-api/models"
 
@@ -25,6 +24,7 @@ func CleanMockData() {
 		"manual_orders",
 		"month_budgets",
 		"tiktok_orders",
+		"boms",
 		"bundle_components",
 		"products",
 		"goods_receive_items",
@@ -61,6 +61,7 @@ func SeedData() {
 	if userCount == 0 {
 		log.Println("Seeding default Admin and Roles...")
 		// Hash password "admin123"
+
 		hashedPassword, err := bcrypt.GenerateFromPassword([]byte("admin123"), bcrypt.DefaultCost)
 		if err != nil {
 			log.Fatalf("Failed to hash password: %v", err)
@@ -68,16 +69,9 @@ func SeedData() {
 		hashedPasswordStr := string(hashedPassword)
 
 		users := []models.AppUser{
-			{ID: "USR-001", Name: "Chawy", Role: "owner", Password: hashedPasswordStr},
-			{ID: "USR-002", Name: "จอย", Role: "sales", Password: hashedPasswordStr},
-			{ID: "USR-003", Name: "แพร", Role: "warehouse", Password: hashedPasswordStr},
-			{ID: "USR-004", Name: "จ็อบ", Role: "accountant", Password: hashedPasswordStr},
-			{ID: "admin", Name: "Admin User", Role: "owner", Password: hashedPasswordStr},
+			{Email: "admin@mail.com", Firstname: "Admin", Lastname: "System", Role: "owner", Password: hashedPasswordStr},
 		}
 		for _, u := range users {
-			if u.Email == "" {
-				u.Email = strings.ToLower(u.ID) + "@chawypet.local"
-			}
 			DB.Create(&u)
 		}
 	}
@@ -157,6 +151,22 @@ func SeedData() {
 		}
 		DB.Create(&payroll)
 	}
+
+	var productCount int64
+	DB.Model(&models.Product{}).Count(&productCount)
+	// if productCount == 0 {
+	// 	log.Println("Seeding Item Master Records for BOM demo...")
+	// 	products := []models.Product{}
+	// 	for _, p := range products {
+	// 		DB.Create(&p)
+	// 	}
+	// }
+
+	var componentCount int64
+	DB.Model(&models.BundleComponent{}).Count(&componentCount)
+
+	var bomCount int64
+	DB.Model(&models.BOM{}).Count(&bomCount)
 
 	log.Println("Seeding configuration/default data completed.")
 }
