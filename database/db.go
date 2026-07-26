@@ -34,7 +34,7 @@ func ConnectDB() {
 			user = "postgres"
 		}
 		if password == "" {
-			password = "password"
+			log.Fatal("DB_PASSWORD or DATABASE_URL must be configured")
 		}
 		if dbname == "" {
 			dbname = "chawy_erp"

@@ -18,6 +18,7 @@ main
 .env*.local
 .env.local
 .env.example
+tokens.json
 
 
 # IDEs and editors
