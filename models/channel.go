@@ -1,5 +1,23 @@
 package models
 
+import "time"
+
+// TiktokConnection holds the server-side OAuth credentials for the TikTok Shop
+// connection. Token values are encrypted before being persisted.
+type TiktokConnection struct {
+	ID                    uint      `gorm:"primaryKey" json:"id"`
+	AccessToken           string    `json:"-"`
+	RefreshToken          string    `json:"-"`
+	AccessTokenExpiresAt  time.Time `json:"accessTokenExpiresAt"`
+	RefreshTokenExpiresAt time.Time `json:"refreshTokenExpiresAt"`
+	ShopCipher            string    `json:"shopCipher"`
+	SellerName            string    `json:"sellerName"`
+	SellerBaseRegion      string    `json:"sellerBaseRegion"`
+	GrantedScopes         string    `json:"grantedScopes"`
+	CreatedAt             time.Time `json:"createdAt"`
+	UpdatedAt             time.Time `json:"updatedAt"`
+}
+
 // TiktokOrder represents a TikTok shop sales order
 type TiktokOrder struct {
 	ID            string  `gorm:"primaryKey" json:"id"`

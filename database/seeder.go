@@ -24,6 +24,7 @@ func CleanMockData() {
 		"manual_orders",
 		"month_budgets",
 		"tiktok_orders",
+		"tiktok_connections",
 		"boms",
 		"bundle_components",
 		"products",

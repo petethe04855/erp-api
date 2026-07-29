@@ -69,6 +69,7 @@ func ConnectDB() {
 			"manual_orders",
 			"month_budgets",
 			"tiktok_orders",
+			"tiktok_connections",
 			"bundle_components",
 			"products",
 			"goods_receive_items",
@@ -131,6 +132,7 @@ func ConnectDB() {
 		&models.Expense{},
 		&models.MonthBudget{},
 		&models.TiktokOrder{},
+		&models.TiktokConnection{},
 		&models.ManualOrder{},
 		&models.ContentScheduleItem{},
 		&models.LiveSession{},
@@ -145,6 +147,7 @@ func ConnectDB() {
 		&models.GoodsReceiveItem{},
 		&models.SamplingRecipient{},
 		&models.AuditEvent{},
+		&models.TiktokOAuthState{},
 	)
 	if err != nil {
 		log.Fatalf("Database migration failed: %v", err)
