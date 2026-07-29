@@ -1,0 +1,75 @@
+{
+  "info": {
+    "name": "Chawy ERP - TikTok Shop",
+    "description": "Test the TikTok Shop connection in this order: Login, Start OAuth, complete authorization in a browser, then check Connection and Products. Set TIKTOK_SERVICE_ID on the API server first. The callback is public and is invoked by TikTok; do not add an Authorization header to it.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "apiBaseUrl", "value": "http://localhost:8080" },
+    { "key": "email", "value": "admin@mail.com" },
+    { "key": "password", "value": "admin123" },
+    { "key": "accessToken", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "1. Login",
+      "event": [{
+        "listen": "test",
+        "script": { "type": "text/javascript", "exec": [
+          "pm.test('Login succeeds', () => pm.expect(pm.response.code).to.eql(200));",
+          "const body = pm.response.json();",
+          "const token = body.data?.token || body.token;",
+          "if (token) pm.collectionVariables.set('accessToken', token);"
+        ] }
+      }],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}" },
+        "url": "{{apiBaseUrl}}/api/auth/login"
+      }
+    },
+    {
+      "name": "2. Start TikTok OAuth (owner only)",
+      "event": [{
+        "listen": "test",
+        "script": { "type": "text/javascript", "exec": [
+          "pm.test('Authorization URL returned', () => pm.expect(pm.response.code).to.eql(200));",
+          "const body = pm.response.json();",
+          "const authorizationUrl = body.data?.authorizationUrl || body.authorizationUrl;",
+          "if (authorizationUrl) console.log('Open this URL in the same browser that will receive the callback:', authorizationUrl);"
+        ] }
+      }],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
+        "url": "{{apiBaseUrl}}/api/tiktok/connect"
+      }
+    },
+    {
+      "name": "3. Callback (TikTok calls this automatically)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{apiBaseUrl}}/api/tiktok/callback?code=PASTE_TIKTOK_CODE&state=PASTE_TIKTOK_STATE"
+      },
+      "description": "Do not normally send this request from Postman. Open the authorizationUrl from request 2 in a browser and let TikTok redirect to the callback. It must include code and state, and the browser must keep the tiktok_oauth_state cookie. No Authorization header is required."
+    },
+    {
+      "name": "4. Connection status",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
+        "url": "{{apiBaseUrl}}/api/tiktok/connection"
+      }
+    },
+    {
+      "name": "5. Search active products",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
+        "url": "{{apiBaseUrl}}/api/tiktok/products?status=ACTIVATE&page_size=20"
+      }
+    }
+  ]
+}

@@ -1,0 +1,496 @@
+package handlers
+
+import (
+	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"sort"
+	"strings"
+	"time"
+
+	"chawy-erp-api/database"
+	"chawy-erp-api/models"
+	"github.com/gofiber/fiber/v2"
+)
+
+const (
+	tiktokAPIBase       = "https://open-api.tiktokglobalshop.com"
+	tiktokTokenURL      = "https://auth.tiktok-shops.com/api/v2/token/get"
+	tiktokRefreshURL    = "https://auth.tiktok-shops.com/api/v2/token/refresh"
+	tiktokRefreshWindow = 24 * time.Hour
+)
+
+type tiktokTokenResponse struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Data    struct {
+		AccessToken          string   `json:"access_token"`
+		RefreshToken         string   `json:"refresh_token"`
+		AccessTokenExpireIn  int64    `json:"access_token_expire_in"`
+		RefreshTokenExpireIn int64    `json:"refresh_token_expire_in"`
+		ShopCipher           string   `json:"shop_cipher"`
+		SellerName           string   `json:"seller_name"`
+		SellerBaseRegion     string   `json:"seller_base_region"`
+		GrantedScopes        []string `json:"granted_scopes"`
+	} `json:"data"`
+}
+
+func tiktokCredentials() (string, string, error) {
+	key, secret := strings.TrimSpace(os.Getenv("TIKTOK_APP_KEY")), strings.TrimSpace(os.Getenv("TIKTOK_APP_SECRET"))
+	if key == "" || secret == "" {
+		return "", "", errors.New("TikTok is not configured: TIKTOK_APP_KEY and TIKTOK_APP_SECRET are required")
+	}
+	return key, secret, nil
+}
+
+// StartTiktokConnect returns an authorization URL. The caller redirects the
+// browser to it; credentials and state never leave the server as application data.
+func StartTiktokConnect(c *fiber.Ctx) error {
+	_, _, err := tiktokCredentials()
+	if err != nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})
+	}
+	serviceID := strings.TrimSpace(os.Getenv("TIKTOK_SERVICE_ID"))
+	if serviceID == "" {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "TikTok authorization is not configured: TIKTOK_SERVICE_ID is required"})
+	}
+	state, err := newTiktokState()
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(
+			fiber.Map{"error": "Unable to start TikTok authorization"},
+		)
+	}
+
+	now := time.Now()
+	database.DB.Where("expires_at < ?", now).Delete(&models.TiktokOAuthState{})
+
+	oauthState := models.TiktokOAuthState{
+		StateHash: hashTiktokState(state),
+		ExpiresAt: now.Add(10 * time.Minute),
+	}
+	if err := database.DB.Create(&oauthState).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(
+			fiber.Map{"error": "Unable to save TikTok authorization state"},
+		)
+	}
+
+	authorizeURL := os.Getenv("TIKTOK_AUTHORIZE_URL")
+	if authorizeURL == "" {
+		authorizeURL = "https://services.tiktokshop.com/open/authorize"
+	}
+	u, err := url.Parse(authorizeURL)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "TIKTOK_AUTHORIZE_URL is invalid"})
+	}
+	q := u.Query()
+	q.Set("service_id", serviceID)
+	q.Set("state", state)
+
+	u.RawQuery = q.Encode()
+	return c.JSON(fiber.Map{"authorizationUrl": u.String()})
+}
+
+// TiktokCallback validates the OAuth state, exchanges the one-time code and
+// stores the encrypted connection. Configure this exact callback URL in Partner Center.
+func TiktokCallback(c *fiber.Ctx) error {
+	code, state := c.Query("code"), c.Query("state")
+
+	if code == "" || state == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(
+			fiber.Map{"error": "TikTok authorization code and state are required"},
+		)
+	}
+
+	appKey, appSecret, err := tiktokCredentials()
+	if err != nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(
+			fiber.Map{"error": err.Error()},
+		)
+	}
+
+	now := time.Now()
+	result := database.DB.Model(&models.TiktokOAuthState{}).
+		Where(
+			"state_hash = ? AND expires_at > ? AND used_at IS NULL",
+			hashTiktokState(state), now,
+		).
+		Update("used_at", now)
+
+	if result.Error != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(
+			fiber.Map{"error": "Unable to validate TikTok authorization state"},
+		)
+	}
+	if result.RowsAffected != 1 {
+		return c.Status(fiber.StatusBadRequest).JSON(
+			fiber.Map{"error": "Invalid or expired TikTok authorization response"},
+		)
+	}
+
+	connection, err := exchangeTiktokCode(appKey, appSecret, code)
+	if err != nil {
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
+	}
+	if err := ensureTiktokShopCipher(&connection, appKey, appSecret); err != nil {
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
+	}
+	if err := database.DB.Where("id = ?", 1).Assign(connection).FirstOrCreate(&connection).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Could not save TikTok connection"})
+	}
+
+	if successURL := strings.TrimSpace(os.Getenv("TIKTOK_OAUTH_SUCCESS_URL")); successURL != "" {
+		return c.Redirect(successURL, fiber.StatusFound)
+	}
+	return c.JSON(fiber.Map{"connected": true, "message": "เชื่อมต่อ TikTok Shop สำเร็จ", "shopCipher": connection.ShopCipher, "sellerName": connection.SellerName})
+}
+
+func GetTiktokConnection(c *fiber.Ctx) error {
+	var connection models.TiktokConnection
+	err := database.DB.First(&connection, 1).Error
+	if err != nil {
+		return c.JSON(fiber.Map{"connected": false})
+	}
+	return c.JSON(fiber.Map{
+		"connected":             true,
+		"needsReauthorization":  !connection.RefreshTokenExpiresAt.After(time.Now()),
+		"shopCipher":            connection.ShopCipher,
+		"sellerName":            connection.SellerName,
+		"sellerBaseRegion":      connection.SellerBaseRegion,
+		"grantedScopes":         connection.GrantedScopes,
+		"accessTokenExpiresAt":  connection.AccessTokenExpiresAt,
+		"refreshTokenExpiresAt": connection.RefreshTokenExpiresAt,
+	})
+}
+
+func GetTiktokProducts(c *fiber.Ctx) error {
+	appKey, appSecret, err := tiktokCredentials()
+	if err != nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})
+	}
+	var connection models.TiktokConnection
+	if err := database.DB.First(&connection, 1).Error; err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "TikTok Shop is not connected"})
+	}
+	accessToken, err := ensureTiktokAccessToken(&connection, appKey, appSecret)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": err.Error()})
+	}
+	if err := ensureTiktokShopCipher(&connection, appKey, appSecret); err != nil {
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
+	}
+	if err := database.DB.Save(&connection).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Could not save TikTok shop information"})
+	}
+
+	pageSize := c.QueryInt("page_size", 20)
+	if pageSize < 1 || pageSize > 100 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "page_size must be between 1 and 100"})
+	}
+	body, _ := json.Marshal(fiber.Map{"status": firstNonEmpty(c.Query("status"), "ACTIVATE")})
+	path := "/product/202309/products/search"
+	params := map[string]string{"app_key": appKey, "timestamp": fmt.Sprintf("%d", time.Now().Unix()), "shop_cipher": connection.ShopCipher, "page_size": fmt.Sprint(pageSize)}
+	params["sign"] = tiktokSignature(path, params, string(body), appSecret)
+	req, _ := http.NewRequest(http.MethodPost, tiktokAPIBase+path+"?"+encodeTiktokParams(params), bytes.NewReader(body))
+	req.Header.Set("x-tts-access-token", accessToken)
+	req.Header.Set("Content-Type", "application/json")
+	response, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "TikTok Shop API is unavailable"})
+	}
+	defer response.Body.Close()
+	responseBody, err := io.ReadAll(response.Body)
+	if err != nil {
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Could not read TikTok Shop response"})
+	}
+	var upstream struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	decodeErr := json.Unmarshal(responseBody, &upstream)
+	if response.StatusCode >= 400 {
+		if decodeErr == nil && (upstream.Code != 0 || upstream.Message != "") {
+			message := firstNonEmpty(upstream.Message, "unknown error")
+			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": fmt.Sprintf("TikTok Shop error: %s (code %d)", message, upstream.Code)})
+		}
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": fmt.Sprintf("TikTok Shop rejected the product request (HTTP %d)", response.StatusCode)})
+	}
+	if decodeErr != nil {
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "TikTok Shop returned an invalid product response"})
+	}
+	if upstream.Code != 0 {
+		message := firstNonEmpty(upstream.Message, "unknown error")
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": fmt.Sprintf("TikTok Shop error: %s (code %d)", message, upstream.Code)})
+	}
+	if c.Query("debug") == "true" {
+		return c.JSON(fiber.Map{
+			"response": json.RawMessage(responseBody),
+			"outgoingRequest": fiber.Map{
+				"method": http.MethodPost,
+				"path":   path,
+				"query": fiber.Map{
+					"app_key":     redactTiktokValue(appKey),
+					"timestamp":   params["timestamp"],
+					"shop_cipher": redactTiktokValue(connection.ShopCipher),
+					"page_size":   params["page_size"],
+					"sign":        "[redacted]",
+				},
+				"headers": fiber.Map{
+					"x-tts-access-token": "[redacted]",
+					"content-type":       "application/json",
+				},
+				"body": json.RawMessage(body),
+			},
+		})
+	}
+	return c.Type(fiber.MIMEApplicationJSON).Send(responseBody)
+}
+
+func redactTiktokValue(value string) string {
+	if len(value) <= 4 {
+		return "[redacted]"
+	}
+	return value[:2] + "…" + value[len(value)-2:]
+}
+
+func exchangeTiktokCode(appKey, appSecret, code string) (models.TiktokConnection, error) {
+	u, _ := url.Parse(tiktokTokenURL)
+	q := u.Query()
+	q.Set("app_key", appKey)
+	q.Set("app_secret", appSecret)
+	q.Set("auth_code", code)
+	q.Set("grant_type", "authorized_code")
+	u.RawQuery = q.Encode()
+	response, err := (&http.Client{Timeout: 20 * time.Second}).Get(u.String())
+	if err != nil {
+		return models.TiktokConnection{}, errors.New("TikTok token exchange is unavailable")
+	}
+	defer response.Body.Close()
+	var result tiktokTokenResponse
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		return models.TiktokConnection{}, errors.New("TikTok returned an invalid token response")
+	}
+	if response.StatusCode >= 400 || result.Code != 0 || result.Data.AccessToken == "" {
+		return models.TiktokConnection{}, fmt.Errorf("TikTok token exchange failed: %s", firstNonEmpty(result.Message, "unknown error"))
+	}
+	accessToken, err := encryptTiktokToken(result.Data.AccessToken)
+	if err != nil {
+		return models.TiktokConnection{}, err
+	}
+	refreshToken, err := encryptTiktokToken(result.Data.RefreshToken)
+	if err != nil {
+		return models.TiktokConnection{}, err
+	}
+	return models.TiktokConnection{ID: 1, AccessToken: accessToken, RefreshToken: refreshToken, AccessTokenExpiresAt: time.Unix(result.Data.AccessTokenExpireIn, 0), RefreshTokenExpiresAt: time.Unix(result.Data.RefreshTokenExpireIn, 0), ShopCipher: result.Data.ShopCipher, SellerName: result.Data.SellerName, SellerBaseRegion: result.Data.SellerBaseRegion, GrantedScopes: strings.Join(result.Data.GrantedScopes, ",")}, nil
+}
+
+// ensureTiktokShopCipher resolves the target shop after OAuth. The token
+// response does not always include shop_cipher, but product APIs require it.
+func ensureTiktokShopCipher(connection *models.TiktokConnection, appKey, appSecret string) error {
+	if connection.ShopCipher != "" {
+		return nil
+	}
+	accessToken, err := decryptTiktokToken(connection.AccessToken)
+	if err != nil {
+		return errors.New("Could not read TikTok credentials")
+	}
+	path := "/authorization/202309/shops"
+	params := map[string]string{
+		"app_key":   appKey,
+		"timestamp": fmt.Sprintf("%d", time.Now().Unix()),
+	}
+	params["sign"] = tiktokSignature(path, params, "", appSecret)
+	values := encodeTiktokParams(params)
+	requestURL := fmt.Sprintf("%s%s?%s&access_token=%s", tiktokAPIBase, path, values, url.QueryEscape(accessToken))
+	req, err := http.NewRequest(http.MethodGet, requestURL, nil)
+	if err != nil {
+		return errors.New("Could not create TikTok shop request")
+	}
+	req.Header.Set("x-tts-access-token", accessToken)
+	response, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		return errors.New("TikTok Shop API is unavailable")
+	}
+	defer response.Body.Close()
+
+	var payload struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+		Data    struct {
+			Shops []struct {
+				Cipher string `json:"cipher"`
+				Name   string `json:"name"`
+			} `json:"shops"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return errors.New("TikTok returned an invalid authorized shops response")
+	}
+	if response.StatusCode >= 400 || payload.Code != 0 {
+		return fmt.Errorf("TikTok Shop error: %s (code %d)", firstNonEmpty(payload.Message, "could not retrieve authorized shops"), payload.Code)
+	}
+	if len(payload.Data.Shops) == 0 || payload.Data.Shops[0].Cipher == "" {
+		return errors.New("No authorized TikTok Shop was found")
+	}
+	connection.ShopCipher = payload.Data.Shops[0].Cipher
+	if connection.SellerName == "" {
+		connection.SellerName = payload.Data.Shops[0].Name
+	}
+	return nil
+}
+
+// ensureTiktokAccessToken refreshes server-side before the access token expires.
+// The user only needs to authorize again after the refresh token expires or is revoked.
+func ensureTiktokAccessToken(connection *models.TiktokConnection, appKey, appSecret string) (string, error) {
+	if time.Until(connection.AccessTokenExpiresAt) > tiktokRefreshWindow {
+		return decryptTiktokToken(connection.AccessToken)
+	}
+	if !connection.RefreshTokenExpiresAt.After(time.Now()) {
+		return "", errors.New("TikTok authorization has expired; reconnect the shop")
+	}
+
+	refreshToken, err := decryptTiktokToken(connection.RefreshToken)
+	if err != nil {
+		return "", errors.New("Could not read TikTok refresh credentials")
+	}
+	result, err := refreshTiktokToken(appKey, appSecret, refreshToken)
+	if err != nil {
+		return "", err
+	}
+	accessToken, err := encryptTiktokToken(result.Data.AccessToken)
+	if err != nil {
+		return "", err
+	}
+	connection.AccessToken = accessToken
+	connection.AccessTokenExpiresAt = time.Unix(result.Data.AccessTokenExpireIn, 0)
+	if result.Data.RefreshToken != "" {
+		encryptedRefreshToken, err := encryptTiktokToken(result.Data.RefreshToken)
+		if err != nil {
+			return "", err
+		}
+		connection.RefreshToken = encryptedRefreshToken
+	}
+	if result.Data.RefreshTokenExpireIn > 0 {
+		connection.RefreshTokenExpiresAt = time.Unix(result.Data.RefreshTokenExpireIn, 0)
+	}
+	if err := database.DB.Save(connection).Error; err != nil {
+		return "", errors.New("Could not save refreshed TikTok credentials")
+	}
+	return result.Data.AccessToken, nil
+}
+
+func refreshTiktokToken(appKey, appSecret, refreshToken string) (tiktokTokenResponse, error) {
+	u, _ := url.Parse(tiktokRefreshURL)
+	q := u.Query()
+	q.Set("app_key", appKey)
+	q.Set("app_secret", appSecret)
+	q.Set("refresh_token", refreshToken)
+	q.Set("grant_type", "refresh_token")
+	u.RawQuery = q.Encode()
+
+	response, err := (&http.Client{Timeout: 20 * time.Second}).Get(u.String())
+	if err != nil {
+		return tiktokTokenResponse{}, errors.New("TikTok token refresh is unavailable")
+	}
+	defer response.Body.Close()
+	var result tiktokTokenResponse
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		return tiktokTokenResponse{}, errors.New("TikTok returned an invalid refresh response")
+	}
+	if response.StatusCode >= 400 || result.Code != 0 || result.Data.AccessToken == "" || result.Data.AccessTokenExpireIn == 0 {
+		return tiktokTokenResponse{}, errors.New("TikTok authorization has expired; reconnect the shop")
+	}
+	return result, nil
+}
+
+func tiktokSignature(path string, params map[string]string, body, secret string) string {
+	keys := make([]string, 0, len(params))
+	for key := range params {
+		if key != "sign" && key != "access_token" {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	value := secret + path
+	for _, key := range keys {
+		value += key + params[key]
+	}
+	value += body + secret
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(value))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func encodeTiktokParams(params map[string]string) string {
+	values := make(url.Values, len(params))
+	for key, value := range params {
+		values.Set(key, value)
+	}
+	return values.Encode()
+}
+func firstNonEmpty(value, fallback string) string {
+	if value != "" {
+		return value
+	}
+	return fallback
+}
+
+func newTiktokState() (string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+func hashTiktokState(state string) string {
+	sum := sha256.Sum256([]byte(state))
+	return hex.EncodeToString(sum[:])
+}
+
+func tiktokCipher() (cipher.AEAD, error) {
+	encoded := os.Getenv("TIKTOK_TOKEN_ENCRYPTION_KEY")
+	key, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil || len(key) != 32 {
+		return nil, errors.New("TIKTOK_TOKEN_ENCRYPTION_KEY must be a base64-encoded 32-byte key")
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	return cipher.NewGCM(block)
+}
+func encryptTiktokToken(value string) (string, error) {
+	aead, err := tiktokCipher()
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, aead.NonceSize())
+	if _, err = rand.Read(nonce); err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(append(nonce, aead.Seal(nil, nonce, []byte(value), nil)...)), nil
+}
+func decryptTiktokToken(value string) (string, error) {
+	aead, err := tiktokCipher()
+	if err != nil {
+		return "", err
+	}
+	raw, err := base64.StdEncoding.DecodeString(value)
+	if err != nil || len(raw) < aead.NonceSize() {
+		return "", errors.New("invalid encrypted TikTok token")
+	}
+	plain, err := aead.Open(nil, raw[:aead.NonceSize()], raw[aead.NonceSize():], nil)
+	return string(plain), err
+}

@@ -1,0 +1,37 @@
+package router
+
+import (
+	"chawy-erp-api/handlers"
+	"chawy-erp-api/models"
+
+	"github.com/gofiber/fiber/v2"
+)
+
+func RegisterOrderRoutes(api fiber.Router) {
+	// Quotations
+	api.Get("/quotations", handlers.ListResource(func() interface{} { return &[]models.Quotation{} }, "Lines"))
+	api.Get("/quotations/:id", handlers.GetResource(func() interface{} { return &models.Quotation{} }, "id", "id", "Lines"))
+	api.Post("/quotations", handlers.CreateQuotation)
+	api.Put("/quotations/:id/status", handlers.UpdateQuotationStatus)
+	api.Post("/quotations/:id/convert", handlers.ConvertQuotationToSalesOrder)
+
+	// Sales Orders
+	api.Get("/sales-orders", handlers.ListResource(func() interface{} { return &[]models.SalesOrder{} }, "Lines", "AuditTrail"))
+	api.Get("/sales-orders/:id", handlers.GetResource(func() interface{} { return &models.SalesOrder{} }, "id", "id", "Lines", "AuditTrail"))
+	api.Post("/sales-orders", handlers.CreateSalesOrder)
+	api.Put("/sales-orders/:id/status", handlers.UpdateSalesOrderStatus)
+
+	// Invoices
+	api.Get("/invoices", handlers.ListResource(func() interface{} { return &[]models.Invoice{} }, "AuditTrail"))
+	api.Get("/invoices/:id", handlers.GetResource(func() interface{} { return &models.Invoice{} }, "id", "id", "AuditTrail"))
+	api.Post("/invoices", handlers.CreateInvoice)
+	api.Post("/invoices/from-so/:soId", handlers.CreateInvoiceFromSO)
+	api.Post("/invoices/:id/payment", handlers.RecordPayment)
+
+	// Manual Orders
+	api.Get("/manual-orders", handlers.ListResource(func() interface{} { return &[]models.ManualOrder{} }))
+	api.Get("/manual-orders/:id", handlers.GetResource(func() interface{} { return &models.ManualOrder{} }, "id", "id"))
+	api.Post("/manual-orders", handlers.CreateManualOrder)
+	api.Put("/manual-orders/:id", handlers.UpdateManualOrder)
+	api.Delete("/manual-orders/:id", handlers.DeleteManualOrder)
+}
