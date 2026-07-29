@@ -233,7 +233,35 @@ func GetTiktokProducts(c *fiber.Ctx) error {
 		message := firstNonEmpty(upstream.Message, "unknown error")
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": fmt.Sprintf("TikTok Shop error: %s (code %d)", message, upstream.Code)})
 	}
+	if c.Query("debug") == "true" {
+		return c.JSON(fiber.Map{
+			"response": json.RawMessage(responseBody),
+			"outgoingRequest": fiber.Map{
+				"method": http.MethodPost,
+				"path":   path,
+				"query": fiber.Map{
+					"app_key":     redactTiktokValue(appKey),
+					"timestamp":   params["timestamp"],
+					"shop_cipher": redactTiktokValue(connection.ShopCipher),
+					"page_size":   params["page_size"],
+					"sign":        "[redacted]",
+				},
+				"headers": fiber.Map{
+					"x-tts-access-token": "[redacted]",
+					"content-type":       "application/json",
+				},
+				"body": json.RawMessage(body),
+			},
+		})
+	}
 	return c.Type(fiber.MIMEApplicationJSON).Send(responseBody)
+}
+
+func redactTiktokValue(value string) string {
+	if len(value) <= 4 {
+		return "[redacted]"
+	}
+	return value[:2] + "…" + value[len(value)-2:]
 }
 
 func exchangeTiktokCode(appKey, appSecret, code string) (models.TiktokConnection, error) {
