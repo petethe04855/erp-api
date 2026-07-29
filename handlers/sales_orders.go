@@ -26,7 +26,7 @@ func CreateSalesOrder(c *fiber.Ctx) error {
 	if so.QtRef != "" {
 		var existing models.SalesOrder
 		if err := database.DB.Where("qt_ref = ?", so.QtRef).First(&existing).Error; err == nil {
-			return c.JSON(existing)
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "quotation has already been converted to Sales Order " + existing.Code})
 		}
 	}
 
@@ -45,16 +45,8 @@ func CreateSalesOrder(c *fiber.Ctx) error {
 			if !isSellableProduct(p) {
 				return fmt.Errorf("sales item %s must be a Finished Product", line.SKU)
 			}
-			available := p.Stock - p.ReservedQty
-			if available < line.Qty {
-				return fmt.Errorf("สต็อคไม่พอ: %s มีพร้อมขาย %d ชิ้น", p.Name, available)
-			}
-
 			so.Lines[i].ProductID = p.ID
-
-			// Apply reserve qty
-			p.ReservedQty += line.Qty
-			if err := tx.Save(&p).Error; err != nil {
+			if err := reserveSalesStock(tx, p, line.Qty, 1); err != nil {
 				return err
 			}
 		}
@@ -109,6 +101,44 @@ func CreateSalesOrder(c *fiber.Ctx) error {
 	return c.JSON(so)
 }
 
+// reserveSalesStock reserves physical inventory for a sales line. Bundle sales
+// reserve their BOM components, so available stock stays consistent with stock
+// checking, transfers, and the later FEFO deduction.
+func reserveSalesStock(tx *gorm.DB, product models.Product, qty int, direction int) error {
+	type reservation struct {
+		product models.Product
+		qty     int
+	}
+	reservations := []reservation{}
+
+	requirements, err := expandBOMMaterialRequirements(tx, product.SKU, float64(qty), map[string]bool{})
+	if err != nil {
+		return err
+	}
+	for sku, requiredQty := range requirements {
+		var component models.Product
+		if err := tx.First(&component, "sku = ?", sku).Error; err != nil {
+			return err
+		}
+		reservations = append(reservations, reservation{product: component, qty: int(math.Ceil(requiredQty))})
+	}
+
+	for _, item := range reservations {
+		if direction > 0 && item.product.Stock-item.product.ReservedQty < item.qty {
+			available := item.product.Stock - item.product.ReservedQty
+			return fmt.Errorf("สต็อคไม่พอ: %s ต้องใช้ %d %s, พร้อมใช้ %d %s", item.product.Name, item.qty, item.product.BaseUnit, available, item.product.BaseUnit)
+		}
+		item.product.ReservedQty += direction * item.qty
+		if item.product.ReservedQty < 0 {
+			item.product.ReservedQty = 0
+		}
+		if err := tx.Save(&item.product).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // PUT /api/sales-orders/:id/status
 func UpdateSalesOrderStatus(c *fiber.Ctx) error {
 	id := c.Params("id")
@@ -120,7 +150,7 @@ func UpdateSalesOrderStatus(c *fiber.Ctx) error {
 	}
 
 	var so models.SalesOrder
-	if err := database.DB.Preload("Lines").First(&so, "id = ? OR code = ?", id, id).Error; err != nil {
+	if err := ByIDOrCode(database.DB, id).Preload("Lines").First(&so).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Sales order not found"})
 	}
 
@@ -136,6 +166,9 @@ func UpdateSalesOrderStatus(c *fiber.Ctx) error {
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
 		oldStatus := so.Status
 		newStatus := req.Status
+		if oldStatus == newStatus {
+			return nil
+		}
 		so.Status = newStatus
 
 		if err := tx.Save(&so).Error; err != nil {
@@ -146,14 +179,11 @@ func UpdateSalesOrderStatus(c *fiber.Ctx) error {
 		if (newStatus == "Cancelled" || newStatus == "Completed") && len(so.Lines) > 0 {
 			for _, line := range so.Lines {
 				var p models.Product
-				if err := tx.First(&p, "sku = ?", line.SKU).Error; err == nil {
-					p.ReservedQty = p.ReservedQty - line.Qty
-					if p.ReservedQty < 0 {
-						p.ReservedQty = 0
-					}
-					if err := tx.Save(&p).Error; err != nil {
-						return err
-					}
+				if err := tx.First(&p, "sku = ?", line.SKU).Error; err != nil {
+					return err
+				}
+				if err := reserveSalesStock(tx, p, line.Qty, -1); err != nil {
+					return err
 				}
 			}
 		}
@@ -166,32 +196,12 @@ func UpdateSalesOrderStatus(c *fiber.Ctx) error {
 					return err
 				}
 
-				if product.IsBundle {
-					// Expand bundle into components
-					var comps []models.BundleComponent
-					if err := tx.Where("bundle_sku = ?", product.SKU).Find(&comps).Error; err == nil {
-						for _, comp := range comps {
-							if comp.ComponentType == "expense" {
-								continue
-							}
-							var componentProduct models.Product
-							if err := tx.First(&componentProduct, "sku = ?", comp.ComponentSku).Error; err != nil {
-								return err
-							}
-							required := comp.Qty
-							if comp.Unit == "g" && componentProduct.BaseUnit == "kg" {
-								required /= 1000
-							} else if comp.Unit == "kg" && componentProduct.BaseUnit == "g" {
-								required *= 1000
-							}
-							neededQty := int(math.Ceil(required * float64(line.Qty)))
-							if err := deductFefoStock(tx, comp.ComponentSku, neededQty, so.Code, &so.ID, username.(string)); err != nil {
-								return err
-							}
-						}
-					}
-				} else {
-					if err := deductFefoStock(tx, line.SKU, line.Qty, so.Code, &so.ID, username.(string)); err != nil {
+				requirements, err := expandBOMMaterialRequirements(tx, product.SKU, float64(line.Qty), map[string]bool{})
+				if err != nil {
+					return err
+				}
+				for sku, requiredQty := range requirements {
+					if err := deductFefoStock(tx, sku, int(math.Ceil(requiredQty)), so.Code, &so.ID, "sales_orders", username.(string)); err != nil {
 						return err
 					}
 				}
@@ -223,7 +233,15 @@ func UpdateSalesOrderStatus(c *fiber.Ctx) error {
 }
 
 // Helper: Deduct stock from earliest expiry lots (FEFO)
-func deductFefoStock(tx *gorm.DB, sku string, qty int, refDocCode string, refDocID *uint, by string) error {
+func deductFefoStock(tx *gorm.DB, sku string, qty int, refDocCode string, refDocID *uint, refDocType string, by string) error {
+	var prod models.Product
+	if err := tx.First(&prod, "sku = ?", sku).Error; err != nil {
+		return err
+	}
+	if err := ensureLotBalance(tx, prod); err != nil {
+		return err
+	}
+
 	var lots []models.StockLot
 	// Query non-empty lots, sorting by expiryDate ascending, empty dates at the end
 	err := tx.Where("sku = ? AND remaining_qty > 0", sku).
@@ -232,9 +250,6 @@ func deductFefoStock(tx *gorm.DB, sku string, qty int, refDocCode string, refDoc
 	if err != nil {
 		return err
 	}
-
-	var prod models.Product
-	_ = tx.First(&prod, "sku = ?", sku)
 
 	rem := qty
 	for i := range lots {
@@ -261,7 +276,7 @@ func deductFefoStock(tx *gorm.DB, sku string, qty int, refDocCode string, refDoc
 			Type:       "OUT",
 			Qty:        deduct,
 			RefDoc:     refDocCode,
-			RefDocType: "sales_orders",
+			RefDocType: refDocType,
 			RefDocID:   refDocID,
 			Date:       time.Now().Format("2006-01-02"),
 			Note:       fmt.Sprintf("FEFO: lot %s exp %s", lot.Lot, lot.ExpiryDate),
@@ -288,6 +303,39 @@ func deductFefoStock(tx *gorm.DB, sku string, qty int, refDocCode string, refDoc
 	}
 
 	return nil
+}
+
+// ensureLotBalance creates a traceable opening-balance lot for legacy stock that
+// exists in Product.Stock but was never recorded at lot level. It never changes
+// the product quantity and refuses to conceal the opposite inconsistency.
+func ensureLotBalance(tx *gorm.DB, product models.Product) error {
+	var lotQty int
+	if err := tx.Model(&models.StockLot{}).
+		Where("sku = ?", product.SKU).
+		Select("COALESCE(SUM(remaining_qty), 0)").
+		Scan(&lotQty).Error; err != nil {
+		return err
+	}
+	if lotQty > product.Stock {
+		return fmt.Errorf("lot balance exceeds product stock for %s: lots %d, product %d", product.SKU, lotQty, product.Stock)
+	}
+	if lotQty == product.Stock {
+		return nil
+	}
+
+	difference := product.Stock - lotQty
+	openingLot := models.StockLot{
+		Code:           fmt.Sprintf("LOT-OPENING-%s", product.SKU),
+		ProductID:      product.ID,
+		SKU:            product.SKU,
+		Lot:            fmt.Sprintf("OPENING-%s", product.SKU),
+		Qty:            difference,
+		RemainingQty:   difference,
+		LandedUnitCost: product.Cost,
+		ReceivedDate:   time.Now().Format("2006-01-02"),
+		GrRef:          "OPENING_BALANCE",
+	}
+	return tx.Create(&openingLot).Error
 }
 
 func isSellableProduct(product models.Product) bool {
@@ -369,7 +417,7 @@ func CreateInvoice(c *fiber.Ctx) error {
 func CreateInvoiceFromSO(c *fiber.Ctx) error {
 	soID := c.Params("soId")
 	var so models.SalesOrder
-	if err := database.DB.Preload("Lines").First(&so, "id = ? OR code = ?", soID, soID).Error; err != nil {
+	if err := ByIDOrCode(database.DB, soID).Preload("Lines").First(&so).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Sales order not found"})
 	}
 
@@ -448,7 +496,7 @@ func RecordPayment(c *fiber.Ctx) error {
 	}
 
 	var inv models.Invoice
-	if err := database.DB.Preload("AuditTrail").First(&inv, "id = ? OR code = ?", id, id).Error; err != nil {
+	if err := ByIDOrCode(database.DB, id).Preload("AuditTrail").First(&inv).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Invoice not found"})
 	}
 

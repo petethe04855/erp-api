@@ -22,8 +22,8 @@ func CreateGoodsIssue(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	if req.Qty <= 0 {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "qty must be greater than zero"})
+	if req.SKU == "" || req.Reason == "" || req.Qty <= 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "sku, reason, and qty greater than zero are required"})
 	}
 
 	var product models.Product
@@ -59,41 +59,20 @@ func CreateGoodsIssue(c *fiber.Ctx) error {
 			return err
 		}
 
-		if product.IsBundle {
-			// Validate components stock
-			var comps []models.BundleComponent
-			if err := tx.Where("bundle_sku = ?", product.SKU).Find(&comps).Error; err == nil {
-				for _, comp := range comps {
-					if comp.ComponentType == "expense" {
-						continue
-					}
-					var cp models.Product
-					if err := tx.First(&cp, "sku = ?", comp.ComponentSku).Error; err != nil {
-						return fmt.Errorf("Component %s not found", comp.ComponentSku)
-					}
-					required := comp.Qty
-					if comp.Unit == "g" && cp.BaseUnit == "kg" {
-						required /= 1000
-					} else if comp.Unit == "kg" && cp.BaseUnit == "g" {
-						required *= 1000
-					}
-					needed := int(math.Ceil(required * float64(req.Qty)))
-					if cp.Stock-cp.ReservedQty < needed {
-						return fmt.Errorf("Component %s stock not sufficient", comp.ComponentSku)
-					}
-					if err := deductFefoStock(tx, comp.ComponentSku, needed, gi.Code, &gi.ID, username.(string)); err != nil {
-						return err
-					}
-				}
+		requirements, err := expandBOMMaterialRequirements(tx, product.SKU, float64(req.Qty), map[string]bool{})
+		if err != nil {
+			return err
+		}
+		for sku, requiredQty := range requirements {
+			needed := int(math.Ceil(requiredQty))
+			var component models.Product
+			if err := tx.First(&component, "sku = ?", sku).Error; err != nil {
+				return err
 			}
-		} else {
-			// Regular product: validate and deduct via FEFO
-			available := product.Stock - product.ReservedQty
-			if req.Qty > available {
-				return fmt.Errorf("Stock not sufficient for %s", product.Name)
+			if component.Stock-component.ReservedQty < needed {
+				return fmt.Errorf("stock not sufficient for %s", component.Name)
 			}
-
-			if err := deductFefoStock(tx, req.SKU, req.Qty, gi.Code, &gi.ID, username.(string)); err != nil {
+			if err := deductFefoStock(tx, sku, needed, gi.Code, &gi.ID, "goods_issues", username.(string)); err != nil {
 				return err
 			}
 		}
@@ -122,6 +101,12 @@ func CreateStockReturn(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
+	if req.SoRef == "" || req.SKU == "" || req.Qty <= 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "sales order, sku, and qty greater than zero are required"})
+	}
+	if req.Condition != "ดี" && req.Condition != "เสียหาย" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "condition must be ดี or เสียหาย"})
+	}
 
 	var product models.Product
 	if err := database.DB.First(&product, "sku = ?", req.SKU).Error; err != nil {
@@ -140,20 +125,34 @@ func CreateStockReturn(c *fiber.Ctx) error {
 			return err
 		}
 
-		channel := req.Channel
-		var soID *uint
-		if req.SoRef != "" {
-			var so models.SalesOrder
-			if err := tx.First(&so, "id = ? OR code = ?", req.SoRef, req.SoRef).Error; err == nil {
-				soID = &so.ID
-				channel = string(so.Channel)
+		var so models.SalesOrder
+		if err := ByIDOrCode(tx, req.SoRef).Preload("Lines").First(&so).Error; err != nil {
+			return fmt.Errorf("sales order not found")
+		}
+		if so.Status != "Completed" {
+			return fmt.Errorf("only completed sales orders can be returned")
+		}
+		var soldQty int
+		for _, line := range so.Lines {
+			if line.SKU == req.SKU {
+				soldQty += line.Qty
 			}
+		}
+		if soldQty == 0 {
+			return fmt.Errorf("product %s is not on sales order %s", req.SKU, so.Code)
+		}
+		var returnedQty int64
+		if err := tx.Model(&models.StockReturn{}).Where("sales_order_id = ? AND sku = ? AND status <> ?", so.ID, req.SKU, "Cancelled").Select("COALESCE(SUM(qty), 0)").Scan(&returnedQty).Error; err != nil {
+			return err
+		}
+		if int(returnedQty)+req.Qty > soldQty {
+			return fmt.Errorf("return quantity exceeds quantity sold for %s", req.SKU)
 		}
 
 		sr = models.StockReturn{
 			Code:         code,
-			SalesOrderID: soID,
-			SoRef:        req.SoRef,
+			SalesOrderID: &so.ID,
+			SoRef:        so.Code,
 			ProductID:    product.ID,
 			SKU:          req.SKU,
 			SkuName:      product.Name,
@@ -164,7 +163,7 @@ func CreateStockReturn(c *fiber.Ctx) error {
 			Date:         time.Now().Format("2006-01-02"),
 			ReturnedBy:   username.(string),
 			Refunded:     false,
-			Channel:      channel,
+			Channel:      so.Channel,
 			Status:       "Pending",
 		}
 
@@ -197,11 +196,14 @@ func UpdateStockReturnStatus(c *fiber.Ctx) error {
 	}
 	var sr models.StockReturn
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.First(&sr, "id = ? OR code = ?", id, id).Error; err != nil {
+		if err := ByIDOrCode(tx, id).First(&sr).Error; err != nil {
 			return err
 		}
 		if sr.Status != "Pending" {
 			return fmt.Errorf("return is already processed")
+		}
+		if req.Status != "Completed" && req.Status != "Cancelled" {
+			return fmt.Errorf("status must be Completed or Cancelled")
 		}
 		sr.Status = req.Status
 		if req.Status == "Completed" {
@@ -212,6 +214,20 @@ func UpdateStockReturnStatus(c *fiber.Ctx) error {
 			if sr.Condition == "ดี" {
 				product.Stock += sr.Qty
 				if err := tx.Save(&product).Error; err != nil {
+					return err
+				}
+				lot := models.StockLot{
+					Code:           fmt.Sprintf("LOT-%s", sr.Code),
+					ProductID:      product.ID,
+					SKU:            sr.SKU,
+					Lot:            fmt.Sprintf("RET-%s", sr.Code),
+					Qty:            sr.Qty,
+					RemainingQty:   sr.Qty,
+					LandedUnitCost: product.Cost,
+					ReceivedDate:   time.Now().Format("2006-01-02"),
+					GrRef:          sr.Code,
+				}
+				if err := tx.Create(&lot).Error; err != nil {
 					return err
 				}
 				movement := models.StockMovement{
@@ -282,12 +298,21 @@ func CreateStockAdjustment(c *fiber.Ctx) error {
 		if err := tx.Create(&adj).Error; err != nil {
 			return err
 		}
+		if len(req.Items) == 0 {
+			return fmt.Errorf("at least one counted item is required")
+		}
 
 		var items []models.StockAdjustmentItem
 		for _, item := range req.Items {
+			if item.ActualQty < 0 {
+				return fmt.Errorf("actual quantity for %s cannot be negative", item.SKU)
+			}
 			var p models.Product
 			if err := tx.First(&p, "sku = ?", item.SKU).Error; err != nil {
 				return err
+			}
+			if item.ActualQty < p.ReservedQty {
+				return fmt.Errorf("count for %s cannot be below reserved sales quantity (%d)", p.Name, p.ReservedQty)
 			}
 
 			variance := item.ActualQty - p.Stock
@@ -338,6 +363,9 @@ func CreateStockAdjustment(c *fiber.Ctx) error {
 				if err := tx.Create(&movement).Error; err != nil {
 					return err
 				}
+				if err := reconcileAdjustmentLots(tx, p, variance, adj); err != nil {
+					return err
+				}
 			}
 		}
 
@@ -355,6 +383,51 @@ func CreateStockAdjustment(c *fiber.Ctx) error {
 
 	database.DB.Preload("Items").First(&adj, adj.ID)
 	return c.JSON(adj)
+}
+
+// reconcileAdjustmentLots keeps lot balances equal to the product balance after a physical count.
+// A positive variance becomes a traceable adjustment lot; a negative variance is removed FEFO.
+func reconcileAdjustmentLots(tx *gorm.DB, product models.Product, variance int, adj models.StockAdjustment) error {
+	if variance > 0 {
+		lot := models.StockLot{
+			Code:           fmt.Sprintf("LOT-%s-%s", adj.Code, product.SKU),
+			ProductID:      product.ID,
+			SKU:            product.SKU,
+			Lot:            adj.Code,
+			Qty:            variance,
+			RemainingQty:   variance,
+			LandedUnitCost: product.Cost,
+			ReceivedDate:   adj.Date,
+			GrRef:          adj.Code,
+		}
+		return tx.Create(&lot).Error
+	}
+
+	remaining := -variance
+	var lots []models.StockLot
+	if err := tx.Where("sku = ? AND remaining_qty > 0", product.SKU).
+		Order("CASE WHEN expiry_date IS NULL OR expiry_date = '' THEN 1 ELSE 0 END, expiry_date ASC").
+		Find(&lots).Error; err != nil {
+		return err
+	}
+	for i := range lots {
+		if remaining == 0 {
+			break
+		}
+		deduct := lots[i].RemainingQty
+		if deduct > remaining {
+			deduct = remaining
+		}
+		lots[i].RemainingQty -= deduct
+		remaining -= deduct
+		if err := tx.Save(&lots[i]).Error; err != nil {
+			return err
+		}
+	}
+	if remaining != 0 {
+		return fmt.Errorf("lot stock is inconsistent for %s: missing %d units", product.SKU, remaining)
+	}
+	return nil
 }
 
 // POST /api/stock-transfers
@@ -375,8 +448,8 @@ func CreateStockTransfer(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Product not found"})
 	}
 
-	if product.Stock < req.Qty {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Transfer qty exceeds stock count"})
+	if req.Qty <= 0 || req.Qty > product.Stock-product.ReservedQty {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Transfer qty exceeds available stock"})
 	}
 
 	username := c.Locals("name")

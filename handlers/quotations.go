@@ -62,7 +62,7 @@ func UpdateQuotationStatus(c *fiber.Ctx) error {
 	}
 
 	var qt models.Quotation
-	if err := database.DB.First(&qt, "id = ? OR code = ?", id, id).Error; err != nil {
+	if err := ByIDOrCode(database.DB, id).First(&qt).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Quotation not found"})
 	}
 
@@ -79,7 +79,7 @@ func UpdateQuotationStatus(c *fiber.Ctx) error {
 func ConvertQuotationToSalesOrder(c *fiber.Ctx) error {
 	id := c.Params("id")
 	var qt models.Quotation
-	if err := database.DB.Preload("Lines").First(&qt, "id = ? OR code = ?", id, id).Error; err != nil {
+	if err := ByIDOrCode(database.DB, id).Preload("Lines").First(&qt).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Quotation not found"})
 	}
 

@@ -70,7 +70,7 @@ func UpdatePRStatus(c *fiber.Ctx) error {
 	}
 
 	var pr models.PurchaseRequest
-	if err := database.DB.First(&pr, "id = ? OR code = ?", id, id).Error; err != nil {
+	if err := ByIDOrCode(database.DB, id).First(&pr).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "PR not found"})
 	}
 
@@ -93,7 +93,7 @@ type ConvertPRtoPORequest struct {
 func ConvertPRtoPO(c *fiber.Ctx) error {
 	id := c.Params("id")
 	var pr models.PurchaseRequest
-	if err := database.DB.Preload("Items").First(&pr, "id = ? OR code = ?", id, id).Error; err != nil {
+	if err := ByIDOrCode(database.DB, id).Preload("Items").First(&pr).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "PR not found"})
 	}
 
@@ -266,7 +266,7 @@ func UpdatePOStatus(c *fiber.Ctx) error {
 	}
 
 	var po models.PurchaseOrder
-	if err := database.DB.Preload("Items").First(&po, "id = ? OR code = ?", id, id).Error; err != nil {
+	if err := ByIDOrCode(database.DB, id).Preload("Items").First(&po).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "PO not found"})
 	}
 
@@ -317,7 +317,7 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 	}
 
 	var po models.PurchaseOrder
-	if err := database.DB.Preload("Items").First(&po, "id = ? OR code = ?", gr.PoRef, gr.PoRef).Error; err != nil {
+	if err := ByIDOrCode(database.DB, gr.PoRef).Preload("Items").First(&po).Error; err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Matching PO not found"})
 	}
 

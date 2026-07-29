@@ -166,7 +166,11 @@ func SetBundleComponents(c *fiber.Ctx) error {
 }
 
 func calculateBOMCost(db *gorm.DB, components []models.BundleComponent) (float64, error) {
+	if len(components) == 0 {
+		return 0, nil
+	}
 	total := 0.0
+	parentSku := components[0].BundleSku
 	for _, comp := range components {
 		if comp.ComponentType == "expense" {
 			total += comp.Qty * comp.UnitCostOverride
@@ -176,22 +180,21 @@ func calculateBOMCost(db *gorm.DB, components []models.BundleComponent) (float64
 		if err := db.First(&product, "sku = ?", comp.ComponentSku).Error; err != nil {
 			return 0, fmt.Errorf("component product %s not found", comp.ComponentSku)
 		}
-		factor := 1.0
-		switch comp.Unit {
-		case "g":
-			if product.BaseUnit == "kg" {
-				factor = 0.001
-			}
-		case "kg":
-			if product.BaseUnit == "g" {
-				factor = 1000
-			}
+		unitCost := product.Cost
+		if unitCost == 0 && comp.UnitCostOverride > 0 {
+			unitCost = comp.UnitCostOverride
 		}
 		yield := comp.YieldFactor
 		if yield <= 0 {
 			yield = 1
 		}
-		total += (comp.Qty / yield) * factor * product.Cost
+		qty := convertBOMQty(grossBOMQty(comp.Qty/yield, comp.ScrapRate), comp.Unit, product.BaseUnit)
+		total += qty * unitCost
 	}
-	return total, nil
+
+	batchSize := componentQtyBatchSize(parentSku)
+	if batchSize <= 0 {
+		batchSize = 1
+	}
+	return total / batchSize, nil
 }
