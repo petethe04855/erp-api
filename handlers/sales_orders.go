@@ -111,16 +111,23 @@ func reserveSalesStock(tx *gorm.DB, product models.Product, qty int, direction i
 	}
 	reservations := []reservation{}
 
-	requirements, err := expandBOMMaterialRequirements(tx, product.SKU, float64(qty), map[string]bool{})
-	if err != nil {
-		return err
-	}
-	for sku, requiredQty := range requirements {
-		var component models.Product
-		if err := tx.First(&component, "sku = ?", sku).Error; err != nil {
+	// When finished goods have been received from Production Run, sell that
+	// physical inventory directly. A BOM is used only as a fallback for virtual
+	// products that do not yet have finished-goods stock.
+	if product.Stock > 0 {
+		reservations = append(reservations, reservation{product: product, qty: qty})
+	} else {
+		requirements, err := expandBOMMaterialRequirements(tx, product.SKU, float64(qty), map[string]bool{})
+		if err != nil {
 			return err
 		}
-		reservations = append(reservations, reservation{product: component, qty: int(math.Ceil(requiredQty))})
+		for sku, requiredQty := range requirements {
+			var component models.Product
+			if err := tx.First(&component, "sku = ?", sku).Error; err != nil {
+				return err
+			}
+			reservations = append(reservations, reservation{product: component, qty: int(math.Ceil(requiredQty))})
+		}
 	}
 
 	for _, item := range reservations {
@@ -196,13 +203,19 @@ func UpdateSalesOrderStatus(c *fiber.Ctx) error {
 					return err
 				}
 
-				requirements, err := expandBOMMaterialRequirements(tx, product.SKU, float64(line.Qty), map[string]bool{})
-				if err != nil {
-					return err
-				}
-				for sku, requiredQty := range requirements {
-					if err := deductFefoStock(tx, sku, int(math.Ceil(requiredQty)), so.Code, &so.ID, "sales_orders", username.(string)); err != nil {
+				if product.Stock > 0 {
+					if err := deductFefoStock(tx, product.SKU, line.Qty, so.Code, &so.ID, "sales_orders", username.(string)); err != nil {
 						return err
+					}
+				} else {
+					requirements, err := expandBOMMaterialRequirements(tx, product.SKU, float64(line.Qty), map[string]bool{})
+					if err != nil {
+						return err
+					}
+					for sku, requiredQty := range requirements {
+						if err := deductFefoStock(tx, sku, int(math.Ceil(requiredQty)), so.Code, &so.ID, "sales_orders", username.(string)); err != nil {
+							return err
+						}
 					}
 				}
 			}

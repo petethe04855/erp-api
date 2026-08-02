@@ -13,6 +13,10 @@ func RegisterInventoryRoutes(api fiber.Router) {
 	api.Get("/goods-issues/:id", handlers.GetResource(func() interface{} { return &models.GoodsIssue{} }, "id", "id"))
 	api.Post("/goods-issues", handlers.CreateGoodsIssue)
 
+	api.Get("/production-runs", handlers.ListResource(func() interface{} { return &[]models.ProductionRun{} }))
+	api.Get("/production-runs/:id", handlers.GetResource(func() interface{} { return &models.ProductionRun{} }, "id", "id"))
+	api.Post("/production-runs", handlers.CreateProductionRun)
+
 	api.Get("/stock-returns", handlers.ListResource(func() interface{} { return &[]models.StockReturn{} }))
 	api.Get("/stock-returns/:id", handlers.GetResource(func() interface{} { return &models.StockReturn{} }, "id", "id"))
 	api.Post("/stock-returns", handlers.CreateStockReturn)

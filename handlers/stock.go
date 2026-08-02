@@ -11,6 +11,89 @@ import (
 	"gorm.io/gorm"
 )
 
+// POST /api/production-runs
+// Produces finished goods according to its active BOM. Inputs are consumed by
+// FEFO and the output is received into its own traceable lot in one transaction.
+func CreateProductionRun(c *fiber.Ctx) error {
+	var req struct {
+		SKU        string `json:"sku"`
+		Qty        int    `json:"qty"`
+		Lot        string `json:"lot"`
+		ExpiryDate string `json:"expiryDate"`
+		Note       string `json:"note"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	if req.SKU == "" || req.Qty <= 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "sku and qty greater than zero are required"})
+	}
+	username := "System"
+	if name, ok := c.Locals("name").(string); ok && name != "" {
+		username = name
+	}
+
+	var run models.ProductionRun
+	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		var product models.Product
+		if err := tx.First(&product, "sku = ?", req.SKU).Error; err != nil {
+			return fmt.Errorf("finished product not found")
+		}
+		if !isSellableProduct(product) {
+			return fmt.Errorf("production output must be a Finished Product")
+		}
+		var bom models.BOM
+		if err := tx.Where("fg_sku = ? AND status = ?", product.SKU, "Active").
+			Order("id DESC").First(&bom).Error; err != nil {
+			return fmt.Errorf("active BOM not found for %s", product.SKU)
+		}
+		requirements, err := expandBOMMaterialRequirements(tx, product.SKU, float64(req.Qty), map[string]bool{})
+		if err != nil {
+			return err
+		}
+		for sku, requiredQty := range requirements {
+			var material models.Product
+			if err := tx.First(&material, "sku = ?", sku).Error; err != nil {
+				return err
+			}
+			needed := int(math.Ceil(requiredQty))
+			if material.Stock-material.ReservedQty < needed {
+				return fmt.Errorf("stock not sufficient for %s: need %d %s, available %d %s", material.Name, needed, material.BaseUnit, material.Stock-material.ReservedQty, material.BaseUnit)
+			}
+		}
+		code, err := NextCode(tx, "PRD-2026-", &models.ProductionRun{}, "code")
+		if err != nil {
+			return err
+		}
+		lot := req.Lot
+		if lot == "" {
+			lot = "FG-" + code
+		}
+		run = models.ProductionRun{Code: code, ProductID: product.ID, SKU: product.SKU, SkuName: product.Name, BOMCode: bom.Code, Qty: req.Qty, Lot: lot, ExpiryDate: req.ExpiryDate, Date: time.Now().Format("2006-01-02"), Note: req.Note, ProducedBy: username}
+		if err := tx.Create(&run).Error; err != nil {
+			return err
+		}
+		for sku, requiredQty := range requirements {
+			if err := deductFefoStock(tx, sku, int(math.Ceil(requiredQty)), run.Code, &run.ID, "production_runs", username); err != nil {
+				return err
+			}
+		}
+		outputLot := models.StockLot{Code: "LOT-" + run.Code, ProductID: product.ID, SKU: product.SKU, Lot: lot, Qty: req.Qty, RemainingQty: req.Qty, LandedUnitCost: product.Cost, ExpiryDate: req.ExpiryDate, ReceivedDate: run.Date, GrRef: run.Code}
+		if err := tx.Create(&outputLot).Error; err != nil {
+			return err
+		}
+		product.Stock += req.Qty
+		if err := tx.Save(&product).Error; err != nil {
+			return err
+		}
+		return tx.Create(&models.StockMovement{Code: fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), lot), ProductID: product.ID, SKU: product.SKU, Type: "IN", Qty: req.Qty, RefDoc: run.Code, RefDocType: "production_runs", RefDocID: &run.ID, Date: run.Date, Note: "Finished goods output", ChangedBy: username}).Error
+	})
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(run)
+}
+
 // POST /api/goods-issues
 func CreateGoodsIssue(c *fiber.Ctx) error {
 	var req struct {

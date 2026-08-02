@@ -50,6 +50,7 @@ type BOMDetailResponse struct {
 	ReadyItems       int               `json:"readyItems"`
 	TotalPRValue     float64           `json:"totalPrValue"`
 	TotalCostPerUnit float64           `json:"totalCostPerUnit"`
+	MaxProducibleQty int               `json:"maxProducibleQty"`
 	BomCode          string            `json:"bomCode"`
 	BomName          string            `json:"bomName"`
 	BomOutputQty     float64           `json:"bomOutputQty"`
@@ -106,7 +107,8 @@ type BOMComponentResponse struct {
 
 type BOMListResponse struct {
 	models.BOM
-	Components []BOMComponentResponse `json:"components"`
+	Components       []BOMComponentResponse `json:"components"`
+	MaxProducibleQty int                    `json:"maxProducibleQty"`
 }
 
 // GET /api/boms — list standalone BOM records
@@ -118,7 +120,17 @@ func ListBOMs(c *fiber.Ctx) error {
 	result := make([]BOMListResponse, 0, len(boms))
 	for _, bom := range boms {
 		components, _ := buildStandaloneBOMComponents(database.DB, bom)
-		result = append(result, BOMListResponse{BOM: bom, Components: components})
+		maxProducibleQty := 0
+		if bom.Status == "Active" {
+			if detail, err := buildBOMDetail(bom.FgSku, 1); err == nil {
+				maxProducibleQty = detail.MaxProducibleQty
+			}
+		}
+		result = append(result, BOMListResponse{
+			BOM:              bom,
+			Components:       components,
+			MaxProducibleQty: maxProducibleQty,
+		})
 	}
 	return c.JSON(result)
 }
@@ -381,6 +393,8 @@ func buildBOMDetail(sku string, productionQty int) (BOMDetailResponse, error) {
 	prRequired := 0
 	totalPRValue := 0.0
 	totalCostPerUnit := 0.0
+	maxProducibleQty := math.MaxInt
+	hasMaterialRequirement := false
 	for _, line := range lines {
 		if line.Shortage == 0 {
 			readyItems++
@@ -390,6 +404,13 @@ func buildBOMDetail(sku string, productionQty int) (BOMDetailResponse, error) {
 			totalPRValue += line.PRValue
 		}
 		totalCostPerUnit += line.CostPerFinishedUnit
+		if line.SKU != "" && line.QtyPerUnit > 0 {
+			hasMaterialRequirement = true
+			maxProducibleQty = min(maxProducibleQty, int(math.Floor(line.StockQty/line.QtyPerUnit)))
+		}
+	}
+	if !hasMaterialRequirement {
+		maxProducibleQty = 0
 	}
 
 	return BOMDetailResponse{
@@ -401,6 +422,7 @@ func buildBOMDetail(sku string, productionQty int) (BOMDetailResponse, error) {
 		ReadyItems:       readyItems,
 		TotalPRValue:     totalPRValue,
 		TotalCostPerUnit: totalCostPerUnit,
+		MaxProducibleQty: maxProducibleQty,
 		Lines:            lines,
 	}, nil
 }

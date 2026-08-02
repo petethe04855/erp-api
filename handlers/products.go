@@ -60,6 +60,33 @@ func UpdateProduct(c *fiber.Ctx) error {
 	delete(updateData, "id")
 	delete(updateData, "sku")
 
+	// Quantities in Product, StockLot, and StockMovement are stored in the
+	// product's base unit. Changing that unit after inventory activity would
+	// relabel historical numbers without converting them and corrupt balances.
+	requestedBaseUnit, hasBaseUnit := updateData["baseUnit"].(string)
+	if !hasBaseUnit {
+		requestedBaseUnit, hasBaseUnit = updateData["base_unit"].(string)
+	}
+	if hasBaseUnit && requestedBaseUnit != "" && requestedBaseUnit != prod.BaseUnit {
+		var lotCount int64
+		if err := database.DB.Model(&models.StockLot{}).
+			Where("sku = ?", sku).
+			Count(&lotCount).Error; err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		var movementCount int64
+		if err := database.DB.Model(&models.StockMovement{}).
+			Where("sku = ?", sku).
+			Count(&movementCount).Error; err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		if prod.Stock != 0 || prod.ReservedQty != 0 || lotCount > 0 || movementCount > 0 {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "cannot change base unit after stock activity; create a new SKU or convert inventory through Stock Adjustment",
+			})
+		}
+	}
+
 	if len(updateData) > 0 {
 		if err := database.DB.Model(&prod).Updates(updateData).Error; err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})

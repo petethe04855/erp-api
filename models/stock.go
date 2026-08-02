@@ -2,20 +2,20 @@ package models
 
 // StockLot represents tracking at a lot level (for FEFO)
 type StockLot struct {
-	ID             uint    `gorm:"primaryKey;autoIncrement" json:"id"`
-	Code           string  `json:"code"`
-	ProductID      uint    `gorm:"index" json:"productId"`
-	SKU            string  `gorm:"index" json:"sku"`
-	Lot            string  `json:"lot"`
-	Qty            int     `json:"qty"`
-	RemainingQty   int     `json:"remainingQty"`
-	LandedUnitCost float64 `json:"landedUnitCost"`
-	ExpiryDate     string  `json:"expiryDate"`
-	ReceivedDate   string  `json:"receivedDate"`
-	GoodsReceiveID *uint   `gorm:"index" json:"goodsReceiveId,omitempty"`
-	GrRef          string  `json:"grRef"`
-	PurchaseOrderID *uint  `gorm:"index" json:"purchaseOrderId,omitempty"`
-	PoRef          string  `json:"poRef"`
+	ID              uint    `gorm:"primaryKey;autoIncrement" json:"id"`
+	Code            string  `json:"code"`
+	ProductID       uint    `gorm:"index" json:"productId"`
+	SKU             string  `gorm:"index" json:"sku"`
+	Lot             string  `json:"lot"`
+	Qty             int     `json:"qty"`
+	RemainingQty    int     `json:"remainingQty"`
+	LandedUnitCost  float64 `json:"landedUnitCost"`
+	ExpiryDate      string  `json:"expiryDate"`
+	ReceivedDate    string  `json:"receivedDate"`
+	GoodsReceiveID  *uint   `gorm:"index" json:"goodsReceiveId,omitempty"`
+	GrRef           string  `json:"grRef"`
+	PurchaseOrderID *uint   `gorm:"index" json:"purchaseOrderId,omitempty"`
+	PoRef           string  `json:"poRef"`
 }
 
 // GoodsIssue represents stock issues not related to orders
@@ -30,6 +30,23 @@ type GoodsIssue struct {
 	Note      string `json:"note"`
 	Date      string `json:"date"`
 	IssuedBy  string `json:"issuedBy"`
+}
+
+// ProductionRun records the conversion of BOM materials into finished goods.
+// The output is received as a normal stock lot; the inputs are deducted FEFO.
+type ProductionRun struct {
+	ID         uint   `gorm:"primaryKey;autoIncrement" json:"id"`
+	Code       string `gorm:"uniqueIndex" json:"code"`
+	ProductID  uint   `gorm:"index" json:"productId"`
+	SKU        string `gorm:"index" json:"sku"`
+	SkuName    string `json:"skuName"`
+	BOMCode    string `json:"bomCode"`
+	Qty        int    `json:"qty"`
+	Lot        string `json:"lot"`
+	ExpiryDate string `json:"expiryDate"`
+	Date       string `json:"date"`
+	Note       string `json:"note"`
+	ProducedBy string `json:"producedBy"`
 }
 
 // StockReturn represents returned client stock
@@ -91,16 +108,16 @@ type StockTransfer struct {
 
 // StockMovement represents tracking stock history
 type StockMovement struct {
-	ID        uint   `gorm:"primaryKey;autoIncrement" json:"id"`
-	Code      string `json:"code"`
-	ProductID uint   `gorm:"index" json:"productId"`
-	SKU       string `json:"sku"`
-	Type      string `json:"type"` // IN, OUT
-	Qty       int    `json:"qty"`
-	RefDoc    string `json:"refDoc"`
+	ID         uint   `gorm:"primaryKey;autoIncrement" json:"id"`
+	Code       string `json:"code"`
+	ProductID  uint   `gorm:"index" json:"productId"`
+	SKU        string `json:"sku"`
+	Type       string `json:"type"` // IN, OUT
+	Qty        int    `json:"qty"`
+	RefDoc     string `json:"refDoc"`
 	RefDocType string `json:"refDocType"`
-	RefDocID  *uint  `json:"refDocId,omitempty"`
-	Date      string `json:"date"`
-	Note      string `json:"note"`
-	ChangedBy string `json:"changedBy"`
+	RefDocID   *uint  `json:"refDocId,omitempty"`
+	Date       string `json:"date"`
+	Note       string `json:"note"`
+	ChangedBy  string `json:"changedBy"`
 }
