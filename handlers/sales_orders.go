@@ -18,8 +18,14 @@ func CreateSalesOrder(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	if so.Customer == "" || so.Amount <= 0 {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "SO requires customer and amount > 0"})
+	if so.Customer == "" || len(so.Lines) == 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Sales Entry requires customer and at least one item"})
+	}
+	if so.SourceRef != "" {
+		var existing models.SalesOrder
+		if err := database.DB.Where("source_ref = ?", so.SourceRef).First(&existing).Error; err == nil {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "source order has already been imported as " + existing.Code})
+		}
 	}
 
 	// Check if qtRef already converted
@@ -36,8 +42,13 @@ func CreateSalesOrder(c *fiber.Ctx) error {
 	}
 
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		so.Amount = 0
+		so.Items = 0
 		// Verify and reserve stock
 		for i, line := range so.Lines {
+			if line.Qty <= 0 {
+				return fmt.Errorf("quantity must be greater than zero for item %s", line.SKU)
+			}
 			var p models.Product
 			if err := tx.First(&p, "sku = ?", line.SKU).Error; err != nil {
 				return fmt.Errorf("Product %s not found", line.SKU)
@@ -46,6 +57,15 @@ func CreateSalesOrder(c *fiber.Ctx) error {
 				return fmt.Errorf("sales item %s must be a Finished Product", line.SKU)
 			}
 			so.Lines[i].ProductID = p.ID
+			if so.Lines[i].UnitPrice <= 0 {
+				so.Lines[i].UnitPrice = p.RetailPrice
+			}
+			if so.Lines[i].UnitPrice <= 0 {
+				return fmt.Errorf("selling price must be greater than zero for item %s", line.SKU)
+			}
+			so.Lines[i].LineTotal = so.Lines[i].UnitPrice * float64(line.Qty)
+			so.Amount += so.Lines[i].LineTotal
+			so.Items += line.Qty
 			if err := reserveSalesStock(tx, p, line.Qty, 1); err != nil {
 				return err
 			}
@@ -56,8 +76,6 @@ func CreateSalesOrder(c *fiber.Ctx) error {
 			return err
 		}
 		so.Code = code
-		so.Items = len(so.Lines)
-
 		if so.Date == "" {
 			so.Date = time.Now().Format("2006-01-02")
 		}
@@ -97,53 +115,24 @@ func CreateSalesOrder(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	database.DB.Preload("Lines").Preload("AuditTrail").First(&so, so.ID)
+	database.DB.Preload("Lines").Preload("Lines.Allocations").Preload("AuditTrail").First(&so, so.ID)
 	return c.JSON(so)
 }
 
-// reserveSalesStock reserves physical inventory for a sales line. Bundle sales
-// reserve their BOM components, so available stock stays consistent with stock
-// checking, transfers, and the later FEFO deduction.
+// reserveSalesStock reserves physical finished-goods inventory for a sales line.
 func reserveSalesStock(tx *gorm.DB, product models.Product, qty int, direction int) error {
-	type reservation struct {
-		product models.Product
-		qty     int
+	if qty <= 0 {
+		return fmt.Errorf("quantity must be greater than zero")
 	}
-	reservations := []reservation{}
-
-	// When finished goods have been received from Production Run, sell that
-	// physical inventory directly. A BOM is used only as a fallback for virtual
-	// products that do not yet have finished-goods stock.
-	if product.Stock > 0 {
-		reservations = append(reservations, reservation{product: product, qty: qty})
-	} else {
-		requirements, err := expandBOMMaterialRequirements(tx, product.SKU, float64(qty), map[string]bool{})
-		if err != nil {
-			return err
-		}
-		for sku, requiredQty := range requirements {
-			var component models.Product
-			if err := tx.First(&component, "sku = ?", sku).Error; err != nil {
-				return err
-			}
-			reservations = append(reservations, reservation{product: component, qty: int(math.Ceil(requiredQty))})
-		}
+	if direction > 0 && product.Stock-product.ReservedQty < qty {
+		available := product.Stock - product.ReservedQty
+		return fmt.Errorf("สต็อกไม่พอ: %s ต้องใช้ %d, พร้อมขาย %d", product.Name, qty, available)
 	}
-
-	for _, item := range reservations {
-		if direction > 0 && item.product.Stock-item.product.ReservedQty < item.qty {
-			available := item.product.Stock - item.product.ReservedQty
-			return fmt.Errorf("สต็อคไม่พอ: %s ต้องใช้ %d %s, พร้อมใช้ %d %s", item.product.Name, item.qty, item.product.BaseUnit, available, item.product.BaseUnit)
-		}
-		item.product.ReservedQty += direction * item.qty
-		if item.product.ReservedQty < 0 {
-			item.product.ReservedQty = 0
-		}
-		if err := tx.Save(&item.product).Error; err != nil {
-			return err
-		}
+	product.ReservedQty += direction * qty
+	if product.ReservedQty < 0 {
+		product.ReservedQty = 0
 	}
-	return nil
+	return tx.Save(&product).Error
 }
 
 // PUT /api/sales-orders/:id/status
@@ -163,6 +152,13 @@ func UpdateSalesOrderStatus(c *fiber.Ctx) error {
 
 	if so.Status == "Cancelled" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Cannot update cancelled order"})
+	}
+	if so.Status == "Completed" && req.Status != "Completed" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Completed Sales Entry is immutable; use Sales Return/Reversal"})
+	}
+	allowedStatus := map[string]bool{"Pending": true, "Processing": true, "Completed": true, "Cancelled": true}
+	if !allowedStatus[req.Status] {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid Sales Entry status"})
 	}
 
 	username := c.Locals("name")
@@ -197,27 +193,16 @@ func UpdateSalesOrderStatus(c *fiber.Ctx) error {
 
 		// FEFO Stock deduction when completed
 		if newStatus == "Completed" && len(so.Lines) > 0 {
-			for _, line := range so.Lines {
-				var product models.Product
-				if err := tx.First(&product, "sku = ?", line.SKU).Error; err != nil {
+			so.TotalCOGS = 0
+			for i := range so.Lines {
+				lineCost, err := deductSalesLineFefo(tx, &so, &so.Lines[i], username.(string))
+				if err != nil {
 					return err
 				}
-
-				if product.Stock > 0 {
-					if err := deductFefoStock(tx, product.SKU, line.Qty, so.Code, &so.ID, "sales_orders", username.(string)); err != nil {
-						return err
-					}
-				} else {
-					requirements, err := expandBOMMaterialRequirements(tx, product.SKU, float64(line.Qty), map[string]bool{})
-					if err != nil {
-						return err
-					}
-					for sku, requiredQty := range requirements {
-						if err := deductFefoStock(tx, sku, int(math.Ceil(requiredQty)), so.Code, &so.ID, "sales_orders", username.(string)); err != nil {
-							return err
-						}
-					}
-				}
+				so.TotalCOGS += lineCost
+			}
+			if err := tx.Model(&so).Update("total_cogs", so.TotalCOGS).Error; err != nil {
+				return err
 			}
 		}
 
@@ -238,11 +223,93 @@ func UpdateSalesOrderStatus(c *fiber.Ctx) error {
 	})
 
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	database.DB.Preload("Lines").Preload("AuditTrail").First(&so, so.ID)
+	database.DB.Preload("Lines").Preload("Lines.Allocations").Preload("AuditTrail").First(&so, so.ID)
 	return c.JSON(so)
+}
+
+func deductSalesLineFefo(tx *gorm.DB, so *models.SalesOrder, line *models.SalesOrderLine, by string) (float64, error) {
+	var product models.Product
+	if err := tx.First(&product, "sku = ?", line.SKU).Error; err != nil {
+		return 0, err
+	}
+	if err := ensureLotBalance(tx, product); err != nil {
+		return 0, err
+	}
+
+	var existing int64
+	if err := tx.Model(&models.SalesStockAllocation{}).Where("sales_order_line_id = ?", line.ID).Count(&existing).Error; err != nil {
+		return 0, err
+	}
+	if existing > 0 {
+		return 0, fmt.Errorf("sales line %d has already been allocated", line.ID)
+	}
+
+	var lots []models.StockLot
+	if err := tx.Where("sku = ? AND remaining_qty > 0", line.SKU).
+		Order("CASE WHEN expiry_date IS NULL OR expiry_date = '' THEN 1 ELSE 0 END, expiry_date ASC, received_date ASC, id ASC").
+		Find(&lots).Error; err != nil {
+		return 0, err
+	}
+
+	remaining := line.Qty
+	totalCost := 0.0
+	for i := range lots {
+		if remaining == 0 {
+			break
+		}
+		lot := &lots[i]
+		qty := lot.RemainingQty
+		if qty > remaining {
+			qty = remaining
+		}
+		cost := float64(qty) * lot.LandedUnitCost
+		lot.RemainingQty -= qty
+		remaining -= qty
+		totalCost += cost
+		if err := tx.Save(lot).Error; err != nil {
+			return 0, err
+		}
+
+		allocation := models.SalesStockAllocation{
+			SalesOrderID: so.ID, SalesOrderLineID: line.ID, StockLotID: lot.ID,
+			SKU: line.SKU, Lot: lot.Lot, Qty: qty, UnitCost: lot.LandedUnitCost,
+			TotalCost: cost, ExpiryDate: lot.ExpiryDate,
+		}
+		if err := tx.Create(&allocation).Error; err != nil {
+			return 0, err
+		}
+		movement := models.StockMovement{
+			Code:      fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), lot.Lot),
+			ProductID: product.ID, SKU: line.SKU, Type: "OUT", Qty: qty,
+			RefDoc: so.Code, RefDocType: "sales_orders", RefDocID: &so.ID,
+			Date:      time.Now().Format("2006-01-02"),
+			Note:      fmt.Sprintf("SALES_OUT line %d FEFO lot %s exp %s cost %.2f", line.ID, lot.Lot, lot.ExpiryDate, cost),
+			ChangedBy: by,
+		}
+		if err := tx.Create(&movement).Error; err != nil {
+			return 0, err
+		}
+	}
+	if remaining > 0 {
+		return 0, fmt.Errorf("lot stock not sufficient for %s: missing %d", line.SKU, remaining)
+	}
+
+	product.Stock -= line.Qty
+	if product.Stock < 0 {
+		return 0, fmt.Errorf("stock cannot become negative for %s", line.SKU)
+	}
+	if err := tx.Save(&product).Error; err != nil {
+		return 0, err
+	}
+	line.TotalCost = totalCost
+	line.UnitCost = totalCost / float64(line.Qty)
+	if err := tx.Model(line).Updates(map[string]interface{}{"unit_cost": line.UnitCost, "total_cost": line.TotalCost}).Error; err != nil {
+		return 0, err
+	}
+	return totalCost, nil
 }
 
 // Helper: Deduct stock from earliest expiry lots (FEFO)

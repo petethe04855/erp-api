@@ -144,6 +144,7 @@ func ConnectDB() {
 		&models.StockAdjustmentItem{},
 		&models.QuotationLine{},
 		&models.SalesOrderLine{},
+		&models.SalesStockAllocation{},
 		&models.PurchaseRequestItem{},
 		&models.PurchaseOrderItem{},
 		&models.GoodsReceiveItem{},

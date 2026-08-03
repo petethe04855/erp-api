@@ -31,6 +31,7 @@ type SalesOrder struct {
 	Customer    string           `json:"customer"`
 	Date        string           `json:"date"`
 	Amount      float64          `json:"amount"`
+	TotalCOGS   float64          `gorm:"default:0" json:"totalCogs"`
 	Status      string           `json:"status"`
 	Channel     string           `json:"channel"`
 	Items       int              `json:"items"`
@@ -44,11 +45,30 @@ type SalesOrder struct {
 
 // SalesOrderLine represents items inside an order
 type SalesOrderLine struct {
-	ID           uint   `gorm:"primaryKey;autoIncrement" json:"id"`
-	SalesOrderID uint   `gorm:"index" json:"salesOrderId"`
-	ProductID    uint   `gorm:"index" json:"productId"`
-	SKU          string `json:"sku"`
-	Qty          int    `json:"qty"`
+	ID           uint                   `gorm:"primaryKey;autoIncrement" json:"id"`
+	SalesOrderID uint                   `gorm:"index" json:"salesOrderId"`
+	ProductID    uint                   `gorm:"index" json:"productId"`
+	SKU          string                 `gorm:"index" json:"sku"`
+	Qty          int                    `json:"qty"`
+	UnitPrice    float64                `gorm:"default:0" json:"unitPrice"`
+	LineTotal    float64                `gorm:"default:0" json:"lineTotal"`
+	UnitCost     float64                `gorm:"default:0" json:"unitCost"`
+	TotalCost    float64                `gorm:"default:0" json:"totalCost"`
+	Allocations  []SalesStockAllocation `gorm:"foreignKey:SalesOrderLineID" json:"allocations"`
+}
+
+// SalesStockAllocation records the exact FEFO lots and costs consumed by a sales line.
+type SalesStockAllocation struct {
+	ID               uint    `gorm:"primaryKey;autoIncrement" json:"id"`
+	SalesOrderID     uint    `gorm:"index;not null" json:"salesOrderId"`
+	SalesOrderLineID uint    `gorm:"uniqueIndex:idx_sales_line_lot;not null" json:"salesOrderLineId"`
+	StockLotID       uint    `gorm:"uniqueIndex:idx_sales_line_lot;not null" json:"stockLotId"`
+	SKU              string  `gorm:"index" json:"sku"`
+	Lot              string  `json:"lot"`
+	Qty              int     `json:"qty"`
+	UnitCost         float64 `json:"unitCost"`
+	TotalCost        float64 `json:"totalCost"`
+	ExpiryDate       string  `json:"expiryDate"`
 }
 
 // AuditEvent represents audit logs for entities like SO or Invoice

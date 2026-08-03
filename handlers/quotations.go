@@ -126,6 +126,8 @@ func ConvertQuotationToSalesOrder(c *fiber.Ctx) error {
 				ProductID:    ql.ProductID,
 				SKU:          ql.SKU,
 				Qty:          ql.Qty,
+				UnitPrice:    ql.Price,
+				LineTotal:    ql.Price * float64(ql.Qty),
 			}
 			if err := tx.Create(&soLine).Error; err != nil {
 				return err
@@ -133,13 +135,13 @@ func ConvertQuotationToSalesOrder(c *fiber.Ctx) error {
 			soLines = append(soLines, soLine)
 			totalItems += ql.Qty
 
-			// Update ReservedQty on products
+			// Reserve finished-goods stock using the same rule as direct Sales Entry.
 			var prod models.Product
-			if err := tx.First(&prod, "sku = ?", ql.SKU).Error; err == nil {
-				prod.ReservedQty += ql.Qty
-				if err := tx.Save(&prod).Error; err != nil {
-					return err
-				}
+			if err := tx.First(&prod, "sku = ?", ql.SKU).Error; err != nil {
+				return err
+			}
+			if err := reserveSalesStock(tx, prod, ql.Qty, 1); err != nil {
+				return err
 			}
 		}
 
