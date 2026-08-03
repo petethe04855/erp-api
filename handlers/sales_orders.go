@@ -598,7 +598,8 @@ func RecordPayment(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Invoice not found"})
 	}
 
-	if inv.Status == "Paid" || req.Amount <= 0 || req.Amount > inv.Amount-inv.Paid {
+	netAmount := inv.Amount - inv.Credited
+	if inv.Status == "Paid" || req.Amount <= 0 || req.Amount > netAmount-inv.Paid {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid payment registration"})
 	}
 	if req.AccountCode == "" {
@@ -618,7 +619,7 @@ func RecordPayment(c *fiber.Ctx) error {
 
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
 		inv.Paid = math.Min(inv.Paid+req.Amount, inv.Amount)
-		if inv.Paid >= inv.Amount {
+		if inv.Paid >= netAmount {
 			inv.Status = "Paid"
 		} else {
 			inv.Status = "Partial"

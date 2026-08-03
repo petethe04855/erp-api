@@ -52,3 +52,19 @@ type CustomerPayment struct {
 	Reference   string  `json:"reference"`
 	CreatedBy   string  `json:"createdBy"`
 }
+
+// CreditNote reduces a customer's invoice balance without deleting the original invoice.
+type CreditNote struct {
+	ID            uint    `gorm:"primaryKey;autoIncrement" json:"id"`
+	Code          string  `gorm:"uniqueIndex;not null" json:"code"`
+	StockReturnID uint    `gorm:"uniqueIndex;not null" json:"stockReturnId"`
+	InvoiceID     *uint   `gorm:"index" json:"invoiceId,omitempty"`
+	InvoiceRef    string  `gorm:"index" json:"invoiceRef"`
+	SalesOrderID  uint    `gorm:"index;not null" json:"salesOrderId"`
+	SoRef         string  `gorm:"index" json:"soRef"`
+	Date          string  `json:"date"`
+	Amount        float64 `json:"amount"`
+	Reason        string  `json:"reason"`
+	Status        string  `gorm:"default:'Posted'" json:"status"`
+	CreatedBy     string  `json:"createdBy"`
+}

@@ -14,6 +14,7 @@ func RegisterFinanceRoutes(api fiber.Router) {
 	api.Get("/journal-entries", handlers.ListResource(func() interface{} { return &[]models.JournalEntry{} }, "Lines"))
 	api.Get("/journal-entries/:id", handlers.GetResource(func() interface{} { return &models.JournalEntry{} }, "id", "id", "Lines"))
 	api.Get("/customer-payments", handlers.ListResource(func() interface{} { return &[]models.CustomerPayment{} }))
+	api.Get("/credit-notes", handlers.ListResource(func() interface{} { return &[]models.CreditNote{} }))
 
 	// Finance & Expenses
 	api.Get("/expenses", handlers.ListResource(func() interface{} { return &[]models.Expense{} }))

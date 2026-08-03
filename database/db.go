@@ -57,6 +57,13 @@ func ConnectDB() {
 	if os.Getenv("CLEAN_DB") == "true" {
 		log.Println("CLEAN_DB is true: Dropping all tables to ensure clean migration...")
 		tables := []string{
+			"journal_lines",
+			"journal_entries",
+			"customer_payments",
+			"credit_notes",
+			"return_stock_allocations",
+			"sales_stock_allocations",
+			"accounts",
 			"audit_events",
 			"sales_order_lines",
 			"sales_orders",
@@ -118,6 +125,7 @@ func ConnectDB() {
 		&models.Account{},
 		&models.JournalEntry{},
 		&models.CustomerPayment{},
+		&models.CreditNote{},
 		&models.BOM{},
 		&models.BundleComponent{},
 		&models.StockLot{},
@@ -148,6 +156,7 @@ func ConnectDB() {
 		&models.QuotationLine{},
 		&models.SalesOrderLine{},
 		&models.SalesStockAllocation{},
+		&models.ReturnStockAllocation{},
 		&models.JournalLine{},
 		&models.PurchaseRequestItem{},
 		&models.PurchaseOrderItem{},
@@ -169,6 +178,7 @@ func ConnectDB() {
 		{Code: "4000", Name: "รายได้จากการขาย", Type: "Revenue", IsActive: true},
 		{Code: "5000", Name: "ต้นทุนขาย", Type: "Expense", IsActive: true},
 		{Code: "5100", Name: "ส่วนลดและคืนสินค้า", Type: "Expense", IsActive: true},
+		{Code: "5200", Name: "ขาดทุนจากสินค้าคืนเสียหาย", Type: "Expense", IsActive: true},
 	}
 	for _, account := range defaultAccounts {
 		if err := DB.Where("code = ?", account.Code).FirstOrCreate(&account).Error; err != nil {

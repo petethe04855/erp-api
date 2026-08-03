@@ -17,8 +17,8 @@ func RegisterInventoryRoutes(api fiber.Router) {
 	api.Get("/production-runs/:id", handlers.GetResource(func() interface{} { return &models.ProductionRun{} }, "id", "id"))
 	api.Post("/production-runs", handlers.CreateProductionRun)
 
-	api.Get("/stock-returns", handlers.ListResource(func() interface{} { return &[]models.StockReturn{} }))
-	api.Get("/stock-returns/:id", handlers.GetResource(func() interface{} { return &models.StockReturn{} }, "id", "id"))
+	api.Get("/stock-returns", handlers.ListResource(func() interface{} { return &[]models.StockReturn{} }, "Allocations"))
+	api.Get("/stock-returns/:id", handlers.GetResource(func() interface{} { return &models.StockReturn{} }, "id", "id", "Allocations"))
 	api.Post("/stock-returns", handlers.CreateStockReturn)
 	api.Put("/stock-returns/:id/status", handlers.UpdateStockReturnStatus)
 

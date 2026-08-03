@@ -290,47 +290,8 @@ func UpdateStockReturnStatus(c *fiber.Ctx) error {
 		}
 		sr.Status = req.Status
 		if req.Status == "Completed" {
-			var product models.Product
-			if err := tx.First(&product, "sku = ?", sr.SKU).Error; err != nil {
+			if err := completeStockReturn(tx, &sr, username.(string)); err != nil {
 				return err
-			}
-			if sr.Condition == "ดี" {
-				product.Stock += sr.Qty
-				if err := tx.Save(&product).Error; err != nil {
-					return err
-				}
-				lot := models.StockLot{
-					Code:           fmt.Sprintf("LOT-%s", sr.Code),
-					ProductID:      product.ID,
-					SKU:            sr.SKU,
-					Lot:            fmt.Sprintf("RET-%s", sr.Code),
-					Qty:            sr.Qty,
-					RemainingQty:   sr.Qty,
-					LandedUnitCost: product.Cost,
-					ReceivedDate:   time.Now().Format("2006-01-02"),
-					GrRef:          sr.Code,
-				}
-				if err := tx.Create(&lot).Error; err != nil {
-					return err
-				}
-				movement := models.StockMovement{
-					Code:       fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), sr.SKU),
-					ProductID:  product.ID,
-					SKU:        sr.SKU,
-					Type:       "IN",
-					Qty:        sr.Qty,
-					RefDoc:     sr.Code,
-					RefDocType: "stock_returns",
-					RefDocID:   &sr.ID,
-					Date:       time.Now().Format("2006-01-02"),
-					Note:       fmt.Sprintf("รับคืน: %s - สภาพดี", sr.Reason),
-					ChangedBy:  username.(string),
-				}
-				if err := tx.Create(&movement).Error; err != nil {
-					return err
-				}
-			} else if sr.Condition == "เสียหาย" {
-				// Do not add stock or create movements for damaged return
 			}
 		}
 		if err := tx.Save(&sr).Error; err != nil {
@@ -341,7 +302,165 @@ func UpdateStockReturnStatus(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
+	database.DB.Preload("Allocations").First(&sr, sr.ID)
 	return c.JSON(sr)
+}
+
+func completeStockReturn(tx *gorm.DB, sr *models.StockReturn, username string) error {
+	var so models.SalesOrder
+	if sr.SalesOrderID == nil || tx.Preload("Lines.Allocations").First(&so, *sr.SalesOrderID).Error != nil {
+		return fmt.Errorf("original sales order and lot allocations are required")
+	}
+
+	remaining := sr.Qty
+	creditAmount := 0.0
+	totalCost := 0.0
+	var returnAllocations []models.ReturnStockAllocation
+	for _, line := range so.Lines {
+		if line.SKU != sr.SKU || remaining == 0 {
+			continue
+		}
+		lineRemaining := line.Qty
+		if lineRemaining > remaining {
+			lineRemaining = remaining
+		}
+		requestedForLine := lineRemaining
+		unitPrice := line.UnitPrice
+		if unitPrice == 0 && line.Qty > 0 {
+			unitPrice = line.LineTotal / float64(line.Qty)
+		}
+
+		for _, sold := range line.Allocations {
+			if lineRemaining == 0 {
+				break
+			}
+			var alreadyReturned int64
+			if err := tx.Model(&models.ReturnStockAllocation{}).
+				Where("sales_stock_allocation_id = ?", sold.ID).
+				Select("COALESCE(SUM(qty), 0)").Scan(&alreadyReturned).Error; err != nil {
+				return err
+			}
+			available := sold.Qty - int(alreadyReturned)
+			if available <= 0 {
+				continue
+			}
+			qty := available
+			if qty > lineRemaining {
+				qty = lineRemaining
+			}
+			cost := sold.UnitCost * float64(qty)
+			returnAllocations = append(returnAllocations, models.ReturnStockAllocation{
+				StockReturnID: sr.ID, SalesStockAllocationID: sold.ID, StockLotID: sold.StockLotID,
+				SKU: sold.SKU, Lot: sold.Lot, Qty: qty, UnitCost: sold.UnitCost,
+				TotalCost: cost, Restocked: sr.Condition == "ดี",
+			})
+			totalCost += cost
+			lineRemaining -= qty
+			remaining -= qty
+		}
+		creditAmount += unitPrice * float64(requestedForLine-lineRemaining)
+	}
+	if remaining != 0 {
+		return fmt.Errorf("original lot allocation is insufficient for return")
+	}
+	if creditAmount <= 0 {
+		return fmt.Errorf("original sales price is required for credit note")
+	}
+
+	if err := tx.Create(&returnAllocations).Error; err != nil {
+		return err
+	}
+	if sr.Condition == "ดี" {
+		var product models.Product
+		if err := tx.First(&product, sr.ProductID).Error; err != nil {
+			return err
+		}
+		product.Stock += sr.Qty
+		if err := tx.Save(&product).Error; err != nil {
+			return err
+		}
+		for _, allocation := range returnAllocations {
+			var lot models.StockLot
+			if err := tx.First(&lot, allocation.StockLotID).Error; err != nil {
+				return err
+			}
+			lot.RemainingQty += allocation.Qty
+			if err := tx.Save(&lot).Error; err != nil {
+				return err
+			}
+			movement := models.StockMovement{
+				Code: fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), sr.SKU), ProductID: product.ID,
+				SKU: sr.SKU, Type: "IN", Qty: allocation.Qty, RefDoc: sr.Code,
+				RefDocType: "stock_returns", RefDocID: &sr.ID, Date: sr.Date,
+				Note: fmt.Sprintf("คืนเข้า Lot %s", allocation.Lot), ChangedBy: username,
+			}
+			if err := tx.Create(&movement).Error; err != nil {
+				return err
+			}
+		}
+	}
+
+	creditCode, err := NextCode(tx, "CN-2026-", &models.CreditNote{}, "code")
+	if err != nil {
+		return err
+	}
+	creditNote := models.CreditNote{
+		Code: creditCode, StockReturnID: sr.ID, SalesOrderID: so.ID, SoRef: so.Code,
+		Date: sr.Date, Amount: creditAmount, Reason: sr.Reason, Status: "Posted", CreatedBy: username,
+	}
+	var invoice models.Invoice
+	if err := tx.Where("sales_order_id = ? OR so_ref = ?", so.ID, so.Code).First(&invoice).Error; err != nil {
+		return fmt.Errorf("invoice is required before completing a sales return")
+	}
+	if creditAmount > invoice.Amount-invoice.Credited {
+		return fmt.Errorf("credit amount exceeds invoice balance")
+	}
+	creditNote.InvoiceID = &invoice.ID
+	creditNote.InvoiceRef = invoice.Code
+	if err := tx.Create(&creditNote).Error; err != nil {
+		return err
+	}
+	invoice.Credited += creditAmount
+	netInvoiceAmount := invoice.Amount - invoice.Credited
+	if invoice.Paid >= netInvoiceAmount {
+		invoice.Status = "Paid"
+	} else if invoice.Paid > 0 {
+		invoice.Status = "Partial"
+	} else {
+		invoice.Status = "Unpaid"
+	}
+	invoice.RefundDue = 0
+	if invoice.Paid > netInvoiceAmount {
+		invoice.RefundDue = invoice.Paid - netInvoiceAmount
+	}
+	if err := tx.Save(&invoice).Error; err != nil {
+		return err
+	}
+
+	lines := []postingLine{{AccountCode: "5100", Debit: creditAmount}, {AccountCode: "1200", Credit: creditAmount}}
+	if totalCost > 0 {
+		debitAccount := "1300"
+		if sr.Condition == "เสียหาย" {
+			debitAccount = "5200"
+		}
+		lines = append(lines,
+			postingLine{AccountCode: debitAccount, Debit: totalCost, SKU: sr.SKU, Channel: sr.Channel},
+			postingLine{AccountCode: "5000", Credit: totalCost, SKU: sr.SKU, Channel: sr.Channel},
+		)
+	}
+	if _, err := postJournal(tx, postingRequest{
+		Date: sr.Date, SourceType: "sales_return", SourceID: sr.ID, SourceRef: sr.Code,
+		Description: "คืนสินค้าและออกใบลดหนี้ " + creditNote.Code, CreatedBy: username, Lines: lines,
+	}); err != nil {
+		return err
+	}
+
+	sr.CreditAmount = creditAmount
+	sr.TotalCost = totalCost
+	sr.CreditNoteID = &creditNote.ID
+	sr.CreditNoteRef = creditNote.Code
+	sr.Refunded = true
+	return nil
 }
 
 type StockAdjustmentRequest struct {

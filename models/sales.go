@@ -93,6 +93,8 @@ type Invoice struct {
 	DueDate      string       `json:"dueDate"`
 	Amount       float64      `json:"amount"`
 	Paid         float64      `json:"paid"`
+	Credited     float64      `gorm:"default:0" json:"credited"`
+	RefundDue    float64      `gorm:"default:0" json:"refundDue"`
 	Status       string       `json:"status"`
 	AuditTrail   []AuditEvent `gorm:"polymorphic:Owner;" json:"auditTrail"`
 }
