@@ -364,6 +364,8 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 
 		// มูลค่ารวมของที่รับ ใช้ราคา PO หรือราคาต่อหน่วยที่กรอกโดยตรง
 		totalValue := 0.0
+		receiptValue := 0.0
+		journalLines := make([]postingLine, 0, len(gr.Items)*2)
 		for i := range gr.Items {
 			unitCost := gr.Items[i].LandedUnitCost
 			if hasPO {
@@ -436,6 +438,14 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 
 			// ต้นทุนรวมต่อหน่วย = (ราคาซื้อ + ค่าขนส่งปัน) / จำนวน
 			item.LandedUnitCost = (lineValue + allocatedFreight) / float64(item.QtyReceived)
+			itemValue := item.LandedUnitCost * float64(item.QtyReceived)
+			receiptValue += itemValue
+			if itemValue > 0 {
+				journalLines = append(journalLines,
+					postingLine{AccountCode: "1300", Debit: itemValue, SKU: item.SKU, Lot: item.Lot},
+					postingLine{AccountCode: "2000", Credit: itemValue, SKU: item.SKU, Lot: item.Lot},
+				)
+			}
 			if err := tx.Save(item).Error; err != nil {
 				return err
 			}
@@ -514,6 +524,15 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 			}
 			po.Status = newStatus
 			if err := tx.Save(&po).Error; err != nil {
+				return err
+			}
+		}
+
+		if receiptValue > 0 {
+			if _, err := postJournal(tx, postingRequest{
+				Date: gr.ReceiveDate, SourceType: "goods_receipt", SourceID: gr.ID, SourceRef: gr.Code,
+				Description: "รับสินค้าสำเร็จรูปเข้าคลัง", CreatedBy: username.(string), Lines: journalLines,
+			}); err != nil {
 				return err
 			}
 		}

@@ -9,6 +9,12 @@ import (
 )
 
 func RegisterFinanceRoutes(api fiber.Router) {
+	// Accounting core
+	api.Get("/accounts", handlers.ListResource(func() interface{} { return &[]models.Account{} }))
+	api.Get("/journal-entries", handlers.ListResource(func() interface{} { return &[]models.JournalEntry{} }, "Lines"))
+	api.Get("/journal-entries/:id", handlers.GetResource(func() interface{} { return &models.JournalEntry{} }, "id", "id", "Lines"))
+	api.Get("/customer-payments", handlers.ListResource(func() interface{} { return &[]models.CustomerPayment{} }))
+
 	// Finance & Expenses
 	api.Get("/expenses", handlers.ListResource(func() interface{} { return &[]models.Expense{} }))
 	api.Get("/expenses/:id", handlers.GetResource(func() interface{} { return &models.Expense{} }, "id", "id"))

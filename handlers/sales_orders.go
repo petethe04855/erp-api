@@ -194,15 +194,30 @@ func UpdateSalesOrderStatus(c *fiber.Ctx) error {
 		// FEFO Stock deduction when completed
 		if newStatus == "Completed" && len(so.Lines) > 0 {
 			so.TotalCOGS = 0
+			journalLines := make([]postingLine, 0, len(so.Lines)*2)
 			for i := range so.Lines {
 				lineCost, err := deductSalesLineFefo(tx, &so, &so.Lines[i], username.(string))
 				if err != nil {
 					return err
 				}
 				so.TotalCOGS += lineCost
+				if lineCost > 0 {
+					journalLines = append(journalLines,
+						postingLine{AccountCode: "5000", Debit: lineCost, SKU: so.Lines[i].SKU, Channel: so.Channel},
+						postingLine{AccountCode: "1300", Credit: lineCost, SKU: so.Lines[i].SKU, Channel: so.Channel},
+					)
+				}
 			}
 			if err := tx.Model(&so).Update("total_cogs", so.TotalCOGS).Error; err != nil {
 				return err
+			}
+			if so.TotalCOGS > 0 {
+				if _, err := postJournal(tx, postingRequest{
+					Date: so.Date, SourceType: "sales_delivery", SourceID: so.ID, SourceRef: so.Code,
+					Description: "บันทึกต้นทุนขายจากการตัด Stock แบบ FEFO", CreatedBy: username.(string), Lines: journalLines,
+				}); err != nil {
+					return err
+				}
 			}
 		}
 
@@ -446,7 +461,7 @@ func CreateInvoice(c *fiber.Ctx) error {
 				var existing models.Invoice
 				tx.Preload("AuditTrail").First(&existing, "so_ref = ?", inv.SoRef)
 				inv = existing
-				return nil
+				return postInvoiceJournal(tx, &inv, username.(string))
 			}
 		}
 
@@ -482,7 +497,7 @@ func CreateInvoice(c *fiber.Ctx) error {
 			return err
 		}
 
-		return nil
+		return postInvoiceJournal(tx, &inv, username.(string))
 	})
 
 	if err != nil {
@@ -512,7 +527,7 @@ func CreateInvoiceFromSO(c *fiber.Ctx) error {
 		tx.Model(&models.Invoice{}).Where("sales_order_id = ? OR so_ref = ?", so.ID, so.Code).Count(&count)
 		if count > 0 {
 			tx.Preload("AuditTrail").First(&inv, "sales_order_id = ? OR so_ref = ?", so.ID, so.Code)
-			return nil
+			return postInvoiceJournal(tx, &inv, username.(string))
 		}
 
 		code, err := NextCode(tx, "INV-2026-", &models.Invoice{}, "code")
@@ -554,7 +569,7 @@ func CreateInvoiceFromSO(c *fiber.Ctx) error {
 			return err
 		}
 
-		return nil
+		return postInvoiceJournal(tx, &inv, username.(string))
 	})
 
 	if err != nil {
@@ -569,7 +584,10 @@ func CreateInvoiceFromSO(c *fiber.Ctx) error {
 func RecordPayment(c *fiber.Ctx) error {
 	id := c.Params("id")
 	var req struct {
-		Amount float64 `json:"amount"`
+		Amount      float64 `json:"amount"`
+		AccountCode string  `json:"accountCode"`
+		Method      string  `json:"method"`
+		Reference   string  `json:"reference"`
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
@@ -580,8 +598,17 @@ func RecordPayment(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Invoice not found"})
 	}
 
-	if inv.Status == "Paid" || req.Amount <= 0 {
+	if inv.Status == "Paid" || req.Amount <= 0 || req.Amount > inv.Amount-inv.Paid {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid payment registration"})
+	}
+	if req.AccountCode == "" {
+		req.AccountCode = "1100"
+	}
+	if req.AccountCode != "1100" && req.AccountCode != "1110" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "payment account must be cash 1100 or bank 1110"})
+	}
+	if req.Method == "" {
+		req.Method = "Cash"
 	}
 
 	username := c.Locals("name")
@@ -613,7 +640,28 @@ func RecordPayment(c *fiber.Ctx) error {
 			return err
 		}
 
-		return nil
+		paymentCode, err := NextCode(tx, "PAY-2026-", &models.CustomerPayment{}, "code")
+		if err != nil {
+			return err
+		}
+		payment := models.CustomerPayment{
+			Code: paymentCode, InvoiceID: inv.ID, InvoiceRef: inv.Code,
+			Date: time.Now().Format("2006-01-02"), Amount: req.Amount,
+			AccountCode: req.AccountCode, Method: req.Method, Reference: req.Reference,
+			CreatedBy: username.(string),
+		}
+		if err := tx.Create(&payment).Error; err != nil {
+			return err
+		}
+		_, err = postJournal(tx, postingRequest{
+			Date: payment.Date, SourceType: "customer_payment", SourceID: payment.ID, SourceRef: payment.Code,
+			Description: "รับชำระเงิน " + inv.Code, CreatedBy: username.(string),
+			Lines: []postingLine{
+				{AccountCode: req.AccountCode, Debit: req.Amount},
+				{AccountCode: "1200", Credit: req.Amount},
+			},
+		})
+		return err
 	})
 
 	if err != nil {
@@ -622,4 +670,19 @@ func RecordPayment(c *fiber.Ctx) error {
 
 	database.DB.Preload("AuditTrail").First(&inv, inv.ID)
 	return c.JSON(inv)
+}
+
+func postInvoiceJournal(tx *gorm.DB, inv *models.Invoice, by string) error {
+	if inv.Amount <= 0 {
+		return fmt.Errorf("invoice amount must be greater than zero")
+	}
+	_, err := postJournal(tx, postingRequest{
+		Date: inv.IssueDate, SourceType: "customer_invoice", SourceID: inv.ID, SourceRef: inv.Code,
+		Description: "ออกใบแจ้งหนี้ " + inv.Code, CreatedBy: by,
+		Lines: []postingLine{
+			{AccountCode: "1200", Debit: inv.Amount},
+			{AccountCode: "4000", Credit: inv.Amount},
+		},
+	})
+	return err
 }

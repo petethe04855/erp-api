@@ -115,6 +115,9 @@ func ConnectDB() {
 		&models.ModuleSettings{},
 		&models.LivePayrollSettings{},
 		&models.Product{},
+		&models.Account{},
+		&models.JournalEntry{},
+		&models.CustomerPayment{},
 		&models.BOM{},
 		&models.BundleComponent{},
 		&models.StockLot{},
@@ -145,6 +148,7 @@ func ConnectDB() {
 		&models.QuotationLine{},
 		&models.SalesOrderLine{},
 		&models.SalesStockAllocation{},
+		&models.JournalLine{},
 		&models.PurchaseRequestItem{},
 		&models.PurchaseOrderItem{},
 		&models.GoodsReceiveItem{},
@@ -154,6 +158,22 @@ func ConnectDB() {
 	)
 	if err != nil {
 		log.Fatalf("Database migration failed: %v", err)
+	}
+
+	defaultAccounts := []models.Account{
+		{Code: "1100", Name: "เงินสด", Type: "Asset", IsActive: true},
+		{Code: "1110", Name: "เงินฝากธนาคาร", Type: "Asset", IsActive: true},
+		{Code: "1200", Name: "ลูกหนี้การค้า", Type: "Asset", IsActive: true},
+		{Code: "1300", Name: "สินค้าคงเหลือ", Type: "Asset", IsActive: true},
+		{Code: "2000", Name: "บัญชีพักรับสินค้า", Type: "Liability", IsActive: true},
+		{Code: "4000", Name: "รายได้จากการขาย", Type: "Revenue", IsActive: true},
+		{Code: "5000", Name: "ต้นทุนขาย", Type: "Expense", IsActive: true},
+		{Code: "5100", Name: "ส่วนลดและคืนสินค้า", Type: "Expense", IsActive: true},
+	}
+	for _, account := range defaultAccounts {
+		if err := DB.Where("code = ?", account.Code).FirstOrCreate(&account).Error; err != nil {
+			log.Fatalf("Default account seed failed: %v", err)
+		}
 	}
 
 	// Drop incorrect polymorphic foreign key constraints if they exist
