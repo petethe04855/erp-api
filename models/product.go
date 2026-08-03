@@ -2,18 +2,24 @@ package models
 
 // Product represents a master SKU product
 type Product struct {
-	ID          uint    `gorm:"primaryKey;autoIncrement" json:"id"`
-	SKU         string  `gorm:"uniqueIndex;not null" json:"sku"`
-	Name        string  `json:"name"`
-	Type        string  `json:"type"` // Raw Material, Packaging, Sub-component, Finished Product, Bundle, Cat, Dog, Other
-	BaseUnit    string  `gorm:"default:'piece'" json:"baseUnit"`
-	Stock       int     `gorm:"default:0" json:"stock"`
-	ReservedQty int     `gorm:"default:0" json:"reservedQty"`
-	Cost        float64 `gorm:"default:0" json:"cost"`
-	IsBundle    bool    `json:"isBundle"`
-	IsActive    bool    `gorm:"default:true" json:"isActive"`
-	Note        string  `json:"note"`
-	BomID       *uint   `gorm:"index" json:"bomId,omitempty"`
+	ID             uint    `gorm:"primaryKey;autoIncrement" json:"id"`
+	SKU            string  `gorm:"uniqueIndex;not null" json:"sku"`
+	Name           string  `json:"name"`
+	Type           string  `gorm:"not null;default:'Finished Product'" json:"type"` // MVP SKUs are finished goods
+	Barcode        string  `gorm:"index" json:"barcode"`
+	WeightGrams    float64 `gorm:"default:0" json:"weightGrams"`
+	RetailPrice    float64 `gorm:"default:0" json:"retailPrice"`
+	WholesalePrice float64 `gorm:"default:0" json:"wholesalePrice"`
+	Price          float64 `gorm:"default:0" json:"price"`
+	BaseUnit       string  `gorm:"default:'piece'" json:"baseUnit"`
+	Stock          int     `gorm:"default:0" json:"stock"`
+	ReservedQty    int     `gorm:"default:0" json:"reservedQty"`
+	Cost           float64 `gorm:"default:0" json:"cost"`
+	Reorder        int     `gorm:"default:0" json:"reorder"`
+	IsBundle       bool    `json:"isBundle"`
+	IsActive       bool    `gorm:"default:true" json:"isActive"`
+	Note           string  `json:"note"`
+	BomID          *uint   `gorm:"index" json:"bomId,omitempty"`
 }
 
 // BOM represents a standalone bill of materials / recipe (not tied to a product SKU)

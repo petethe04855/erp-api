@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
+	"strings"
+	"time"
 )
 
 // POST /api/products
@@ -25,9 +27,16 @@ func CreateProduct(c *fiber.Ctx) error {
 		prod.IsActive = true
 	}
 
-	if prod.SKU == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "SKU is required"})
+	if prod.SKU == "" || strings.TrimSpace(prod.Name) == "" || prod.RetailPrice <= 0 || prod.Stock < 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "SKU, product name, and selling price greater than zero are required"})
 	}
+
+	// Phase 1 treats every newly-created SKU as physical finished goods.
+	// Legacy material/BOM records remain readable, but cannot be created here.
+	prod.Type = "Finished Product"
+	prod.IsBundle = false
+	prod.BomID = nil
+	prod.Price = prod.RetailPrice
 
 	// Verify if product already exists
 	var count int64
@@ -36,7 +45,38 @@ func CreateProduct(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Product with this SKU already exists"})
 	}
 
-	if err := database.DB.Create(&prod).Error; err != nil {
+	username := c.Locals("name")
+	if username == nil {
+		username = "System"
+	}
+	initialStock := prod.Stock
+	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&prod).Error; err != nil {
+			return err
+		}
+		if initialStock == 0 {
+			return nil
+		}
+
+		today := time.Now().Format("2006-01-02")
+		lotName := "OPENING-" + prod.SKU
+		lot := models.StockLot{
+			Code: "LOT-" + lotName, ProductID: prod.ID, SKU: prod.SKU, Lot: lotName,
+			Qty: initialStock, RemainingQty: initialStock, LandedUnitCost: 0,
+			ReceivedDate: today, GrRef: "OPENING_BALANCE",
+		}
+		if err := tx.Create(&lot).Error; err != nil {
+			return err
+		}
+		movement := models.StockMovement{
+			Code:      fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), prod.SKU),
+			ProductID: prod.ID, SKU: prod.SKU, Type: "IN", Qty: initialStock,
+			RefDoc: prod.SKU, RefDocType: "opening_stock", Date: today,
+			Note: "Opening Stock from SKU creation", ChangedBy: username.(string),
+		}
+		return tx.Create(&movement).Error
+	})
+	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
@@ -56,9 +96,77 @@ func UpdateProduct(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 
+	requestedSKU, _ := updateData["newSku"].(string)
+	if requestedSKU == "" {
+		requestedSKU, _ = updateData["new_sku"].(string)
+	}
+	requestedSKU = strings.ToUpper(strings.TrimSpace(requestedSKU))
+	targetStock := prod.Stock
+	hasStockUpdate := false
+	if rawStock, ok := updateData["stock"]; ok {
+		stockNumber, ok := rawStock.(float64)
+		if !ok || stockNumber < 0 || stockNumber != float64(int(stockNumber)) {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "stock must be a non-negative whole number"})
+		}
+		targetStock = int(stockNumber)
+		hasStockUpdate = true
+		if targetStock < prod.ReservedQty {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "stock cannot be lower than reserved quantity"})
+		}
+	}
+	if requestedSKU != "" && requestedSKU != prod.SKU {
+		var duplicate int64
+		if err := database.DB.Model(&models.Product{}).Where("sku = ?", requestedSKU).Count(&duplicate).Error; err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		if duplicate > 0 {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Product with this SKU already exists"})
+		}
+
+		var stockActivity int64
+		if err := database.DB.Model(&models.StockLot{}).Where("sku = ?", prod.SKU).Count(&stockActivity).Error; err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		var movementActivity int64
+		if err := database.DB.Model(&models.StockMovement{}).Where("sku = ?", prod.SKU).Count(&movementActivity).Error; err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		var salesActivity int64
+		if err := database.DB.Model(&models.SalesOrderLine{}).Where("sku = ?", prod.SKU).Count(&salesActivity).Error; err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		if prod.Stock != 0 || prod.ReservedQty != 0 || stockActivity > 0 || movementActivity > 0 || salesActivity > 0 {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "cannot change SKU after stock or sales activity; create a new SKU instead",
+			})
+		}
+	}
+
 	// Prevent overwriting primary key / SKU from JSON payload
 	delete(updateData, "id")
 	delete(updateData, "sku")
+	delete(updateData, "newSku")
+	delete(updateData, "new_sku")
+	delete(updateData, "type")
+	delete(updateData, "isBundle")
+	delete(updateData, "bomId")
+	delete(updateData, "stock")
+
+	// JSON uses camelCase while GORM map updates require database column names.
+	columnAliases := map[string]string{
+		"weightGrams": "weight_grams", "retailPrice": "retail_price",
+		"wholesalePrice": "wholesale_price", "baseUnit": "base_unit",
+		"reservedQty": "reserved_qty", "isActive": "is_active",
+	}
+	for jsonKey, columnName := range columnAliases {
+		if value, ok := updateData[jsonKey]; ok {
+			updateData[columnName] = value
+			delete(updateData, jsonKey)
+		}
+	}
+	if retailPrice, ok := updateData["retail_price"]; ok {
+		updateData["price"] = retailPrice
+	}
 
 	// Quantities in Product, StockLot, and StockMovement are stored in the
 	// product's base unit. Changing that unit after inventory activity would
@@ -87,14 +195,59 @@ func UpdateProduct(c *fiber.Ctx) error {
 		}
 	}
 
-	if len(updateData) > 0 {
-		if err := database.DB.Model(&prod).Updates(updateData).Error; err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	if len(updateData) > 0 || requestedSKU != "" || hasStockUpdate {
+		if err := database.DB.Transaction(func(tx *gorm.DB) error {
+			if requestedSKU != "" && requestedSKU != prod.SKU {
+				if err := tx.Model(&prod).Update("sku", requestedSKU).Error; err != nil {
+					return err
+				}
+				prod.SKU = requestedSKU
+			}
+			if len(updateData) > 0 {
+				if err := tx.Model(&prod).Updates(updateData).Error; err != nil {
+					return err
+				}
+			}
+			if !hasStockUpdate || targetStock == prod.Stock {
+				return nil
+			}
+
+			username := c.Locals("name")
+			if username == nil {
+				username = "System"
+			}
+			today := time.Now().Format("2006-01-02")
+			difference := targetStock - prod.Stock
+			if difference < 0 {
+				return deductFefoStock(tx, prod.SKU, -difference, prod.SKU, &prod.ID, "stock_adjustment", username.(string))
+			}
+
+			lotName := fmt.Sprintf("ADJUST-%s-%d", prod.SKU, time.Now().UnixNano())
+			lot := models.StockLot{
+				Code: "LOT-" + lotName, ProductID: prod.ID, SKU: prod.SKU, Lot: lotName,
+				Qty: difference, RemainingQty: difference, LandedUnitCost: prod.Cost,
+				ReceivedDate: today, GrRef: "STOCK_ADJUSTMENT",
+			}
+			if err := tx.Create(&lot).Error; err != nil {
+				return err
+			}
+			movement := models.StockMovement{
+				Code:      fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), prod.SKU),
+				ProductID: prod.ID, SKU: prod.SKU, Type: "IN", Qty: difference,
+				RefDoc: prod.SKU, RefDocType: "stock_adjustment", RefDocID: &prod.ID,
+				Date: today, Note: "Stock adjusted from SKU edit", ChangedBy: username.(string),
+			}
+			if err := tx.Create(&movement).Error; err != nil {
+				return err
+			}
+			return tx.Model(&prod).Update("stock", targetStock).Error
+		}); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
 	}
 
 	// Reload updated product
-	database.DB.First(&prod, "sku = ?", sku)
+	database.DB.First(&prod, "sku = ?", prod.SKU)
 
 	return c.JSON(prod)
 }
