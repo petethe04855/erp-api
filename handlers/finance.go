@@ -35,7 +35,15 @@ func CreateExpense(c *fiber.Ctx) error {
 		if err := tx.Create(&exp).Error; err != nil {
 			return err
 		}
-		return nil
+		if exp.Amount <= 0 {
+			return fiber.NewError(fiber.StatusBadRequest, "expense amount must be greater than zero")
+		}
+		_, err = postJournal(tx, postingRequest{
+			Date: exp.Date, SourceType: "expense", SourceID: exp.ID, SourceRef: exp.Code,
+			Description: exp.Description, CreatedBy: username.(string),
+			Lines: []postingLine{{AccountCode: "6000", Debit: exp.Amount, Channel: exp.Channel}, {AccountCode: "1100", Credit: exp.Amount, Channel: exp.Channel}},
+		})
+		return err
 	})
 
 	if err != nil {

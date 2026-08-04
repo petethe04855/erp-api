@@ -179,6 +179,7 @@ func ConnectDB() {
 		{Code: "5000", Name: "ต้นทุนขาย", Type: "Expense", IsActive: true},
 		{Code: "5100", Name: "ส่วนลดและคืนสินค้า", Type: "Expense", IsActive: true},
 		{Code: "5200", Name: "ขาดทุนจากสินค้าคืนเสียหาย", Type: "Expense", IsActive: true},
+		{Code: "6000", Name: "ค่าใช้จ่ายดำเนินงาน", Type: "Expense", IsActive: true},
 	}
 	for _, account := range defaultAccounts {
 		if err := DB.Where("code = ?", account.Code).FirstOrCreate(&account).Error; err != nil {

@@ -35,10 +35,23 @@ func deleteSimple(c *fiber.Ctx, value interface{}, column, id string) error {
 }
 
 func UpdateExpense(c *fiber.Ctx) error {
-	return updateSimple(c, &models.Expense{}, "id", c.Params("id"))
+	return rejectPostedExpenseMutation(c)
 }
 func DeleteExpense(c *fiber.Ctx) error {
-	return deleteSimple(c, &models.Expense{}, "id", c.Params("id"))
+	return rejectPostedExpenseMutation(c)
+}
+
+func rejectPostedExpenseMutation(c *fiber.Ctx) error {
+	var expense models.Expense
+	if err := database.DB.First(&expense, "id = ?", c.Params("id")).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Expense not found"})
+	}
+	var count int64
+	database.DB.Model(&models.JournalEntry{}).Where("source_type = ? AND source_id = ?", "expense", expense.ID).Count(&count)
+	if count > 0 {
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "posted expense is immutable; create a reversal instead"})
+	}
+	return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "expense mutation is disabled"})
 }
 func UpdateBudget(c *fiber.Ctx) error {
 	return updateSimple(c, &models.MonthBudget{}, "id", c.Params("id"))
