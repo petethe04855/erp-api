@@ -19,6 +19,10 @@ func RegisterFinanceRoutes(api fiber.Router) {
 	api.Get("/reports/trial-balance", handlers.TrialBalanceReport)
 	api.Get("/reports/inventory-valuation", handlers.InventoryValuationReport)
 	api.Get("/reports/financial-summary", handlers.FinancialSummaryReport)
+	api.Get("/integrity-runs", middleware.RequireRoles("owner", "accountant"), handlers.ListResource(func() interface{} { return &[]models.IntegrityRun{} }))
+	api.Get("/integrity-issues", middleware.RequireRoles("owner", "accountant"), handlers.ListResource(func() interface{} { return &[]models.IntegrityIssue{} }))
+	api.Post("/integrity-runs", middleware.RequireRoles("owner", "accountant"), handlers.RunIntegrityNow)
+	api.Put("/integrity-issues/:id/resolve", middleware.RequireRoles("owner", "accountant"), handlers.ResolveIntegrityIssue)
 
 	// Finance & Expenses
 	api.Get("/expenses", handlers.ListResource(func() interface{} { return &[]models.Expense{} }))

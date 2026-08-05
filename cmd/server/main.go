@@ -3,12 +3,14 @@ package main
 import (
 	"log"
 	"os"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/joho/godotenv"
 
 	"chawy-erp-api/database"
+	"chawy-erp-api/handlers"
 	"chawy-erp-api/middleware"
 	"chawy-erp-api/router"
 )
@@ -25,6 +27,7 @@ func main() {
 		database.CleanMockData()
 	}
 	database.SeedData()
+	startIntegrityScheduler()
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -61,4 +64,25 @@ func main() {
 	if err := app.Listen(":" + port); err != nil {
 		log.Fatalf("Error starting server: %v", err)
 	}
+}
+
+func startIntegrityScheduler() {
+	if os.Getenv("DISABLE_INTEGRITY_SCHEDULER") == "true" {
+		return
+	}
+	go func() {
+		for {
+			now := time.Now()
+			next := time.Date(now.Year(), now.Month(), now.Day(), 2, 0, 0, 0, now.Location())
+			if !next.After(now) {
+				next = next.AddDate(0, 0, 1)
+			}
+			time.Sleep(time.Until(next))
+			if run, err := handlers.RunIntegrityChecks("Nightly Scheduler"); err != nil {
+				log.Printf("Nightly integrity check failed: %v", err)
+			} else {
+				log.Printf("Nightly integrity check %s completed with %d issue(s)", run.Code, run.IssueCount)
+			}
+		}
+	}()
 }

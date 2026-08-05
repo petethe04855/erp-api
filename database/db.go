@@ -57,6 +57,8 @@ func ConnectDB() {
 	if os.Getenv("CLEAN_DB") == "true" {
 		log.Println("CLEAN_DB is true: Dropping all tables to ensure clean migration...")
 		tables := []string{
+			"integrity_issues",
+			"integrity_runs",
 			"journal_lines",
 			"journal_entries",
 			"customer_payments",
@@ -126,6 +128,8 @@ func ConnectDB() {
 		&models.JournalEntry{},
 		&models.CustomerPayment{},
 		&models.CreditNote{},
+		&models.IntegrityRun{},
+		&models.IntegrityIssue{},
 		&models.BOM{},
 		&models.BundleComponent{},
 		&models.StockLot{},
