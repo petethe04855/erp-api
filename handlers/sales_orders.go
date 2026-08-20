@@ -219,6 +219,45 @@ func UpdateSalesOrderStatus(c *fiber.Ctx) error {
 					return err
 				}
 			}
+
+			// A completed sale is ready to bill. Create its invoice in the same
+			// transaction so the Invoice table, AR and revenue stay synchronized
+			// with the stock deduction without a separate user action.
+			var invoiceCount int64
+			if err := tx.Model(&models.Invoice{}).
+				Where("sales_order_id = ? OR so_ref = ?", so.ID, so.Code).
+				Count(&invoiceCount).Error; err != nil {
+				return err
+			}
+			if invoiceCount == 0 {
+				invoiceCode, err := NextCode(tx, "INV-2026-", &models.Invoice{}, "code")
+				if err != nil {
+					return err
+				}
+				invoice := models.Invoice{
+					Code: invoiceCode, SalesOrderID: &so.ID, SoRef: so.Code, Customer: so.Customer,
+					IssueDate: time.Now().Format("2006-01-02"),
+					DueDate:   time.Now().AddDate(0, 0, 14).Format("2006-01-02"),
+					Amount:    so.Amount, Paid: 0, Status: "Unpaid",
+				}
+				if err := tx.Create(&invoice).Error; err != nil {
+					return err
+				}
+				so.InvRef = invoice.Code
+				if err := tx.Model(&so).Update("inv_ref", so.InvRef).Error; err != nil {
+					return err
+				}
+				invoiceAudit := models.AuditEvent{
+					OwnerID: invoice.ID, OwnerType: "invoices", Action: "Created",
+					By: username.(string), At: getNowStr(), Note: fmt.Sprintf("สร้างอัตโนมัติจาก SO %s เมื่อ Complete", so.Code),
+				}
+				if err := tx.Create(&invoiceAudit).Error; err != nil {
+					return err
+				}
+				if err := postInvoiceJournal(tx, &invoice, username.(string)); err != nil {
+					return err
+				}
+			}
 		}
 
 		// Record Audit Event

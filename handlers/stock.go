@@ -9,6 +9,7 @@ import (
 	"chawy-erp-api/models"
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // POST /api/production-runs
@@ -203,13 +204,11 @@ func CreateStockReturn(c *fiber.Ctx) error {
 
 	var sr models.StockReturn
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
-		code, err := NextCode(tx, "RET-2026-", &models.StockReturn{}, "code")
-		if err != nil {
-			return err
-		}
-
 		var so models.SalesOrder
-		if err := ByIDOrCode(tx, req.SoRef).Preload("Lines").First(&so).Error; err != nil {
+		// Serialize returns for the same order so two users cannot both consume
+		// the same remaining returnable quantity.
+		if err := ByIDOrCode(tx.Clauses(clause.Locking{Strength: "UPDATE"}), req.SoRef).
+			Preload("Lines").First(&so).Error; err != nil {
 			return fmt.Errorf("sales order not found")
 		}
 		if so.Status != "Completed" {
@@ -230,6 +229,10 @@ func CreateStockReturn(c *fiber.Ctx) error {
 		}
 		if int(returnedQty)+req.Qty > soldQty {
 			return fmt.Errorf("return quantity exceeds quantity sold for %s", req.SKU)
+		}
+		code, err := NextCode(tx, "RET-2026-", &models.StockReturn{}, "code")
+		if err != nil {
+			return err
 		}
 
 		sr = models.StockReturn{

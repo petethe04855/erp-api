@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"chawy-erp-api/database"
@@ -343,40 +344,22 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 			return err
 		}
 		gr.Code = code
+		if _, err := time.Parse("2006-01-02", gr.ReceiveDate); err != nil {
+			return fmt.Errorf("receiveDate must use YYYY-MM-DD format")
+		}
+		dateCode := strings.ReplaceAll(gr.ReceiveDate, "-", "")
+		receiptNo := strings.TrimPrefix(gr.Code, "GR-2026-")
+		for idx := range gr.Items {
+			gr.Items[idx].Lot = fmt.Sprintf("LOT-%s-%02d-%s", receiptNo, idx+1, dateCode)
+			gr.Items[idx].LandedUnitCost = 0
+		}
+		// Stock Receipt records quantity and lot only. Costing will be handled later.
+		gr.LandedCosts = nil
 
-		if err := tx.Create(&gr).Error; err != nil {
+		// Create the receipt header first. Items need ProductID validation before
+		// insertion, so they must not be auto-created by GORM associations here.
+		if err := tx.Omit("Items", "LandedCosts", "AuditTrail").Create(&gr).Error; err != nil {
 			return err
-		}
-
-		// Assign GoodsReceiveID to LandedCosts
-		for idx := range gr.LandedCosts {
-			gr.LandedCosts[idx].GoodsReceiveID = gr.ID
-			tx.Model(&gr.LandedCosts[idx]).Update("goods_receive_id", gr.ID)
-		}
-
-		// รวมค่า landed ที่ allocatable
-		totalLanded := 0.0
-		for _, lc := range gr.LandedCosts {
-			if lc.Allocatable {
-				totalLanded += lc.Amount
-			}
-		}
-
-		// มูลค่ารวมของที่รับ ใช้ราคา PO หรือราคาต่อหน่วยที่กรอกโดยตรง
-		totalValue := 0.0
-		receiptValue := 0.0
-		journalLines := make([]postingLine, 0, len(gr.Items)*2)
-		for i := range gr.Items {
-			unitCost := gr.Items[i].LandedUnitCost
-			if hasPO {
-				for j := range po.Items {
-					if po.Items[j].SKU == gr.Items[i].SKU {
-						unitCost = po.Items[j].UnitCost
-						break
-					}
-				}
-			}
-			totalValue += float64(gr.Items[i].QtyReceived) * unitCost
 		}
 
 		for i := range gr.Items {
@@ -385,9 +368,6 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 
 			if item.QtyReceived <= 0 || item.Lot == "" {
 				return fmt.Errorf("Invalid QtyReceived for item %s", item.SKU)
-			}
-			if item.LandedUnitCost < 0 {
-				return fmt.Errorf("unit cost cannot be negative for item %s", item.SKU)
 			}
 
 			var product models.Product
@@ -408,7 +388,6 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 			}
 
 			var poItem *models.PurchaseOrderItem
-			baseUnitCost := item.LandedUnitCost
 			if hasPO {
 				for j := range po.Items {
 					if po.Items[j].SKU == item.SKU {
@@ -425,27 +404,8 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 				if item.QtyReceived > (poItem.Qty - poItem.ReceivedQty) {
 					return fmt.Errorf("Cannot receive more than ordered qty for item %s", item.SKU)
 				}
-				baseUnitCost = poItem.UnitCost
 			}
-
-			lineValue := float64(item.QtyReceived) * baseUnitCost
-
-			// ค่าขนส่งที่ปันมาที่บรรทัดนี้
-			allocatedFreight := 0.0
-			if totalValue > 0 {
-				allocatedFreight = totalLanded * (lineValue / totalValue)
-			}
-
-			// ต้นทุนรวมต่อหน่วย = (ราคาซื้อ + ค่าขนส่งปัน) / จำนวน
-			item.LandedUnitCost = (lineValue + allocatedFreight) / float64(item.QtyReceived)
-			itemValue := item.LandedUnitCost * float64(item.QtyReceived)
-			receiptValue += itemValue
-			if itemValue > 0 {
-				journalLines = append(journalLines,
-					postingLine{AccountCode: "1300", Debit: itemValue, SKU: item.SKU, Lot: item.Lot},
-					postingLine{AccountCode: "2000", Credit: itemValue, SKU: item.SKU, Lot: item.Lot},
-				)
-			}
+			item.LandedUnitCost = 0
 			if err := tx.Save(item).Error; err != nil {
 				return err
 			}
@@ -465,7 +425,7 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 				Lot:             item.Lot,
 				Qty:             item.QtyReceived,
 				RemainingQty:    item.QtyReceived,
-				LandedUnitCost:  item.LandedUnitCost,
+				LandedUnitCost:  0,
 				ExpiryDate:      item.ExpiryDate,
 				ReceivedDate:    gr.ReceiveDate,
 				GoodsReceiveID:  &gr.ID,
@@ -479,11 +439,6 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 
 			// Update product stock balance
 			if product.ID > 0 {
-				oldStock := product.Stock
-				if oldStock+item.QtyReceived > 0 {
-					product.Cost = ((float64(oldStock) * product.Cost) + (float64(item.QtyReceived) * item.LandedUnitCost)) /
-						float64(oldStock+item.QtyReceived)
-				}
 				product.Stock += item.QtyReceived
 				if err := tx.Save(&product).Error; err != nil {
 					return err
@@ -524,15 +479,6 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 			}
 			po.Status = newStatus
 			if err := tx.Save(&po).Error; err != nil {
-				return err
-			}
-		}
-
-		if receiptValue > 0 {
-			if _, err := postJournal(tx, postingRequest{
-				Date: gr.ReceiveDate, SourceType: "goods_receipt", SourceID: gr.ID, SourceRef: gr.Code,
-				Description: "รับสินค้าสำเร็จรูปเข้าคลัง", CreatedBy: username.(string), Lines: journalLines,
-			}); err != nil {
 				return err
 			}
 		}
