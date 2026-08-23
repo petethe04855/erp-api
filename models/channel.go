@@ -20,19 +20,32 @@ type TiktokConnection struct {
 
 // TiktokOrder represents a TikTok shop sales order
 type TiktokOrder struct {
-	ID            string  `gorm:"primaryKey" json:"id"`
-	Date          string  `json:"date"`
-	Product       string  `json:"product"`
-	SKU           string  `json:"sku"`
-	Qty           int     `json:"qty"`
-	Amount        float64 `json:"amount"`
-	Status        string  `json:"status"`
-	StockDeducted bool    `json:"stockDeducted"`
-	Imported      bool    `json:"imported"`
-	NetRevenue    float64 `json:"netRevenue,omitempty"`
-	PlatformFee   float64 `json:"platformFee,omitempty"`
-	Settled       bool    `json:"settled"`
-	SettlementRef string  `json:"settlementRef,omitempty"`
+	ID            string            `gorm:"primaryKey" json:"id"`
+	Date          string            `json:"date"`
+	Product       string            `json:"product"`
+	SKU           string            `json:"sku"`
+	Qty           int               `json:"qty"`
+	Amount        float64           `json:"amount"`
+	Status        string            `json:"status"`
+	StockDeducted bool              `json:"stockDeducted"`
+	Imported      bool              `json:"imported"`
+	NetRevenue    float64           `json:"netRevenue,omitempty"`
+	PlatformFee   float64           `json:"platformFee,omitempty"`
+	Settled       bool              `json:"settled"`
+	SettlementRef string            `json:"settlementRef,omitempty"`
+	Items         []TiktokOrderItem `gorm:"foreignKey:OrderID;references:ID;constraint:OnDelete:CASCADE" json:"items"`
+}
+
+// TiktokOrderItem stores each SKU returned by TikTok Shop for an order.
+type TiktokOrderItem struct {
+	ID          uint    `gorm:"primaryKey;autoIncrement" json:"id"`
+	OrderID     string  `gorm:"index;not null" json:"orderId"`
+	LineItemID  string  `gorm:"index" json:"lineItemId"`
+	ProductName string  `json:"productName"`
+	SKU         string  `json:"sku"`
+	Qty         int     `json:"qty"`
+	UnitPrice   float64 `json:"unitPrice"`
+	Amount      float64 `json:"amount"`
 }
 
 // ManualOrder represents sales orders recorded manually

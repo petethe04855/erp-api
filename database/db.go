@@ -165,6 +165,7 @@ func ConnectDB() {
 		&models.PurchaseRequestItem{},
 		&models.PurchaseOrderItem{},
 		&models.GoodsReceiveItem{},
+		&models.TiktokOrderItem{},
 		&models.SamplingRecipient{},
 		&models.AuditEvent{},
 		&models.TiktokOAuthState{},

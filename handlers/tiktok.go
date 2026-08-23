@@ -17,12 +17,15 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"chawy-erp-api/database"
 	"chawy-erp-api/models"
 	"github.com/gofiber/fiber/v2"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const (
@@ -45,6 +48,154 @@ type tiktokTokenResponse struct {
 		SellerBaseRegion     string   `json:"seller_base_region"`
 		GrantedScopes        []string `json:"granted_scopes"`
 	} `json:"data"`
+}
+
+type tiktokOrderSearchResponse struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Data    struct {
+		NextPageToken string `json:"next_page_token"`
+		Orders        []struct {
+			ID         string `json:"id"`
+			Status     string `json:"status"`
+			CreateTime int64  `json:"create_time"`
+			Payment    struct {
+				TotalAmount string `json:"total_amount"`
+			} `json:"payment"`
+			LineItems []struct {
+				ID          string `json:"id"`
+				ProductName string `json:"product_name"`
+				SellerSKU   string `json:"seller_sku"`
+				Quantity    int    `json:"quantity"`
+				SalePrice   string `json:"sale_price"`
+			} `json:"line_items"`
+		} `json:"orders"`
+	} `json:"data"`
+}
+
+// SyncTiktokOrders retrieves recent orders from TikTok Shop and upserts the
+// order headers and every SKU line into the local reporting database.
+func SyncTiktokOrders(c *fiber.Ctx) error {
+	appKey, appSecret, err := tiktokCredentials()
+	if err != nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})
+	}
+	var connection models.TiktokConnection
+	if err := database.DB.First(&connection, 1).Error; err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "TikTok Shop is not connected"})
+	}
+	accessToken, err := ensureTiktokAccessToken(&connection, appKey, appSecret)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": err.Error()})
+	}
+	if err := ensureTiktokShopCipher(&connection, appKey, appSecret); err != nil {
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
+	}
+	if err := database.DB.Save(&connection).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Could not save TikTok shop information"})
+	}
+
+	days := c.QueryInt("days", 30)
+	if days < 1 || days > 90 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "days must be between 1 and 90"})
+	}
+	now := time.Now()
+	body, _ := json.Marshal(fiber.Map{
+		"create_time_ge": now.AddDate(0, 0, -days).Unix(),
+		"create_time_le": now.Unix(),
+	})
+	path := "/order/202309/orders/search"
+	pageToken := ""
+	orders := make([]models.TiktokOrder, 0)
+
+	for page := 0; page < 20; page++ {
+		params := map[string]string{
+			"app_key": appKey, "timestamp": fmt.Sprintf("%d", time.Now().Unix()),
+			"shop_cipher": connection.ShopCipher, "page_size": "50",
+			"sort_field": "create_time", "sort_order": "DESC",
+		}
+		if pageToken != "" {
+			params["page_token"] = pageToken
+		}
+		params["sign"] = tiktokSignature(path, params, string(body), appSecret)
+		request, _ := http.NewRequest(http.MethodPost, tiktokAPIBase+path+"?"+encodeTiktokParams(params), bytes.NewReader(body))
+		request.Header.Set("x-tts-access-token", accessToken)
+		request.Header.Set("Content-Type", "application/json")
+		response, err := (&http.Client{Timeout: 20 * time.Second}).Do(request)
+		if err != nil {
+			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "TikTok Shop Orders API is unavailable"})
+		}
+		responseBody, readErr := io.ReadAll(response.Body)
+		response.Body.Close()
+		if readErr != nil {
+			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Could not read TikTok Shop order response"})
+		}
+		var payload tiktokOrderSearchResponse
+		if err := json.Unmarshal(responseBody, &payload); err != nil {
+			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "TikTok Shop returned an invalid order response"})
+		}
+		if response.StatusCode >= 400 || payload.Code != 0 {
+			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": fmt.Sprintf("TikTok Shop error: %s (code %d)", firstNonEmpty(payload.Message, "order sync failed"), payload.Code)})
+		}
+
+		for _, source := range payload.Data.Orders {
+			items := make([]models.TiktokOrderItem, 0, len(source.LineItems))
+			totalQty, itemAmount := 0, 0.0
+			for _, line := range source.LineItems {
+				qty := line.Quantity
+				if qty < 1 {
+					qty = 1
+				}
+				unitPrice, _ := strconv.ParseFloat(line.SalePrice, 64)
+				amount := unitPrice * float64(qty)
+				totalQty += qty
+				itemAmount += amount
+				items = append(items, models.TiktokOrderItem{OrderID: source.ID, LineItemID: line.ID, ProductName: line.ProductName, SKU: line.SellerSKU, Qty: qty, UnitPrice: unitPrice, Amount: amount})
+			}
+			amount, _ := strconv.ParseFloat(source.Payment.TotalAmount, 64)
+			if amount == 0 {
+				amount = itemAmount
+			}
+			product, sku := "", ""
+			if len(items) > 0 {
+				product, sku = items[0].ProductName, items[0].SKU
+			}
+			if len(items) > 1 {
+				product = fmt.Sprintf("%s +%d รายการ", product, len(items)-1)
+			}
+			date := time.Unix(source.CreateTime, 0).In(time.FixedZone("Asia/Bangkok", 7*60*60)).Format("2006-01-02")
+			orders = append(orders, models.TiktokOrder{ID: source.ID, Date: date, Product: product, SKU: sku, Qty: totalQty, Amount: amount, Status: source.Status, Items: items})
+		}
+		pageToken = payload.Data.NextPageToken
+		if pageToken == "" {
+			break
+		}
+	}
+
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		for i := range orders {
+			order := &orders[i]
+			if err := tx.Omit("Items").Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "id"}},
+				DoUpdates: clause.AssignmentColumns([]string{"date", "product", "sku", "qty", "amount", "status"}),
+			}).Create(order).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("order_id = ?", order.ID).Delete(&models.TiktokOrderItem{}).Error; err != nil {
+				return err
+			}
+			if len(order.Items) > 0 {
+				if err := tx.Create(&order.Items).Error; err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.JSON(fiber.Map{"synced": len(orders), "days": days})
 }
 
 func tiktokCredentials() (string, string, error) {
