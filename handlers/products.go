@@ -21,6 +21,12 @@ func CreateProduct(c *fiber.Ctx) error {
 	if err := c.BodyParser(&prod); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
+	var bundleInput struct {
+		Components []BundleComponentRequest `json:"components"`
+	}
+	if err := c.BodyParser(&bundleInput); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
 
 	// Default IsActive to true if not explicitly passed in payload
 	if _, exists := body["isActive"]; !exists {
@@ -31,10 +37,20 @@ func CreateProduct(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "SKU, product name, and selling price greater than zero are required"})
 	}
 
-	// Phase 1 treats every newly-created SKU as physical finished goods.
-	// Legacy material/BOM records remain readable, but cannot be created here.
-	prod.Type = "Finished Product"
-	prod.IsBundle = false
+	if prod.IsBundle || prod.Type == "Bundle" {
+		prod.Type = "Bundle"
+		prod.IsBundle = true
+		if prod.Stock != 0 {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "bundle stock is calculated from its components and must be zero"})
+		}
+		if len(bundleInput.Components) == 0 {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "bundle requires at least one component"})
+		}
+	} else {
+		prod.Type = "Finished Product"
+		prod.IsBundle = false
+		bundleInput.Components = nil
+	}
 	prod.BomID = nil
 	prod.Price = prod.RetailPrice
 
@@ -53,6 +69,18 @@ func CreateProduct(c *fiber.Ctx) error {
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&prod).Error; err != nil {
 			return err
+		}
+		if prod.IsBundle {
+			components, err := replaceBundleComponents(tx, prod, bundleInput.Components)
+			if err != nil {
+				return err
+			}
+			cost, err := calculateBOMCost(tx, components)
+			if err != nil {
+				return err
+			}
+			prod.Cost = cost
+			return tx.Model(&prod).Update("cost", cost).Error
 		}
 		if initialStock == 0 {
 			return nil
@@ -94,6 +122,26 @@ func UpdateProduct(c *fiber.Ctx) error {
 	var updateData map[string]interface{}
 	if err := c.BodyParser(&updateData); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	var bundleInput struct {
+		Components []BundleComponentRequest `json:"components"`
+	}
+	if err := c.BodyParser(&bundleInput); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	_, componentsProvided := updateData["components"]
+	targetIsBundle := prod.IsBundle
+	if value, ok := updateData["isBundle"].(bool); ok {
+		targetIsBundle = value
+	}
+	if value, ok := updateData["type"].(string); ok {
+		targetIsBundle = value == "Bundle"
+	}
+	if targetIsBundle && componentsProvided && len(bundleInput.Components) == 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "bundle requires at least one component"})
+	}
+	if !prod.IsBundle && targetIsBundle && (prod.Stock > 0 || prod.ReservedQty > 0) {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "cannot convert a stocked product to a bundle; adjust stock to zero first"})
 	}
 
 	requestedSKU, _ := updateData["newSku"].(string)
@@ -149,8 +197,16 @@ func UpdateProduct(c *fiber.Ctx) error {
 	delete(updateData, "new_sku")
 	delete(updateData, "type")
 	delete(updateData, "isBundle")
+	delete(updateData, "components")
 	delete(updateData, "bomId")
 	delete(updateData, "stock")
+	if targetIsBundle {
+		updateData["type"] = "Bundle"
+		updateData["is_bundle"] = true
+	} else {
+		updateData["type"] = "Finished Product"
+		updateData["is_bundle"] = false
+	}
 
 	// JSON uses camelCase while GORM map updates require database column names.
 	columnAliases := map[string]string{
@@ -197,50 +253,83 @@ func UpdateProduct(c *fiber.Ctx) error {
 
 	if len(updateData) > 0 || requestedSKU != "" || hasStockUpdate {
 		if err := database.DB.Transaction(func(tx *gorm.DB) error {
+			originalSKU := prod.SKU
 			if requestedSKU != "" && requestedSKU != prod.SKU {
 				if err := tx.Model(&prod).Update("sku", requestedSKU).Error; err != nil {
 					return err
 				}
 				prod.SKU = requestedSKU
+				if err := tx.Model(&models.BundleComponent{}).Where("bundle_sku = ?", originalSKU).Update("bundle_sku", requestedSKU).Error; err != nil {
+					return err
+				}
+				if err := tx.Model(&models.BundleComponent{}).Where("component_sku = ?", originalSKU).Update("component_sku", requestedSKU).Error; err != nil {
+					return err
+				}
 			}
 			if len(updateData) > 0 {
 				if err := tx.Model(&prod).Updates(updateData).Error; err != nil {
 					return err
 				}
 			}
-			if !hasStockUpdate || targetStock == prod.Stock {
-				return nil
+			if hasStockUpdate && targetStock != prod.Stock {
+				username := c.Locals("name")
+				if username == nil {
+					username = "System"
+				}
+				today := time.Now().Format("2006-01-02")
+				difference := targetStock - prod.Stock
+				if difference < 0 {
+					if err := deductFefoStock(tx, prod.SKU, -difference, prod.SKU, &prod.ID, "stock_adjustment", username.(string)); err != nil {
+						return err
+					}
+				} else {
+					lotName := fmt.Sprintf("ADJUST-%s-%d", prod.SKU, time.Now().UnixNano())
+					lot := models.StockLot{
+						Code: "LOT-" + lotName, ProductID: prod.ID, SKU: prod.SKU, Lot: lotName,
+						Qty: difference, RemainingQty: difference, LandedUnitCost: prod.Cost,
+						ReceivedDate: today, GrRef: "STOCK_ADJUSTMENT",
+					}
+					if err := tx.Create(&lot).Error; err != nil {
+						return err
+					}
+					movement := models.StockMovement{
+						Code: fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), prod.SKU), ProductID: prod.ID,
+						SKU: prod.SKU, Type: "IN", Qty: difference, RefDoc: prod.SKU,
+						RefDocType: "stock_adjustment", RefDocID: &prod.ID, Date: today,
+						Note: "Stock adjusted from SKU edit", ChangedBy: username.(string),
+					}
+					if err := tx.Create(&movement).Error; err != nil {
+						return err
+					}
+					if err := tx.Model(&prod).Update("stock", targetStock).Error; err != nil {
+						return err
+					}
+				}
 			}
 
-			username := c.Locals("name")
-			if username == nil {
-				username = "System"
-			}
-			today := time.Now().Format("2006-01-02")
-			difference := targetStock - prod.Stock
-			if difference < 0 {
-				return deductFefoStock(tx, prod.SKU, -difference, prod.SKU, &prod.ID, "stock_adjustment", username.(string))
-			}
-
-			lotName := fmt.Sprintf("ADJUST-%s-%d", prod.SKU, time.Now().UnixNano())
-			lot := models.StockLot{
-				Code: "LOT-" + lotName, ProductID: prod.ID, SKU: prod.SKU, Lot: lotName,
-				Qty: difference, RemainingQty: difference, LandedUnitCost: prod.Cost,
-				ReceivedDate: today, GrRef: "STOCK_ADJUSTMENT",
-			}
-			if err := tx.Create(&lot).Error; err != nil {
+			if err := tx.First(&prod, prod.ID).Error; err != nil {
 				return err
 			}
-			movement := models.StockMovement{
-				Code:      fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), prod.SKU),
-				ProductID: prod.ID, SKU: prod.SKU, Type: "IN", Qty: difference,
-				RefDoc: prod.SKU, RefDocType: "stock_adjustment", RefDocID: &prod.ID,
-				Date: today, Note: "Stock adjusted from SKU edit", ChangedBy: username.(string),
+			if componentsProvided {
+				components, err := replaceBundleComponents(tx, prod, bundleInput.Components)
+				if err != nil {
+					return err
+				}
+				if targetIsBundle {
+					cost, err := calculateBOMCost(tx, components)
+					if err != nil {
+						return err
+					}
+					if err := tx.Model(&prod).Update("cost", cost).Error; err != nil {
+						return err
+					}
+				}
+			} else if !targetIsBundle {
+				if err := tx.Where("bundle_sku = ?", prod.SKU).Delete(&models.BundleComponent{}).Error; err != nil {
+					return err
+				}
 			}
-			if err := tx.Create(&movement).Error; err != nil {
-				return err
-			}
-			return tx.Model(&prod).Update("stock", targetStock).Error
+			return nil
 		}); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
@@ -279,15 +368,17 @@ func DeleteProduct(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true})
 }
 
+type BundleComponentRequest struct {
+	ComponentSku     string  `json:"componentSku"`
+	Qty              float64 `json:"qty"`
+	Unit             string  `json:"unit"`
+	ComponentType    string  `json:"componentType"`
+	UnitCostOverride float64 `json:"unitCostOverride"`
+}
+
 type SetBundleComponentsRequest struct {
-	BundleSku  string `json:"bundleSku"`
-	Components []struct {
-		ComponentSku     string  `json:"componentSku"`
-		Qty              float64 `json:"qty"`
-		Unit             string  `json:"unit"`
-		ComponentType    string  `json:"componentType"`
-		UnitCostOverride float64 `json:"unitCostOverride"`
-	} `json:"components"`
+	BundleSku  string                   `json:"bundleSku"`
+	Components []BundleComponentRequest `json:"components"`
 }
 
 // POST /api/bundle-components
@@ -297,52 +388,98 @@ func SetBundleComponents(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 
+	var bundle models.Product
+	if err := database.DB.First(&bundle, "sku = ?", strings.ToUpper(strings.TrimSpace(req.BundleSku))).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "bundle product not found"})
+	}
+	if !bundle.IsBundle {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "selected SKU is not a bundle"})
+	}
+
 	var bundleComponents []models.BundleComponent
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
-		// Delete existing components for this bundle
-		if err := tx.Where("bundle_sku = ?", req.BundleSku).Delete(&models.BundleComponent{}).Error; err != nil {
-			return err
-		}
-
-		// Insert new components
-		for _, comp := range req.Components {
-			if comp.Qty <= 0 {
-				return fmt.Errorf("component qty must be greater than zero")
-			}
-			if comp.ComponentType != "expense" && comp.ComponentSku == "" {
-				return fmt.Errorf("component SKU is required")
-			}
-			bc := models.BundleComponent{
-				BundleSku:        req.BundleSku,
-				ComponentSku:     comp.ComponentSku,
-				Qty:              comp.Qty,
-				Unit:             comp.Unit,
-				ComponentType:    comp.ComponentType,
-				UnitCostOverride: comp.UnitCostOverride,
-			}
-			if err := tx.Create(&bc).Error; err != nil {
-				return err
-			}
-			bundleComponents = append(bundleComponents, bc)
-		}
-		return nil
+		var err error
+		bundleComponents, err = replaceBundleComponents(tx, bundle, req.Components)
+		return err
 	})
 
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	var bundle models.Product
-	if err := database.DB.First(&bundle, "sku = ?", req.BundleSku).Error; err == nil {
-		cost, err := calculateBOMCost(database.DB, bundleComponents)
-		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
-		}
-		bundle.Cost = cost
-		database.DB.Save(&bundle)
+	cost, err := calculateBOMCost(database.DB, bundleComponents)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
+	bundle.Cost = cost
+	database.DB.Save(&bundle)
 
 	return c.JSON(bundleComponents)
+}
+
+func replaceBundleComponents(tx *gorm.DB, bundle models.Product, input []BundleComponentRequest) ([]models.BundleComponent, error) {
+	if !bundle.IsBundle {
+		if len(input) > 0 {
+			return nil, fmt.Errorf("selected SKU is not a bundle")
+		}
+		if err := tx.Where("bundle_sku = ?", bundle.SKU).Delete(&models.BundleComponent{}).Error; err != nil {
+			return nil, err
+		}
+		return []models.BundleComponent{}, nil
+	}
+	if len(input) == 0 {
+		return nil, fmt.Errorf("bundle requires at least one component")
+	}
+	if err := tx.Where("bundle_sku = ?", bundle.SKU).Delete(&models.BundleComponent{}).Error; err != nil {
+		return nil, err
+	}
+
+	seen := make(map[string]bool, len(input))
+	components := make([]models.BundleComponent, 0, len(input))
+	for _, item := range input {
+		sku := strings.ToUpper(strings.TrimSpace(item.ComponentSku))
+		if sku == "" || item.Qty <= 0 {
+			return nil, fmt.Errorf("component SKU and quantity greater than zero are required")
+		}
+		if sku == bundle.SKU {
+			return nil, fmt.Errorf("bundle cannot contain itself")
+		}
+		if seen[sku] {
+			return nil, fmt.Errorf("component SKU %s is duplicated", sku)
+		}
+		seen[sku] = true
+
+		var product models.Product
+		if err := tx.First(&product, "sku = ?", sku).Error; err != nil {
+			return nil, fmt.Errorf("component product %s not found", sku)
+		}
+		if product.IsBundle {
+			return nil, fmt.Errorf("nested bundle %s is not supported", sku)
+		}
+		if !isSellableProduct(product) {
+			return nil, fmt.Errorf("component product %s must be a finished product", sku)
+		}
+		unit := item.Unit
+		if unit == "" {
+			unit = "piece"
+		}
+		componentType := item.ComponentType
+		if componentType == "" {
+			componentType = "material"
+		}
+		component := models.BundleComponent{
+			BundleProductID: bundle.ID, BundleSku: bundle.SKU,
+			ComponentProductID: product.ID, ComponentSku: product.SKU,
+			ComponentName: product.Name, Qty: item.Qty, Unit: unit,
+			ComponentType: componentType, UnitCostOverride: item.UnitCostOverride,
+			YieldFactor: 1,
+		}
+		if err := tx.Create(&component).Error; err != nil {
+			return nil, err
+		}
+		components = append(components, component)
+	}
+	return components, nil
 }
 
 func calculateBOMCost(db *gorm.DB, components []models.BundleComponent) (float64, error) {

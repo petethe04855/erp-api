@@ -149,6 +149,8 @@ func ConnectDB() {
 		&models.Expense{},
 		&models.MonthBudget{},
 		&models.TiktokOrder{},
+		&models.TiktokOrderItem{},
+		&models.TiktokSKUMapping{},
 		&models.TiktokConnection{},
 		&models.ManualOrder{},
 		&models.ContentScheduleItem{},

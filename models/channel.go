@@ -98,3 +98,12 @@ type LiveSession struct {
 	UpdatedAt     string `json:"updatedAt"`
 	AuditTrailStr string `json:"auditTrail"` // JSON string for ease of storing/displaying audit logs
 }
+
+// TiktokSKUMapping maps a TikTok Seller SKU to the ERP master SKU used for stock deduction.
+type TiktokSKUMapping struct {
+	ID        uint      `gorm:"primaryKey;autoIncrement" json:"id"`
+	TiktokSKU string    `gorm:"uniqueIndex;not null" json:"tiktokSku"`
+	ERPSKU    string    `gorm:"index;not null" json:"erpSku"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}

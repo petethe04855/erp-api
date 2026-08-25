@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -161,7 +162,7 @@ func SyncTiktokOrders(c *fiber.Ctx) error {
 				product, sku = items[0].ProductName, items[0].SKU
 			}
 			if len(items) > 1 {
-				product = fmt.Sprintf("%s +%d รายการ", product, len(items)-1)
+				product = fmt.Sprintf("%s +%d à¸£à¸²à¸¢à¸à¸²à¸£", product, len(items)-1)
 			}
 			date := time.Unix(source.CreateTime, 0).In(time.FixedZone("Asia/Bangkok", 7*60*60)).Format("2006-01-02")
 			orders = append(orders, models.TiktokOrder{ID: source.ID, Date: date, Product: product, SKU: sku, Qty: totalQty, Amount: amount, Status: source.Status, Items: items})
@@ -195,7 +196,24 @@ func SyncTiktokOrders(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	return c.JSON(fiber.Map{"synced": len(orders), "days": days})
+	deducted := 0
+	deductionErrors := make([]string, 0)
+	for i := range orders {
+		order := &orders[i]
+		if !tiktokOrderNeedsStockDeduction(order.Status) || order.StockDeducted {
+			continue
+		}
+		if err := deductTiktokOrderStock(order.ID); err != nil {
+			deductionErrors = append(deductionErrors, fmt.Sprintf("%s: %s", order.ID, err.Error()))
+			continue
+		}
+		deducted++
+	}
+	result := fiber.Map{"synced": len(orders), "days": days, "stockDeducted": deducted}
+	if len(deductionErrors) > 0 {
+		result["stockDeductionErrors"] = deductionErrors
+	}
+	return c.JSON(result)
 }
 
 func tiktokCredentials() (string, string, error) {
@@ -304,7 +322,7 @@ func TiktokCallback(c *fiber.Ctx) error {
 	if successURL := strings.TrimSpace(os.Getenv("TIKTOK_OAUTH_SUCCESS_URL")); successURL != "" {
 		return c.Redirect(successURL, fiber.StatusFound)
 	}
-	return c.JSON(fiber.Map{"connected": true, "message": "เชื่อมต่อ TikTok Shop สำเร็จ", "shopCipher": connection.ShopCipher, "sellerName": connection.SellerName})
+	return c.JSON(fiber.Map{"connected": true, "message": "à¹€à¸Šà¸·à¹ˆà¸­à¸¡à¸•à¹ˆà¸­ TikTok Shop à¸ªà¸³à¹€à¸£à¹‡à¸ˆ", "shopCipher": connection.ShopCipher, "sellerName": connection.SellerName})
 }
 
 func GetTiktokConnection(c *fiber.Ctx) error {
@@ -412,7 +430,7 @@ func redactTiktokValue(value string) string {
 	if len(value) <= 4 {
 		return "[redacted]"
 	}
-	return value[:2] + "…" + value[len(value)-2:]
+	return value[:2] + "â€¦" + value[len(value)-2:]
 }
 
 func exchangeTiktokCode(appKey, appSecret, code string) (models.TiktokConnection, error) {
@@ -644,4 +662,173 @@ func decryptTiktokToken(value string) (string, error) {
 	}
 	plain, err := aead.Open(nil, raw[:aead.NonceSize()], raw[aead.NonceSize():], nil)
 	return string(plain), err
+}
+
+func normalizeTiktokStatus(status string) string {
+	return strings.ToUpper(strings.TrimSpace(status))
+}
+
+func tiktokOrderNeedsStockDeduction(status string) bool {
+	// Stock is consumed when TikTok has confirmed the order has left the seller's
+	// fulfillment flow. Keep this centralized so status variants are handled consistently.
+	switch normalizeTiktokStatus(status) {
+	case "SHIPPED", "IN_TRANSIT", "DELIVERED", "COMPLETED":
+		return true
+	default:
+		return false
+	}
+}
+
+func resolveTiktokERPSKU(tx *gorm.DB, tiktokSKU string) (string, error) {
+	sku := strings.ToUpper(strings.TrimSpace(tiktokSKU))
+	if sku == "" {
+		return "", fmt.Errorf("TikTok SKU is empty")
+	}
+	var mapping models.TiktokSKUMapping
+	if err := tx.Where("tiktok_sku = ?", sku).First(&mapping).Error; err == nil {
+		return strings.ToUpper(strings.TrimSpace(mapping.ERPSKU)), nil
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", err
+	}
+	// Backward-compatible fallback: existing installations where TikTok Seller SKU
+	// already equals the ERP SKU continue to work without a mapping row.
+	var product models.Product
+	if err := tx.First(&product, "sku = ?", sku).Error; err != nil {
+		return "", fmt.Errorf("TikTok SKU %s is not mapped to an ERP SKU", sku)
+	}
+	return product.SKU, nil
+}
+
+// deductTiktokOrderStock consumes ERP stock when a TikTok order is delivered.
+// Bundle SKUs are expanded into their component SKUs; normal SKUs are consumed directly.
+// The whole order is processed in one transaction and StockDeducted makes the operation idempotent.
+func deductTiktokOrderStock(orderID string) error {
+	return database.DB.Transaction(func(tx *gorm.DB) error {
+		var order models.TiktokOrder
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Preload("Items").First(&order, "id = ?", orderID).Error; err != nil {
+			return fmt.Errorf("TikTok order not found")
+		}
+		if order.StockDeducted || !tiktokOrderNeedsStockDeduction(order.Status) {
+			return nil
+		}
+		if len(order.Items) == 0 {
+			return fmt.Errorf("order has no items")
+		}
+
+		requirements := make(map[string]int)
+		for _, item := range order.Items {
+			if item.Qty <= 0 {
+				return fmt.Errorf("invalid quantity for SKU %s", item.SKU)
+			}
+			erpSKU, err := resolveTiktokERPSKU(tx, item.SKU)
+			if err != nil {
+				return err
+			}
+			if err := expandTiktokSKU(tx, erpSKU, item.Qty, requirements, map[string]bool{}); err != nil {
+				return err
+			}
+		}
+		for sku, qty := range requirements {
+			if err := deductTiktokComponentFEFO(tx, sku, qty, order.ID); err != nil {
+				return err
+			}
+		}
+		return tx.Model(&order).Update("stock_deducted", true).Error
+	})
+}
+
+func expandTiktokSKU(tx *gorm.DB, sku string, qty int, requirements map[string]int, visiting map[string]bool) error {
+	var product models.Product
+	if err := tx.First(&product, "sku = ?", sku).Error; err != nil {
+		return fmt.Errorf("ERP SKU %s not found", sku)
+	}
+	if !product.IsBundle && product.Type != "Bundle" {
+		requirements[sku] += qty
+		return nil
+	}
+	if visiting[sku] {
+		return fmt.Errorf("circular bundle detected at %s", sku)
+	}
+	visiting[sku] = true
+	defer delete(visiting, sku)
+	var components []models.BundleComponent
+	if err := tx.Where("bundle_sku = ?", sku).Find(&components).Error; err != nil {
+		return err
+	}
+	if len(components) == 0 {
+		return fmt.Errorf("bundle %s has no components", sku)
+	}
+	for _, component := range components {
+		componentQty := int(math.Ceil(component.Qty * float64(qty)))
+		componentSKU := strings.ToUpper(strings.TrimSpace(component.ComponentSku))
+		if component.ComponentProductID != 0 {
+			var componentProduct models.Product
+			if err := tx.First(&componentProduct, component.ComponentProductID).Error; err != nil {
+				return fmt.Errorf("bundle %s component product %d could not be resolved: %w", sku, component.ComponentProductID, err)
+			}
+			componentSKU = strings.ToUpper(strings.TrimSpace(componentProduct.SKU))
+		}
+		if componentSKU == "" {
+			return fmt.Errorf("bundle %s has component %d with no valid ERP SKU", sku, component.ComponentProductID)
+		}
+		if componentQty <= 0 {
+			return fmt.Errorf("bundle %s has invalid component quantity for %s", sku, componentSKU)
+		}
+		if err := expandTiktokSKU(tx, componentSKU, componentQty, requirements, visiting); err != nil {
+			return fmt.Errorf("bundle %s component %s: %w", sku, componentSKU, err)
+		}
+	}
+	return nil
+}
+
+func deductTiktokComponentFEFO(tx *gorm.DB, sku string, qty int, orderID string) error {
+	var product models.Product
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&product, "sku = ?", sku).Error; err != nil {
+		return fmt.Errorf("ERP SKU %s not found", sku)
+	}
+	if product.IsBundle || product.Type == "Bundle" {
+		return fmt.Errorf("bundle %s cannot hold physical stock", sku)
+	}
+	if product.Stock-product.ReservedQty < qty {
+		return fmt.Errorf("stock not sufficient for %s: need %d, available %d", sku, qty, product.Stock-product.ReservedQty)
+	}
+	if err := ensureLotBalance(tx, product); err != nil {
+		return err
+	}
+	var lots []models.StockLot
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("sku = ? AND remaining_qty > 0", sku).
+		Order("CASE WHEN expiry_date IS NULL OR expiry_date = '' THEN 1 ELSE 0 END, expiry_date ASC, received_date ASC, id ASC").Find(&lots).Error; err != nil {
+		return err
+	}
+	remaining := qty
+	for i := range lots {
+		if remaining == 0 {
+			break
+		}
+		deduct := lots[i].RemainingQty
+		if deduct > remaining {
+			deduct = remaining
+		}
+		lots[i].RemainingQty -= deduct
+		remaining -= deduct
+		if err := tx.Save(&lots[i]).Error; err != nil {
+			return err
+		}
+		movement := models.StockMovement{
+			Code: fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), sku), ProductID: product.ID, SKU: sku,
+			Type: "OUT", Qty: deduct, RefDoc: orderID, RefDocType: "tiktok_orders", RefDocID: nil,
+			Date: time.Now().Format("2006-01-02"), Note: fmt.Sprintf("TikTok delivered FEFO lot %s", lots[i].Lot), ChangedBy: "TikTok Sync",
+		}
+		if err := tx.Create(&movement).Error; err != nil {
+			return err
+		}
+	}
+	if remaining > 0 {
+		return fmt.Errorf("lot stock not sufficient for %s: missing %d", sku, remaining)
+	}
+	product.Stock -= qty
+	if err := tx.Save(&product).Error; err != nil {
+		return err
+	}
+	return nil
 }
