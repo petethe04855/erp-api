@@ -84,17 +84,40 @@ type AuditEvent struct {
 
 // Invoice represents a billing invoice
 type Invoice struct {
-	ID           uint         `gorm:"primaryKey;autoIncrement" json:"id"`
-	Code         string       `gorm:"uniqueIndex;not null" json:"code"`
-	SalesOrderID *uint        `gorm:"index" json:"salesOrderId,omitempty"`
-	SoRef        string       `json:"soRef"`
-	Customer     string       `json:"customer"`
-	IssueDate    string       `json:"issueDate"`
-	DueDate      string       `json:"dueDate"`
-	Amount       float64      `json:"amount"`
-	Paid         float64      `json:"paid"`
-	Credited     float64      `gorm:"default:0" json:"credited"`
-	RefundDue    float64      `gorm:"default:0" json:"refundDue"`
-	Status       string       `json:"status"`
-	AuditTrail   []AuditEvent `gorm:"polymorphic:Owner;" json:"auditTrail"`
+	ID               uint          `gorm:"primaryKey;autoIncrement" json:"id"`
+	Code             string        `gorm:"uniqueIndex;not null" json:"code"`
+	SalesOrderID     *uint         `gorm:"index" json:"salesOrderId,omitempty"`
+	SoRef            string        `json:"soRef"`
+	Customer         string        `json:"customer"`
+	CustomerAddress  string        `json:"customerAddress"`
+	CustomerTaxID    string        `json:"customerTaxId"`
+	CustomerBranch   string        `json:"customerBranch"`
+	PurchaseOrderRef string        `json:"purchaseOrderRef"`
+	PaymentTerms     string        `json:"paymentTerms"`
+	IssueDate        string        `json:"issueDate"`
+	DueDate          string        `json:"dueDate"`
+	Subtotal         float64       `gorm:"default:0" json:"subtotal"`
+	VATAmount        float64       `gorm:"default:0" json:"vatAmount"`
+	Amount           float64       `json:"amount"`
+	Paid             float64       `json:"paid"`
+	Credited         float64       `gorm:"default:0" json:"credited"`
+	RefundDue        float64       `gorm:"default:0" json:"refundDue"`
+	Status           string        `json:"status"`
+	Lines            []InvoiceLine `gorm:"foreignKey:InvoiceID" json:"lines"`
+	AuditTrail       []AuditEvent  `gorm:"polymorphic:Owner;" json:"auditTrail"`
+}
+
+// InvoiceLine is an immutable snapshot of the product and price billed to the customer.
+type InvoiceLine struct {
+	ID        uint    `gorm:"primaryKey;autoIncrement" json:"id"`
+	InvoiceID uint    `gorm:"index;not null" json:"invoiceId"`
+	ProductID *uint   `gorm:"index" json:"productId,omitempty"`
+	SKU       string  `json:"sku"`
+	Lot       string  `json:"lot"`
+	Name      string  `json:"name"`
+	Qty       int     `json:"qty"`
+	Unit      string  `json:"unit"`
+	UnitPrice float64 `json:"unitPrice"`
+	Discount  float64 `gorm:"default:0" json:"discount"`
+	LineTotal float64 `json:"lineTotal"`
 }

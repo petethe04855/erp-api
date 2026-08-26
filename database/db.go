@@ -141,6 +141,7 @@ func ConnectDB() {
 		&models.Quotation{},
 		&models.SalesOrder{},
 		&models.Invoice{},
+		&models.InvoiceLine{},
 		&models.PurchaseRequest{},
 		&models.PurchaseOrder{},
 		&models.GoodsReceive{},

@@ -146,7 +146,7 @@ func UpdateSalesOrderStatus(c *fiber.Ctx) error {
 	}
 
 	var so models.SalesOrder
-	if err := ByIDOrCode(database.DB, id).Preload("Lines").First(&so).Error; err != nil {
+	if err := ByIDOrCode(database.DB, id).Preload("Lines").Preload("Lines.Allocations").First(&so).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Sales order not found"})
 	}
 
@@ -230,7 +230,7 @@ func UpdateSalesOrderStatus(c *fiber.Ctx) error {
 				return err
 			}
 			if invoiceCount == 0 {
-				invoiceCode, err := NextCode(tx, "INV-2026-", &models.Invoice{}, "code")
+				invoiceCode, err := nextInvoiceCode(tx)
 				if err != nil {
 					return err
 				}
@@ -238,9 +238,12 @@ func UpdateSalesOrderStatus(c *fiber.Ctx) error {
 					Code: invoiceCode, SalesOrderID: &so.ID, SoRef: so.Code, Customer: so.Customer,
 					IssueDate: time.Now().Format("2006-01-02"),
 					DueDate:   time.Now().AddDate(0, 0, 14).Format("2006-01-02"),
-					Amount:    so.Amount, Paid: 0, Status: "Unpaid",
+					Subtotal:  so.Amount, Amount: so.Amount, Paid: 0, Status: "Unpaid",
 				}
 				if err := tx.Create(&invoice).Error; err != nil {
+					return err
+				}
+				if err := snapshotInvoiceLinesFromSO(tx, invoice.ID, so.Lines); err != nil {
 					return err
 				}
 				so.InvRef = invoice.Code
@@ -476,6 +479,63 @@ func isSellableProduct(product models.Product) bool {
 	return product.Type == "Finished Product" || product.Type == "Bundle" || product.Type == "Cat" || product.Type == "Dog"
 }
 
+func nextInvoiceCode(tx *gorm.DB) (string, error) {
+	settings := models.CompanySettings{}
+	prefix := "INV-" + time.Now().Format("2006") + "-"
+	if err := tx.First(&settings).Error; err == nil && settings.InvoicePrefix != "" {
+		prefix = settings.InvoicePrefix
+	}
+	return NextCode(tx, prefix, &models.Invoice{}, "code")
+}
+
+func snapshotInvoiceLinesFromSO(tx *gorm.DB, invoiceID uint, lines []models.SalesOrderLine) error {
+	for _, line := range lines {
+		name, unit := line.SKU, "piece"
+		lot := ""
+		if len(line.Allocations) > 0 {
+			lot = line.Allocations[0].Lot
+		}
+		var product models.Product
+		if err := tx.Where("id = ?", line.ProductID).First(&product).Error; err == nil {
+			if product.Name != "" {
+				name = product.Name
+			}
+			if product.BaseUnit != "" {
+				unit = product.BaseUnit
+			}
+		}
+		if err := tx.Create(&models.InvoiceLine{
+			InvoiceID: invoiceID, ProductID: &line.ProductID, SKU: line.SKU, Lot: lot, Name: name,
+			Qty: line.Qty, Unit: unit, UnitPrice: line.UnitPrice, LineTotal: line.LineTotal,
+		}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func normalizeInvoiceTotals(inv *models.Invoice) {
+	if len(inv.Lines) == 0 {
+		return
+	}
+	subtotal := 0.0
+	for i := range inv.Lines {
+		line := &inv.Lines[i]
+		if line.Qty <= 0 {
+			line.Qty = 1
+		}
+		if line.Unit == "" {
+			line.Unit = "piece"
+		}
+		if line.LineTotal == 0 {
+			line.LineTotal = float64(line.Qty)*line.UnitPrice - line.Discount
+		}
+		subtotal += line.LineTotal
+	}
+	inv.Subtotal = subtotal
+	inv.Amount = subtotal + inv.VATAmount
+}
+
 // POST /api/invoices
 func CreateInvoice(c *fiber.Ctx) error {
 	var inv models.Invoice
@@ -504,7 +564,8 @@ func CreateInvoice(c *fiber.Ctx) error {
 			}
 		}
 
-		code, err := NextCode(tx, "INV-2026-", &models.Invoice{}, "code")
+		normalizeInvoiceTotals(&inv)
+		code, err := nextInvoiceCode(tx)
 		if err != nil {
 			return err
 		}
@@ -520,8 +581,16 @@ func CreateInvoice(c *fiber.Ctx) error {
 			inv.Status = "Unpaid"
 		}
 
-		if err := tx.Create(&inv).Error; err != nil {
+		if err := tx.Omit("Lines").Create(&inv).Error; err != nil {
 			return err
+		}
+		for i := range inv.Lines {
+			inv.Lines[i].InvoiceID = inv.ID
+		}
+		if len(inv.Lines) > 0 {
+			if err := tx.Create(&inv.Lines).Error; err != nil {
+				return err
+			}
 		}
 
 		audit := models.AuditEvent{
@@ -543,7 +612,7 @@ func CreateInvoice(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	database.DB.Preload("AuditTrail").First(&inv, inv.ID)
+	database.DB.Preload("Lines").Preload("AuditTrail").First(&inv, inv.ID)
 	return c.JSON(inv)
 }
 
@@ -551,10 +620,16 @@ func CreateInvoice(c *fiber.Ctx) error {
 func CreateInvoiceFromSO(c *fiber.Ctx) error {
 	soID := c.Params("soId")
 	var so models.SalesOrder
-	if err := ByIDOrCode(database.DB, soID).Preload("Lines").First(&so).Error; err != nil {
+	if err := ByIDOrCode(database.DB, soID).Preload("Lines").Preload("Lines.Allocations").First(&so).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Sales order not found"})
 	}
 
+	var input models.Invoice
+	if len(c.Body()) > 0 {
+		if err := c.BodyParser(&input); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		}
+	}
 	var inv models.Invoice
 	username := c.Locals("name")
 	if username == nil {
@@ -569,7 +644,7 @@ func CreateInvoiceFromSO(c *fiber.Ctx) error {
 			return postInvoiceJournal(tx, &inv, username.(string))
 		}
 
-		code, err := NextCode(tx, "INV-2026-", &models.Invoice{}, "code")
+		code, err := nextInvoiceCode(tx)
 		if err != nil {
 			return err
 		}
@@ -581,12 +656,30 @@ func CreateInvoiceFromSO(c *fiber.Ctx) error {
 			Customer:     so.Customer,
 			IssueDate:    time.Now().Format("2006-01-02"),
 			DueDate:      time.Now().AddDate(0, 0, 14).Format("2006-01-02"),
+			Subtotal:     so.Amount,
 			Amount:       so.Amount,
 			Paid:         0,
 			Status:       "Unpaid",
 		}
+		if input.Customer != "" {
+			inv.Customer = input.Customer
+		}
+		if input.IssueDate != "" {
+			inv.IssueDate = input.IssueDate
+		}
+		if input.DueDate != "" {
+			inv.DueDate = input.DueDate
+		}
+		inv.CustomerAddress = input.CustomerAddress
+		inv.CustomerTaxID = input.CustomerTaxID
+		inv.CustomerBranch = input.CustomerBranch
+		inv.PurchaseOrderRef = input.PurchaseOrderRef
+		inv.PaymentTerms = input.PaymentTerms
 
 		if err := tx.Create(&inv).Error; err != nil {
+			return err
+		}
+		if err := snapshotInvoiceLinesFromSO(tx, inv.ID, so.Lines); err != nil {
 			return err
 		}
 
@@ -615,7 +708,7 @@ func CreateInvoiceFromSO(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	database.DB.Preload("AuditTrail").First(&inv, inv.ID)
+	database.DB.Preload("Lines").Preload("AuditTrail").First(&inv, inv.ID)
 	return c.JSON(inv)
 }
 

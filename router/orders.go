@@ -22,8 +22,8 @@ func RegisterOrderRoutes(api fiber.Router) {
 	api.Put("/sales-orders/:id/status", handlers.UpdateSalesOrderStatus)
 
 	// Invoices
-	api.Get("/invoices", handlers.ListResource(func() interface{} { return &[]models.Invoice{} }, "AuditTrail"))
-	api.Get("/invoices/:id", handlers.GetResource(func() interface{} { return &models.Invoice{} }, "id", "id", "AuditTrail"))
+	api.Get("/invoices", handlers.ListResource(func() interface{} { return &[]models.Invoice{} }, "Lines", "AuditTrail"))
+	api.Get("/invoices/:id", handlers.GetResource(func() interface{} { return &models.Invoice{} }, "id", "id", "Lines", "AuditTrail"))
 	api.Post("/invoices", handlers.CreateInvoice)
 	api.Post("/invoices/from-so/:soId", handlers.CreateInvoiceFromSO)
 	api.Post("/invoices/:id/payment", handlers.RecordPayment)

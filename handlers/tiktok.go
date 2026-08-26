@@ -36,6 +36,8 @@ const (
 	tiktokRefreshWindow = 24 * time.Hour
 )
 
+var errTiktokSKUUnmapped = errors.New("TikTok SKU is not mapped")
+
 type tiktokTokenResponse struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
@@ -198,20 +200,30 @@ func SyncTiktokOrders(c *fiber.Ctx) error {
 
 	deducted := 0
 	deductionErrors := make([]string, 0)
+	deductionWarnings := make([]string, 0)
 	for i := range orders {
 		order := &orders[i]
 		if !tiktokOrderNeedsStockDeduction(order.Status) || order.StockDeducted {
 			continue
 		}
-		if err := deductTiktokOrderStock(order.ID); err != nil {
+		deduction, err := deductTiktokOrderStock(order.ID)
+		if err != nil {
 			deductionErrors = append(deductionErrors, fmt.Sprintf("%s: %s", order.ID, err.Error()))
 			continue
 		}
-		deducted++
+		if deduction.DidDeduct {
+			deducted++
+		}
+		for _, warning := range deduction.Warnings {
+			deductionWarnings = append(deductionWarnings, fmt.Sprintf("%s: %s", order.ID, warning))
+		}
 	}
 	result := fiber.Map{"synced": len(orders), "days": days, "stockDeducted": deducted}
 	if len(deductionErrors) > 0 {
 		result["stockDeductionErrors"] = deductionErrors
+	}
+	if len(deductionWarnings) > 0 {
+		result["stockDeductionWarnings"] = deductionWarnings
 	}
 	return c.JSON(result)
 }
@@ -682,7 +694,7 @@ func tiktokOrderNeedsStockDeduction(status string) bool {
 func resolveTiktokERPSKU(tx *gorm.DB, tiktokSKU string) (string, error) {
 	sku := strings.ToUpper(strings.TrimSpace(tiktokSKU))
 	if sku == "" {
-		return "", fmt.Errorf("TikTok SKU is empty")
+		return "", fmt.Errorf("%w: Seller SKU is empty", errTiktokSKUUnmapped)
 	}
 	var mapping models.TiktokSKUMapping
 	if err := tx.Where("tiktok_sku = ?", sku).First(&mapping).Error; err == nil {
@@ -694,16 +706,25 @@ func resolveTiktokERPSKU(tx *gorm.DB, tiktokSKU string) (string, error) {
 	// already equals the ERP SKU continue to work without a mapping row.
 	var product models.Product
 	if err := tx.First(&product, "sku = ?", sku).Error; err != nil {
-		return "", fmt.Errorf("TikTok SKU %s is not mapped to an ERP SKU", sku)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", fmt.Errorf("%w: TikTok SKU %s has no ERP product or mapping", errTiktokSKUUnmapped, sku)
+		}
+		return "", err
 	}
 	return product.SKU, nil
+}
+
+type tiktokStockDeductionResult struct {
+	DidDeduct bool
+	Warnings  []string
 }
 
 // deductTiktokOrderStock consumes ERP stock when a TikTok order is delivered.
 // Bundle SKUs are expanded into their component SKUs; normal SKUs are consumed directly.
 // The whole order is processed in one transaction and StockDeducted makes the operation idempotent.
-func deductTiktokOrderStock(orderID string) error {
-	return database.DB.Transaction(func(tx *gorm.DB) error {
+func deductTiktokOrderStock(orderID string) (tiktokStockDeductionResult, error) {
+	result := tiktokStockDeductionResult{Warnings: make([]string, 0)}
+	err := database.DB.Transaction(func(tx *gorm.DB) error {
 		var order models.TiktokOrder
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Preload("Items").First(&order, "id = ?", orderID).Error; err != nil {
 			return fmt.Errorf("TikTok order not found")
@@ -722,19 +743,35 @@ func deductTiktokOrderStock(orderID string) error {
 			}
 			erpSKU, err := resolveTiktokERPSKU(tx, item.SKU)
 			if err != nil {
+				if shouldSkipUnmappedTiktokItem(item, err) {
+					result.Warnings = append(result.Warnings, fmt.Sprintf("ข้ามรายการมูลค่า 0 ที่ไม่ผูก Stock: %s (%s)", firstNonEmpty(item.ProductName, "ไม่ระบุชื่อ"), firstNonEmpty(strings.TrimSpace(item.SKU), "ไม่มี Seller SKU")))
+					continue
+				}
 				return err
 			}
 			if err := expandTiktokSKU(tx, erpSKU, item.Qty, requirements, map[string]bool{}); err != nil {
 				return err
 			}
 		}
+		if len(requirements) == 0 {
+			return fmt.Errorf("order has no stock-tracked items")
+		}
 		for sku, qty := range requirements {
 			if err := deductTiktokComponentFEFO(tx, sku, qty, order.ID); err != nil {
 				return err
 			}
 		}
-		return tx.Model(&order).Update("stock_deducted", true).Error
+		if err := tx.Model(&order).Update("stock_deducted", true).Error; err != nil {
+			return err
+		}
+		result.DidDeduct = true
+		return nil
 	})
+	if err != nil {
+		result.DidDeduct = false
+		result.Warnings = nil
+	}
+	return result, err
 }
 
 func expandTiktokSKU(tx *gorm.DB, sku string, qty int, requirements map[string]int, visiting map[string]bool) error {
@@ -760,16 +797,17 @@ func expandTiktokSKU(tx *gorm.DB, sku string, qty int, requirements map[string]i
 	}
 	for _, component := range components {
 		componentQty := int(math.Ceil(component.Qty * float64(qty)))
-		componentSKU := strings.ToUpper(strings.TrimSpace(component.ComponentSku))
+		componentProductSKU := ""
 		if component.ComponentProductID != 0 {
 			var componentProduct models.Product
 			if err := tx.First(&componentProduct, component.ComponentProductID).Error; err != nil {
 				return fmt.Errorf("bundle %s component product %d could not be resolved: %w", sku, component.ComponentProductID, err)
 			}
-			componentSKU = strings.ToUpper(strings.TrimSpace(componentProduct.SKU))
+			componentProductSKU = componentProduct.SKU
 		}
-		if componentSKU == "" {
-			return fmt.Errorf("bundle %s has component %d with no valid ERP SKU", sku, component.ComponentProductID)
+		componentSKU, err := resolveTiktokBundleComponentSKU(sku, component, componentProductSKU)
+		if err != nil {
+			return err
 		}
 		if componentQty <= 0 {
 			return fmt.Errorf("bundle %s has invalid component quantity for %s", sku, componentSKU)
@@ -779,6 +817,28 @@ func expandTiktokSKU(tx *gorm.DB, sku string, qty int, requirements map[string]i
 		}
 	}
 	return nil
+}
+
+func shouldSkipUnmappedTiktokItem(item models.TiktokOrderItem, err error) bool {
+	return item.Amount == 0 && errors.Is(err, errTiktokSKUUnmapped)
+}
+
+func resolveTiktokBundleComponentSKU(bundleSKU string, component models.BundleComponent, productSKU string) (string, error) {
+	storedSKU := strings.ToUpper(strings.TrimSpace(component.ComponentSku))
+	resolvedSKU := strings.ToUpper(strings.TrimSpace(productSKU))
+	if component.ComponentProductID != 0 {
+		if resolvedSKU == "" {
+			return "", fmt.Errorf("bundle %s component product %d has no valid ERP SKU", bundleSKU, component.ComponentProductID)
+		}
+		if storedSKU != "" && storedSKU != resolvedSKU {
+			return "", fmt.Errorf("bundle %s component data mismatch: product %d is SKU %s but component stores SKU %s", bundleSKU, component.ComponentProductID, resolvedSKU, storedSKU)
+		}
+		return resolvedSKU, nil
+	}
+	if storedSKU == "" {
+		return "", fmt.Errorf("bundle %s has component with no valid ERP SKU", bundleSKU)
+	}
+	return storedSKU, nil
 }
 
 func deductTiktokComponentFEFO(tx *gorm.DB, sku string, qty int, orderID string) error {
