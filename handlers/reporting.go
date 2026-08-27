@@ -39,12 +39,14 @@ func GeneralLedgerReport(c *fiber.Ctx) error {
 	entries := journalRangeQuery(c)
 	type row struct {
 		Date, JournalCode, SourceType, SourceRef, AccountCode, AccountName, Description, SKU, Lot, Channel string
-		Debit, Credit                                                                                      float64
+		Debit, Credit, RunningBalance                                                                      float64
 	}
 	rows := make([]row, 0)
+	running := map[string]float64{}
 	for _, entry := range entries {
 		for _, line := range entry.Lines {
-			rows = append(rows, row{entry.Date, entry.Code, entry.SourceType, entry.SourceRef, line.AccountCode, line.AccountName, entry.Description, line.SKU, line.Lot, line.Channel, line.Debit, line.Credit})
+			running[line.AccountCode] += line.Debit - line.Credit
+			rows = append(rows, row{entry.Date, entry.Code, entry.SourceType, entry.SourceRef, line.AccountCode, line.AccountName, entry.Description, line.SKU, line.Lot, line.Channel, line.Debit, line.Credit, running[line.AccountCode]})
 		}
 	}
 	return c.JSON(rows)
@@ -52,13 +54,36 @@ func GeneralLedgerReport(c *fiber.Ctx) error {
 
 // GET /api/reports/trial-balance
 func TrialBalanceReport(c *fiber.Ctx) error {
+	from, to := reportDateRange(c)
 	entries := journalRangeQuery(c)
 	type balance struct {
-		AccountCode, AccountName, AccountType string
-		Debit, Credit, Balance                float64
-		BalanceSide                           string
+		AccountCode, AccountName, AccountType                     string
+		OpeningDebit, OpeningCredit, Debit, Credit, EndingBalance float64
+		BalanceSide                                               string
 	}
 	byCode := map[string]*balance{}
+	// Include all active accounts so a zero-activity account is not silently omitted.
+	var accounts []models.Account
+	database.DB.Where("is_active = ?", true).Find(&accounts)
+	for _, account := range accounts {
+		byCode[account.Code] = &balance{AccountCode: account.Code, AccountName: account.Name, AccountType: account.Type}
+	}
+	// Opening balance is the posted movement before the selected period.
+	if from != "" {
+		var prior []models.JournalEntry
+		database.DB.Preload("Lines").Where("status = ? AND date < ?", "Posted", from).Find(&prior)
+		for _, entry := range prior {
+			for _, line := range entry.Lines {
+				item := byCode[line.AccountCode]
+				if item == nil {
+					item = &balance{AccountCode: line.AccountCode, AccountName: line.AccountName}
+					byCode[line.AccountCode] = item
+				}
+				item.OpeningDebit += line.Debit
+				item.OpeningCredit += line.Credit
+			}
+		}
+	}
 	for _, entry := range entries {
 		for _, line := range entry.Lines {
 			item := byCode[line.AccountCode]
@@ -70,7 +95,6 @@ func TrialBalanceReport(c *fiber.Ctx) error {
 			item.Credit += line.Credit
 		}
 	}
-	var accounts []models.Account
 	database.DB.Find(&accounts)
 	for _, account := range accounts {
 		if item := byCode[account.Code]; item != nil {
@@ -79,11 +103,14 @@ func TrialBalanceReport(c *fiber.Ctx) error {
 	}
 	rows := make([]balance, 0, len(byCode))
 	totalDebit, totalCredit := 0.0, 0.0
+	openingDebit, openingCredit := 0.0, 0.0
 	for _, item := range byCode {
-		item.Balance = item.Debit - item.Credit
+		openingDebit += item.OpeningDebit
+		openingCredit += item.OpeningCredit
+		item.EndingBalance = item.OpeningDebit - item.OpeningCredit + item.Debit - item.Credit
 		item.BalanceSide = "Debit"
-		if item.Balance < 0 {
-			item.Balance = -item.Balance
+		if item.EndingBalance < 0 {
+			item.EndingBalance = -item.EndingBalance
 			item.BalanceSide = "Credit"
 		}
 		totalDebit += item.Debit
@@ -91,7 +118,7 @@ func TrialBalanceReport(c *fiber.Ctx) error {
 		rows = append(rows, *item)
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].AccountCode < rows[j].AccountCode })
-	return c.JSON(fiber.Map{"rows": rows, "totalDebit": totalDebit, "totalCredit": totalCredit, "balanced": absFloat(totalDebit-totalCredit) < 0.005})
+	return c.JSON(fiber.Map{"rows": rows, "totalDebit": totalDebit, "totalCredit": totalCredit, "openingDebit": openingDebit, "openingCredit": openingCredit, "endingDebit": totalDebit + openingDebit, "endingCredit": totalCredit + openingCredit, "from": from, "to": to, "balanced": absFloat(totalDebit-totalCredit) < 0.005})
 }
 
 // GET /api/reports/inventory-valuation
