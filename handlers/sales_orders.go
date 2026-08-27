@@ -19,7 +19,7 @@ func CreateSalesOrder(c *fiber.Ctx) error {
 	}
 
 	if so.Customer == "" || len(so.Lines) == 0 {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Sales Entry requires customer and at least one item"})
+        return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Sales Entry requires company name and at least one item"})
 	}
 	if so.SourceRef != "" {
 		var existing models.SalesOrder
