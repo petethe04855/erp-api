@@ -65,6 +65,17 @@ func collectIntegrityFindings(db *gorm.DB) ([]integrityFinding, int) {
 		if product.Stock != int(movementNet) {
 			findings = append(findings, integrityFinding{"StockMovement", "High", "product", product.SKU, "Product Stock ไม่เท่ากับ Movement IN - OUT", fmt.Sprint(product.Stock), fmt.Sprint(movementNet), product.ID})
 		}
+		var invalidLots []models.StockLot
+		db.Where("sku = ? AND remaining_qty > 0 AND (expiry_date = '' OR expiry_date < ?)", product.SKU, time.Now().Format("2006-01-02")).Find(&invalidLots)
+		for _, lot := range invalidLots {
+			checked++
+			category, message := "LotExpiry", "Lot มีวันหมดอายุว่างหรือหมดอายุแล้วแต่ยังมี Stock คงเหลือ"
+			actual := lot.ExpiryDate
+			if actual == "" {
+				actual = "ไม่มีวันหมดอายุ"
+			}
+			findings = append(findings, integrityFinding{category, "High", "stock_lot", lot.Lot, message, "expiry date ในอนาคต", actual, lot.ID})
+		}
 	}
 	var journals []models.JournalEntry
 	db.Preload("Lines").Find(&journals)

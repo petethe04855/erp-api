@@ -69,7 +69,6 @@ func UpdatePRStatus(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-
 	var pr models.PurchaseRequest
 	if err := ByIDOrCode(database.DB, id).First(&pr).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "PR not found"})
@@ -315,6 +314,14 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 
 	if gr.ReceiveDate == "" || len(gr.Items) == 0 {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Stock receipt requires receiveDate and at least one item"})
+	}
+	for _, item := range gr.Items {
+		if item.ExpiryDate == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "expiry date is required for every received lot"})
+		}
+		if item.ExpiryDate < gr.ReceiveDate {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "lot expiry date cannot be before receive date"})
+		}
 	}
 
 	hasPO := gr.PoRef != "" || gr.PurchaseOrderID != nil

@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"chawy-erp-api/database"
@@ -10,6 +11,19 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 )
+
+func isThirteenDigitTaxID(value string) bool {
+	value = strings.TrimSpace(value)
+	if len(value) != 13 {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
 
 // POST /api/sales-orders
 func CreateSalesOrder(c *fiber.Ctx) error {
@@ -19,7 +33,7 @@ func CreateSalesOrder(c *fiber.Ctx) error {
 	}
 
 	if so.Customer == "" || len(so.Lines) == 0 {
-        return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Sales Entry requires company name and at least one item"})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Sales Entry requires company name and at least one item"})
 	}
 	if so.SourceRef != "" {
 		var existing models.SalesOrder
@@ -544,7 +558,16 @@ func CreateInvoice(c *fiber.Ctx) error {
 	}
 
 	if inv.Customer == "" || inv.Amount <= 0 {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invoice requires customer and amount > 0"})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invoice requires company name and amount > 0"})
+	}
+	if inv.CustomerAddress == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invoice requires billing address"})
+	}
+	if inv.CustomerTaxID != "" && !isThirteenDigitTaxID(inv.CustomerTaxID) {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "customer tax ID must contain 13 digits"})
+	}
+	if inv.IssueDate != "" && inv.DueDate != "" && inv.DueDate < inv.IssueDate {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "due date cannot be before issue date"})
 	}
 
 	username := c.Locals("name")
