@@ -39,14 +39,28 @@ func GeneralLedgerReport(c *fiber.Ctx) error {
 	entries := journalRangeQuery(c)
 	type row struct {
 		Date, JournalCode, SourceType, SourceRef, AccountCode, AccountName, Description, SKU, Lot, Channel string
-		Debit, Credit, RunningBalance                                                                      float64
+		Debit, Credit, OpeningBalance, RunningBalance                                                      float64
 	}
 	rows := make([]row, 0)
 	running := map[string]float64{}
+	from, _ := reportDateRange(c)
+	if from != "" {
+		var prior []models.JournalEntry
+		database.DB.Preload("Lines").Where("status = ? AND date < ?", "Posted", from).Find(&prior)
+		for _, entry := range prior {
+			for _, line := range entry.Lines {
+				running[line.AccountCode] += line.Debit - line.Credit
+			}
+		}
+	}
+	opening := map[string]float64{}
+	for code, value := range running {
+		opening[code] = value
+	}
 	for _, entry := range entries {
 		for _, line := range entry.Lines {
 			running[line.AccountCode] += line.Debit - line.Credit
-			rows = append(rows, row{entry.Date, entry.Code, entry.SourceType, entry.SourceRef, line.AccountCode, line.AccountName, entry.Description, line.SKU, line.Lot, line.Channel, line.Debit, line.Credit, running[line.AccountCode]})
+			rows = append(rows, row{entry.Date, entry.Code, entry.SourceType, entry.SourceRef, line.AccountCode, line.AccountName, entry.Description, line.SKU, line.Lot, line.Channel, line.Debit, line.Credit, opening[line.AccountCode], running[line.AccountCode]})
 		}
 	}
 	return c.JSON(rows)
@@ -59,6 +73,7 @@ func TrialBalanceReport(c *fiber.Ctx) error {
 	type balance struct {
 		AccountCode, AccountName, AccountType                     string
 		OpeningDebit, OpeningCredit, Debit, Credit, EndingBalance float64
+		EndingDebit, EndingCredit                                 float64
 		BalanceSide                                               string
 	}
 	byCode := map[string]*balance{}
@@ -112,6 +127,11 @@ func TrialBalanceReport(c *fiber.Ctx) error {
 		if item.EndingBalance < 0 {
 			item.EndingBalance = -item.EndingBalance
 			item.BalanceSide = "Credit"
+		}
+		if item.BalanceSide == "Debit" {
+			item.EndingDebit = item.EndingBalance
+		} else {
+			item.EndingCredit = item.EndingBalance
 		}
 		totalDebit += item.Debit
 		totalCredit += item.Credit
