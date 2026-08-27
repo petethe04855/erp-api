@@ -68,6 +68,7 @@ type GoodsReceive struct {
 	PurchaseOrderID *uint              `gorm:"index" json:"purchaseOrderId,omitempty"`
 	PoRef           string             `json:"poRef"`
 	ReceiveDate     string             `json:"receiveDate"`
+	Note            string             `json:"note"`
 	Items           []GoodsReceiveItem `gorm:"foreignKey:GoodsReceiveID" json:"items"`
 	LandedCosts     []LandedCostLine   `gorm:"foreignKey:GoodsReceiveID" json:"landedCosts"`
 	AuditTrail      []AuditEvent       `gorm:"polymorphic:Owner;" json:"auditTrail"`
@@ -82,5 +83,10 @@ type GoodsReceiveItem struct {
 	QtyReceived    int     `json:"qtyReceived"`
 	Lot            string  `json:"lot"`
 	ExpiryDate     string  `json:"expiryDate"`
+	SupplierLot    string  `json:"supplierLot"`
+	QCStatus       string  `json:"qcStatus"`
+	AcceptedQty    int     `json:"acceptedQty"`
+	RejectedQty    int     `json:"rejectedQty"`
+	QCNote         string  `json:"qcNote"`
 	LandedUnitCost float64 `json:"landedUnitCost"` // ยังไม่คำนวณในขั้นตอน Stock Receipt
 }

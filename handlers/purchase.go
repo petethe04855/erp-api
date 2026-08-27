@@ -372,6 +372,17 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 		for i := range gr.Items {
 			item := &gr.Items[i]
 			item.GoodsReceiveID = gr.ID
+			if item.QCStatus == "" {
+				item.QCStatus = "Accepted"
+			}
+			if item.RejectedQty < 0 || item.RejectedQty > item.QtyReceived {
+				return fmt.Errorf("invalid rejected quantity for item %s", item.SKU)
+			}
+			item.AcceptedQty = item.QtyReceived - item.RejectedQty
+			if item.QCStatus == "Rejected" {
+				item.AcceptedQty = 0
+				item.RejectedQty = item.QtyReceived
+			}
 
 			if item.QtyReceived <= 0 || item.Lot == "" {
 				return fmt.Errorf("Invalid QtyReceived for item %s", item.SKU)
@@ -430,10 +441,12 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 				ProductID:       product.ID,
 				SKU:             item.SKU,
 				Lot:             item.Lot,
-				Qty:             item.QtyReceived,
-				RemainingQty:    item.QtyReceived,
+				Qty:             item.AcceptedQty,
+				RemainingQty:    item.AcceptedQty,
 				LandedUnitCost:  0,
 				ExpiryDate:      item.ExpiryDate,
+				SupplierLot:     item.SupplierLot,
+				QCStatus:        item.QCStatus,
 				ReceivedDate:    gr.ReceiveDate,
 				GoodsReceiveID:  &gr.ID,
 				GrRef:           gr.Code,
@@ -446,7 +459,7 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 
 			// Update product stock balance
 			if product.ID > 0 {
-				product.Stock += item.QtyReceived
+				product.Stock += item.AcceptedQty
 				if err := tx.Save(&product).Error; err != nil {
 					return err
 				}
@@ -458,7 +471,7 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 				ProductID:  product.ID,
 				SKU:        item.SKU,
 				Type:       "IN",
-				Qty:        item.QtyReceived,
+				Qty:        item.AcceptedQty,
 				RefDoc:     gr.Code,
 				RefDocType: "goods_receives",
 				RefDocID:   &gr.ID,

@@ -11,6 +11,8 @@ type StockLot struct {
 	RemainingQty    int     `json:"remainingQty"`
 	LandedUnitCost  float64 `json:"landedUnitCost"`
 	ExpiryDate      string  `json:"expiryDate"`
+	SupplierLot     string  `json:"supplierLot"`
+	QCStatus        string  `json:"qcStatus"`
 	ReceivedDate    string  `json:"receivedDate"`
 	GoodsReceiveID  *uint   `gorm:"index" json:"goodsReceiveId,omitempty"`
 	GrRef           string  `json:"grRef"`
