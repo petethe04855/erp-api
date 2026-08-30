@@ -38,6 +38,71 @@ const (
 
 var errTiktokSKUUnmapped = errors.New("TikTok SKU is not mapped")
 
+// ReceiveTiktokWebhook authenticates and records webhook events before processing.
+func ReceiveTiktokWebhook(c *fiber.Ctx) error {
+	secret := strings.TrimSpace(os.Getenv("TIKTOK_WEBHOOK_SECRET"))
+	if secret == "" {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "TikTok webhook secret is not configured"})
+	}
+	eventID := strings.TrimSpace(c.Get("X-TikTok-Event-Id"))
+	timestamp := strings.TrimSpace(c.Get("X-TikTok-Timestamp"))
+	signature := strings.TrimSpace(c.Get("X-TikTok-Signature"))
+	unixTimestamp, err := strconv.ParseInt(timestamp, 10, 64)
+	if eventID == "" || err != nil || signature == "" || math.Abs(float64(time.Now().Unix()-unixTimestamp)) > 300 {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid webhook authentication"})
+	}
+	body := c.Body()
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(timestamp + "."))
+	_, _ = mac.Write(body)
+	expected := hex.EncodeToString(mac.Sum(nil))
+	provided := strings.TrimPrefix(signature, "sha256=")
+	if !hmac.Equal([]byte(strings.ToLower(provided)), []byte(expected)) {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid webhook signature"})
+	}
+	var existing models.TiktokWebhookEvent
+	if database.DB.Where("event_id = ?", eventID).First(&existing).Error == nil {
+		return c.SendStatus(fiber.StatusOK)
+	}
+	event := models.TiktokWebhookEvent{EventID: eventID, EventType: c.Get("X-TikTok-Event-Type"), Payload: string(body), ReceivedAt: time.Now().UTC()}
+	if err := database.DB.Create(&event).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "could not record webhook"})
+	}
+	return c.SendStatus(fiber.StatusOK)
+}
+
+const tiktokMaxRetries = 3
+
+func doTiktokRequest(req *http.Request) (*http.Response, error) {
+	client := &http.Client{Timeout: 20 * time.Second}
+	var lastErr error
+	for attempt := 0; attempt < tiktokMaxRetries; attempt++ {
+		current := req
+		if attempt > 0 {
+			current = req.Clone(req.Context())
+			if req.GetBody != nil {
+				body, err := req.GetBody()
+				if err != nil {
+					return nil, err
+				}
+				current.Body = body
+			}
+		}
+		response, err := client.Do(current)
+		if err == nil && (response.StatusCode < 429 || attempt == tiktokMaxRetries-1) {
+			return response, nil
+		}
+		if response != nil {
+			response.Body.Close()
+		}
+		lastErr = err
+		if attempt < tiktokMaxRetries-1 {
+			time.Sleep(time.Duration(1<<attempt) * 250 * time.Millisecond)
+		}
+	}
+	return nil, lastErr
+}
+
 type tiktokTokenResponse struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
@@ -78,7 +143,30 @@ type tiktokOrderSearchResponse struct {
 
 // SyncTiktokOrders retrieves recent orders from TikTok Shop and upserts the
 // order headers and every SKU line into the local reporting database.
-func SyncTiktokOrders(c *fiber.Ctx) error {
+func ListTiktokSyncRuns(c *fiber.Ctx) error {
+	var runs []models.TiktokSyncRun
+	if err := database.DB.Order("started_at DESC").Limit(100).Find(&runs).Error; err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(runs)
+}
+
+func SyncTiktokOrders(c *fiber.Ctx) (result error) {
+	run := models.TiktokSyncRun{StartedAt: time.Now().UTC(), Status: "Running", Days: c.QueryInt("days", 30)}
+	if err := database.DB.Create(&run).Error; err != nil {
+		return err
+	}
+	defer func() {
+		finished := time.Now().UTC()
+		run.FinishedAt = &finished
+		if result != nil {
+			run.Status = "Failed"
+			run.Error = result.Error()
+		} else {
+			run.Status = "Completed"
+		}
+		_ = database.DB.Save(&run).Error
+	}()
 	appKey, appSecret, err := tiktokCredentials()
 	if err != nil {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})
@@ -124,7 +212,7 @@ func SyncTiktokOrders(c *fiber.Ctx) error {
 		request, _ := http.NewRequest(http.MethodPost, tiktokAPIBase+path+"?"+encodeTiktokParams(params), bytes.NewReader(body))
 		request.Header.Set("x-tts-access-token", accessToken)
 		request.Header.Set("Content-Type", "application/json")
-		response, err := (&http.Client{Timeout: 20 * time.Second}).Do(request)
+		response, err := doTiktokRequest(request)
 		if err != nil {
 			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "TikTok Shop Orders API is unavailable"})
 		}
@@ -218,14 +306,15 @@ func SyncTiktokOrders(c *fiber.Ctx) error {
 			deductionWarnings = append(deductionWarnings, fmt.Sprintf("%s: %s", order.ID, warning))
 		}
 	}
-	result := fiber.Map{"synced": len(orders), "days": days, "stockDeducted": deducted}
+	responseResult := fiber.Map{"synced": len(orders), "days": days, "stockDeducted": deducted}
 	if len(deductionErrors) > 0 {
-		result["stockDeductionErrors"] = deductionErrors
+		responseResult["stockDeductionErrors"] = deductionErrors
 	}
 	if len(deductionWarnings) > 0 {
-		result["stockDeductionWarnings"] = deductionWarnings
+		responseResult["stockDeductionWarnings"] = deductionWarnings
 	}
-	return c.JSON(result)
+	run.Synced, run.StockDeducted = len(orders), deducted
+	return c.JSON(responseResult)
 }
 
 func tiktokCredentials() (string, string, error) {
@@ -386,7 +475,7 @@ func GetTiktokProducts(c *fiber.Ctx) error {
 	req, _ := http.NewRequest(http.MethodPost, tiktokAPIBase+path+"?"+encodeTiktokParams(params), bytes.NewReader(body))
 	req.Header.Set("x-tts-access-token", accessToken)
 	req.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	response, err := doTiktokRequest(req)
 	if err != nil {
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "TikTok Shop API is unavailable"})
 	}
@@ -436,6 +525,77 @@ func GetTiktokProducts(c *fiber.Ctx) error {
 		})
 	}
 	return c.Type(fiber.MIMEApplicationJSON).Send(responseBody)
+}
+
+// ImportTiktokProducts upserts marketplace products into the ERP SKU master by SKU.
+func ImportTiktokProducts(c *fiber.Ctx) error {
+	var req struct {
+		Products []struct {
+			SKU      string  `json:"sku"`
+			Name     string  `json:"name"`
+			Barcode  string  `json:"barcode"`
+			Price    float64 `json:"price"`
+			IsActive *bool   `json:"isActive"`
+		} `json:"products"`
+	}
+	if err := c.BodyParser(&req); err != nil || len(req.Products) == 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "products are required"})
+	}
+	created, updated := 0, 0
+	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		for _, input := range req.Products {
+			input.SKU = strings.TrimSpace(input.SKU)
+			input.Name = strings.TrimSpace(input.Name)
+			if input.SKU == "" || input.Name == "" {
+				return errors.New("each product requires sku and name")
+			}
+			var product models.Product
+			findErr := tx.Where("sku = ?", input.SKU).First(&product).Error
+			if findErr == gorm.ErrRecordNotFound {
+				active := true
+				if input.IsActive != nil {
+					active = *input.IsActive
+				}
+				product = models.Product{SKU: input.SKU, Name: input.Name, Barcode: input.Barcode, Price: input.Price, RetailPrice: input.Price, IsActive: active, Type: "Finished Product"}
+				if err := tx.Create(&product).Error; err != nil {
+					return err
+				}
+				created++
+			} else if findErr != nil {
+				return findErr
+			} else {
+				product.Name, product.Barcode, product.Price, product.RetailPrice = input.Name, input.Barcode, input.Price, input.Price
+				if input.IsActive != nil {
+					product.IsActive = *input.IsActive
+				}
+				if err := tx.Save(&product).Error; err != nil {
+					return err
+				}
+				updated++
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"created": created, "updated": updated})
+}
+
+func TiktokStockSyncPreview(c *fiber.Ctx) error {
+	var products []models.Product
+	if err := database.DB.Where("is_active = ?", true).Order("sku").Find(&products).Error; err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	rows := make([]fiber.Map, 0, len(products))
+	for _, product := range products {
+		available := product.Stock - product.ReservedQty
+		if available < 0 {
+			available = 0
+		}
+		rows = append(rows, fiber.Map{"sku": product.SKU, "stock": product.Stock, "reserved": product.ReservedQty, "available": available, "isBundle": product.IsBundle})
+	}
+	return c.JSON(fiber.Map{"count": len(rows), "rows": rows})
 }
 
 func redactTiktokValue(value string) string {
@@ -499,7 +659,7 @@ func ensureTiktokShopCipher(connection *models.TiktokConnection, appKey, appSecr
 		return errors.New("Could not create TikTok shop request")
 	}
 	req.Header.Set("x-tts-access-token", accessToken)
-	response, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	response, err := doTiktokRequest(req)
 	if err != nil {
 		return errors.New("TikTok Shop API is unavailable")
 	}

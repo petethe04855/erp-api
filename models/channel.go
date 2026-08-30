@@ -2,6 +2,25 @@ package models
 
 import "time"
 
+type TiktokWebhookEvent struct {
+	ID         uint      `gorm:"primaryKey;autoIncrement" json:"id"`
+	EventID    string    `gorm:"uniqueIndex;not null" json:"eventId"`
+	EventType  string    `json:"eventType"`
+	Payload    string    `gorm:"type:text" json:"-"`
+	ReceivedAt time.Time `json:"receivedAt"`
+}
+
+type TiktokSyncRun struct {
+	ID            uint       `gorm:"primaryKey;autoIncrement" json:"id"`
+	StartedAt     time.Time  `json:"startedAt"`
+	FinishedAt    *time.Time `json:"finishedAt,omitempty"`
+	Status        string     `json:"status"`
+	Days          int        `json:"days"`
+	Synced        int        `json:"synced"`
+	StockDeducted int        `json:"stockDeducted"`
+	Error         string     `json:"error,omitempty"`
+}
+
 // TiktokConnection holds the server-side OAuth credentials for the TikTok Shop
 // connection. Token values are encrypted before being persisted.
 type TiktokConnection struct {

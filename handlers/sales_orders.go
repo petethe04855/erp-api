@@ -832,13 +832,20 @@ func postInvoiceJournal(tx *gorm.DB, inv *models.Invoice, by string) error {
 	if inv.Amount <= 0 {
 		return fmt.Errorf("invoice amount must be greater than zero")
 	}
+	subtotal := inv.Subtotal
+	if subtotal <= 0 {
+		subtotal = inv.Amount - inv.VATAmount
+	}
 	_, err := postJournal(tx, postingRequest{
 		Date: inv.IssueDate, SourceType: "customer_invoice", SourceID: inv.ID, SourceRef: inv.Code,
 		Description: "ออกใบแจ้งหนี้ " + inv.Code, CreatedBy: by,
-		Lines: []postingLine{
-			{AccountCode: "1200", Debit: inv.Amount},
-			{AccountCode: "4000", Credit: inv.Amount},
-		},
+		Lines: func() []postingLine {
+			lines := []postingLine{{AccountCode: "1200", Debit: inv.Amount}, {AccountCode: "4000", Credit: subtotal}}
+			if inv.VATAmount > 0 {
+				lines = append(lines, postingLine{AccountCode: "2100", Credit: inv.VATAmount})
+			}
+			return lines
+		}(),
 	})
 	return err
 }

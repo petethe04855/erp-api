@@ -11,7 +11,7 @@ func SetupRoutes(app *fiber.App) {
 	RegisterAuthRoutes(app)
 
 	// Protected API Routes Group
-	api := app.Group("/api", middleware.AuthRequired)
+	api := app.Group("/api", middleware.AuthRequired, middleware.AuditMutations)
 
 	// Sub-router groups
 	RegisterUserRoutes(api)

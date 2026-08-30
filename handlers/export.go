@@ -333,10 +333,15 @@ func ExportBudget(c *fiber.Ctx) error {
 		rowIdx := 2
 		for _, b := range budgets {
 			var actual float64
-			database.DB.Model(&models.Expense{}).
-				Where("date LIKE ? AND category = ? AND channel = ?", selectedMonth+"%", b.Category, b.Channel).
-				Select("COALESCE(SUM(amount), 0)").
-				Scan(&actual)
+			// Budget Actual is sourced from posted journal lines only.
+			accountCode := "6000"
+			if b.Category == "COGS/วัตถุดิบ" {
+				accountCode = "5000"
+			}
+			database.DB.Table("journal_lines jl").
+				Joins("JOIN journal_entries je ON je.id = jl.journal_entry_id").
+				Where("je.status = ? AND je.date LIKE ? AND jl.account_code = ? AND jl.channel = ?", "Posted", selectedMonth+"%", accountCode, b.Channel).
+				Select("COALESCE(SUM(jl.debit - jl.credit), 0)").Scan(&actual)
 
 			var pctStr string
 			if b.BudgetAmount > 0 {

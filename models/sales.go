@@ -80,6 +80,28 @@ type AuditEvent struct {
 	By        string `json:"by"`
 	At        string `json:"at"`
 	Note      string `json:"note"`
+	Role      string `json:"role"`
+	Before    string `json:"before"`
+	After     string `json:"after"`
+	Reason    string `json:"reason"`
+	SourceRef string `json:"sourceRef"`
+}
+
+// AuditLog is the central append-only audit record for cross-module actions.
+type AuditLog struct {
+	ID        uint   `gorm:"primaryKey;autoIncrement" json:"id"`
+	Actor     string `gorm:"index;not null" json:"actor"`
+	Role      string `gorm:"index" json:"role"`
+	Action    string `gorm:"index;not null" json:"action"`
+	Entity    string `gorm:"index;not null" json:"entity"`
+	EntityID  string `gorm:"index" json:"entityId"`
+	Before    string `json:"before"`
+	After     string `json:"after"`
+	Reason    string `json:"reason"`
+	SourceRef string `json:"sourceRef"`
+	IP        string `json:"ip"`
+	UserAgent string `json:"userAgent"`
+	CreatedAt string `gorm:"index;not null" json:"createdAt"`
 }
 
 // Invoice represents a billing invoice

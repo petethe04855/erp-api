@@ -191,6 +191,10 @@ func CreateStockReturn(c *fiber.Ctx) error {
 	if req.Condition != "ดี" && req.Condition != "เสียหาย" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "condition must be ดี or เสียหาย"})
 	}
+	validReason := map[string]bool{"สินค้าชำรุด": true, "ผิดสินค้า": true, "ลูกค้าเปลี่ยนใจ": true, "ผิดขนาด/รุ่น": true, "อื่นๆ": true}
+	if !validReason[req.Reason] {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid return reason"})
+	}
 
 	var product models.Product
 	if err := database.DB.First(&product, "sku = ?", req.SKU).Error; err != nil {
@@ -250,7 +254,7 @@ func CreateStockReturn(c *fiber.Ctx) error {
 			ReturnedBy:   username.(string),
 			Refunded:     false,
 			Channel:      so.Channel,
-			Status:       "Pending",
+			Status:       "Pending Approval",
 		}
 
 		if err := tx.Create(&sr).Error; err != nil {
@@ -271,7 +275,7 @@ func CreateStockReturn(c *fiber.Ctx) error {
 func UpdateStockReturnStatus(c *fiber.Ctx) error {
 	id := c.Params("id")
 	var req struct {
-		Status string `json:"status"` // Completed, Cancelled
+		Status string `json:"status"` // Approved, QC Passed, Cancelled
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
@@ -285,19 +289,33 @@ func UpdateStockReturnStatus(c *fiber.Ctx) error {
 		if err := ByIDOrCode(tx, id).First(&sr).Error; err != nil {
 			return err
 		}
-		if sr.Status != "Pending" {
+		if sr.Status != "Pending Approval" && sr.Status != "QC Pending" {
 			return fmt.Errorf("return is already processed")
 		}
-		if req.Status != "Completed" && req.Status != "Cancelled" {
-			return fmt.Errorf("status must be Completed or Cancelled")
+		if sr.Status == "Pending Approval" && req.Status == "Approved" {
+			sr.Status = "QC Pending"
+			sr.QCStatus = "Pending"
+			sr.QuarantineQty = sr.Qty
+		} else if sr.Status == "QC Pending" && req.Status == "QC Passed" {
+			sr.Status = "Completed"
+			sr.QCStatus = "Passed"
+			sr.QuarantineQty = 0
+		} else if req.Status == "Cancelled" {
+			sr.Status = "Cancelled"
+			sr.QCStatus = "Failed"
+			sr.QuarantineQty = 0
+		} else {
+			return fmt.Errorf("invalid return workflow transition")
 		}
-		sr.Status = req.Status
-		if req.Status == "Completed" {
+		if sr.Status == "Completed" {
 			if err := completeStockReturn(tx, &sr, username.(string)); err != nil {
 				return err
 			}
 		}
 		if err := tx.Save(&sr).Error; err != nil {
+			return err
+		}
+		if err := writeAuditLog(tx, username.(string), req.Status, "stock_return", fmt.Sprint(sr.ID), "", sr.Status, "", sr.Code); err != nil {
 			return err
 		}
 		return nil
@@ -420,6 +438,13 @@ func completeStockReturn(tx *gorm.DB, sr *models.StockReturn, username string) e
 	}
 	creditNote.InvoiceID = &invoice.ID
 	creditNote.InvoiceRef = invoice.Code
+	if invoice.Subtotal > 0 && invoice.VATAmount > 0 {
+		rate := invoice.VATAmount / invoice.Subtotal
+		creditNote.Subtotal = creditAmount / (1 + rate)
+		creditNote.VATAmount = creditAmount - creditNote.Subtotal
+	} else {
+		creditNote.Subtotal = creditAmount
+	}
 	if err := tx.Create(&creditNote).Error; err != nil {
 		return err
 	}
@@ -440,7 +465,10 @@ func completeStockReturn(tx *gorm.DB, sr *models.StockReturn, username string) e
 		return err
 	}
 
-	lines := []postingLine{{AccountCode: "5100", Debit: creditAmount}, {AccountCode: "1200", Credit: creditAmount}}
+	lines := []postingLine{{AccountCode: "5100", Debit: creditNote.Subtotal}, {AccountCode: "1200", Credit: creditAmount}}
+	if creditNote.VATAmount > 0 {
+		lines = append(lines, postingLine{AccountCode: "2100", Debit: creditNote.VATAmount})
+	}
 	if totalCost > 0 {
 		debitAccount := "1300"
 		if sr.Condition == "เสียหาย" {
@@ -459,11 +487,116 @@ func completeStockReturn(tx *gorm.DB, sr *models.StockReturn, username string) e
 	}
 
 	sr.CreditAmount = creditAmount
+	sr.CreditSubtotal = creditNote.Subtotal
+	sr.CreditVATAmount = creditNote.VATAmount
+	sr.CreditDiscount = creditNote.Discount
 	sr.TotalCost = totalCost
 	sr.CreditNoteID = &creditNote.ID
 	sr.CreditNoteRef = creditNote.Code
 	sr.Refunded = true
 	return nil
+}
+
+// ReverseCreditNote cancels a posted credit note with a compensating journal.
+func ReverseCreditNote(c *fiber.Ctx) error {
+	username := c.Locals("name")
+	if username == nil {
+		username = "System"
+	}
+	var cn models.CreditNote
+	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := ByIDOrCode(tx, c.Params("id")).First(&cn).Error; err != nil {
+			return err
+		}
+		if cn.Status != "Posted" {
+			return fmt.Errorf("credit note is already reversed or cancelled")
+		}
+		var sr models.StockReturn
+		if err := tx.First(&sr, cn.StockReturnID).Error; err != nil {
+			return fmt.Errorf("stock return not found")
+		}
+		if sr.Condition == "ดี" {
+			var allocations []models.ReturnStockAllocation
+			if err := tx.Where("stock_return_id = ? AND restocked = ?", sr.ID, true).Find(&allocations).Error; err != nil {
+				return err
+			}
+			var product models.Product
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&product, sr.ProductID).Error; err != nil {
+				return err
+			}
+			totalQty := 0
+			for _, allocation := range allocations {
+				totalQty += allocation.Qty
+				var lot models.StockLot
+				if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&lot, allocation.StockLotID).Error; err != nil {
+					return err
+				}
+				if lot.RemainingQty < allocation.Qty {
+					return fmt.Errorf("cannot reverse credit note: returned lot %s has already been sold or consumed", allocation.Lot)
+				}
+			}
+			if product.Stock < totalQty {
+				return fmt.Errorf("cannot reverse credit note: returned stock has already been sold or consumed")
+			}
+			product.Stock -= totalQty
+			if err := tx.Save(&product).Error; err != nil {
+				return err
+			}
+			for _, allocation := range allocations {
+				var lot models.StockLot
+				if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&lot, allocation.StockLotID).Error; err != nil {
+					return err
+				}
+				lot.RemainingQty -= allocation.Qty
+				if err := tx.Save(&lot).Error; err != nil {
+					return err
+				}
+				movement := models.StockMovement{
+					Code: fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), allocation.Lot), ProductID: product.ID,
+					SKU: allocation.SKU, Type: "OUT", Qty: allocation.Qty, RefDoc: cn.Code,
+					RefDocType: "credit_note_reversal", RefDocID: &cn.ID, Date: time.Now().Format("2006-01-02"),
+					Note: fmt.Sprintf("ยกเลิกสินค้าคืน Lot %s", allocation.Lot), ChangedBy: username.(string),
+				}
+				if err := tx.Create(&movement).Error; err != nil {
+					return err
+				}
+			}
+		}
+		var original models.JournalEntry
+		if err := tx.Where("source_type = ? AND source_id = ?", "sales_return", cn.StockReturnID).Preload("Lines").First(&original).Error; err != nil {
+			return fmt.Errorf("original credit note journal not found")
+		}
+		lines := make([]postingLine, 0, len(original.Lines))
+		for _, line := range original.Lines {
+			lines = append(lines, postingLine{AccountCode: line.AccountCode, Debit: line.Credit, Credit: line.Debit, SKU: line.SKU, Lot: line.Lot, Channel: line.Channel})
+		}
+		if _, err := postJournal(tx, postingRequest{Date: time.Now().Format("2006-01-02"), SourceType: "credit_note_reversal", SourceID: cn.ID, SourceRef: cn.Code, Description: "กลับรายการ Credit Note " + cn.Code, CreatedBy: username.(string), Lines: lines}); err != nil {
+			return err
+		}
+		if cn.InvoiceID != nil {
+			var inv models.Invoice
+			if err := tx.First(&inv, *cn.InvoiceID).Error; err != nil {
+				return err
+			}
+			inv.Credited -= cn.Amount
+			if inv.Credited < 0 {
+				inv.Credited = 0
+			}
+			if err := tx.Save(&inv).Error; err != nil {
+				return err
+			}
+		}
+		cn.Status = "Reversed"
+		cn.ReversedAt = time.Now().UTC().Format(time.RFC3339)
+		if err := tx.Save(&cn).Error; err != nil {
+			return err
+		}
+		return writeAuditLog(tx, username.(string), "Reverse", "credit_note", fmt.Sprint(cn.ID), "Posted", "Reversed", "", cn.Code)
+	})
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(cn)
 }
 
 type StockAdjustmentRequest struct {

@@ -13,4 +13,5 @@ func RegisterAuthRoutes(app *fiber.App) {
 	// TikTok sends the OAuth user-agent back here, so this route deliberately
 	// remains public. The state cookie is verified by the handler.
 	app.Get("/api/tiktok/callback", handlers.TiktokCallback)
+	app.Post("/api/tiktok/webhook", handlers.ReceiveTiktokWebhook)
 }

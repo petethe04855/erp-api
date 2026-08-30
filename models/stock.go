@@ -53,27 +53,32 @@ type ProductionRun struct {
 
 // StockReturn represents returned client stock
 type StockReturn struct {
-	ID            uint                    `gorm:"primaryKey;autoIncrement" json:"id"`
-	Code          string                  `json:"code"`
-	SalesOrderID  *uint                   `gorm:"index" json:"salesOrderId,omitempty"`
-	SoRef         string                  `json:"soRef"`
-	ProductID     uint                    `gorm:"index" json:"productId"`
-	SKU           string                  `json:"sku"`
-	SkuName       string                  `json:"skuName"`
-	Qty           int                     `json:"qty"`
-	Condition     string                  `json:"condition"` // ดี, เสียหาย
-	Reason        string                  `json:"reason"`
-	Note          string                  `json:"note"`
-	Date          string                  `json:"date"`
-	ReturnedBy    string                  `json:"returnedBy"`
-	Refunded      bool                    `json:"refunded"`
-	Channel       string                  `json:"channel"`
-	Status        string                  `json:"status"` // Pending, Completed, Cancelled
-	CreditAmount  float64                 `gorm:"default:0" json:"creditAmount"`
-	TotalCost     float64                 `gorm:"default:0" json:"totalCost"`
-	CreditNoteID  *uint                   `gorm:"index" json:"creditNoteId,omitempty"`
-	CreditNoteRef string                  `gorm:"index" json:"creditNoteRef"`
-	Allocations   []ReturnStockAllocation `gorm:"foreignKey:StockReturnID" json:"allocations"`
+	ID              uint                    `gorm:"primaryKey;autoIncrement" json:"id"`
+	Code            string                  `json:"code"`
+	SalesOrderID    *uint                   `gorm:"index" json:"salesOrderId,omitempty"`
+	SoRef           string                  `json:"soRef"`
+	ProductID       uint                    `gorm:"index" json:"productId"`
+	SKU             string                  `json:"sku"`
+	SkuName         string                  `json:"skuName"`
+	Qty             int                     `json:"qty"`
+	Condition       string                  `json:"condition"` // ดี, เสียหาย
+	Reason          string                  `json:"reason"`
+	Note            string                  `json:"note"`
+	Date            string                  `json:"date"`
+	ReturnedBy      string                  `json:"returnedBy"`
+	Refunded        bool                    `json:"refunded"`
+	Channel         string                  `json:"channel"`
+	Status          string                  `json:"status"` // Pending, Completed, Cancelled
+	QuarantineQty   int                     `gorm:"default:0" json:"quarantineQty"`
+	QCStatus        string                  `json:"qcStatus"` // Pending, Passed, Failed
+	CreditAmount    float64                 `gorm:"default:0" json:"creditAmount"`
+	CreditSubtotal  float64                 `gorm:"default:0" json:"creditSubtotal"`
+	CreditVATAmount float64                 `gorm:"default:0" json:"creditVatAmount"`
+	CreditDiscount  float64                 `gorm:"default:0" json:"creditDiscount"`
+	TotalCost       float64                 `gorm:"default:0" json:"totalCost"`
+	CreditNoteID    *uint                   `gorm:"index" json:"creditNoteId,omitempty"`
+	CreditNoteRef   string                  `gorm:"index" json:"creditNoteRef"`
+	Allocations     []ReturnStockAllocation `gorm:"foreignKey:StockReturnID" json:"allocations"`
 }
 
 // ReturnStockAllocation traces returned units back to the exact lot and cost used by the sale.

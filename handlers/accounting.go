@@ -5,8 +5,59 @@ import (
 	"math"
 	"time"
 
+	"chawy-erp-api/database"
 	"chawy-erp-api/models"
+	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
+)
+
+func ListAccountMappings(c *fiber.Ctx) error {
+	var mappings []models.AccountMapping
+	if err := database.DB.Order("mapping_key").Find(&mappings).Error; err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(mappings)
+}
+
+func UpsertAccountMapping(c *fiber.Ctx) error {
+	key := c.Params("key")
+	var req struct {
+		AccountCode string `json:"accountCode"`
+		Description string `json:"description"`
+	}
+	if err := c.BodyParser(&req); err != nil || key == "" || req.AccountCode == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "accountCode is required"})
+	}
+	var account models.Account
+	if err := database.DB.Where("code = ? AND is_active = ?", req.AccountCode, true).First(&account).Error; err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "active account not found"})
+	}
+	var mapping models.AccountMapping
+	err := database.DB.Where("mapping_key = ?", key).First(&mapping).Error
+	if err == gorm.ErrRecordNotFound {
+		mapping = models.AccountMapping{MappingKey: key}
+	} else if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	mapping.AccountCode, mapping.Description, mapping.IsActive = req.AccountCode, req.Description, true
+	if err := database.DB.Save(&mapping).Error; err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(mapping)
+}
+
+// Default account mapping is centralized here so posting and reporting use one source.
+const (
+	accountCash             = "1100"
+	accountBank             = "1110"
+	accountAR               = "1200"
+	accountInventory        = "1300"
+	accountRevenue          = "4000"
+	accountCOGS             = "5000"
+	accountSalesReturn      = "5100"
+	accountDamageLoss       = "5200"
+	accountOperatingExpense = "6000"
+	accountVATOutput        = "2100"
 )
 
 type postingLine struct {
@@ -97,5 +148,12 @@ func postJournal(tx *gorm.DB, req postingRequest) (*models.JournalEntry, error) 
 		}
 		entry.Lines = append(entry.Lines, line)
 	}
+	if err := writeAuditLog(tx, req.CreatedBy, "Post", "journal_entry", fmt.Sprint(entry.ID), "", entry.Code, req.SourceRef, entry.SourceRef); err != nil {
+		return nil, err
+	}
 	return &entry, nil
+}
+
+func writeAuditLog(tx *gorm.DB, actor, action, entity, entityID, before, after, reason, sourceRef string) error {
+	return tx.Create(&models.AuditLog{Actor: actor, Action: action, Entity: entity, EntityID: entityID, Before: before, After: after, Reason: reason, SourceRef: sourceRef, CreatedAt: time.Now().UTC().Format(time.RFC3339)}).Error
 }

@@ -181,16 +181,21 @@ func FinancialSummaryReport(c *fiber.Ctx) error {
 }
 
 func summarizeAccountAmounts(amounts map[string]float64) fiber.Map {
-	revenue := amounts["4000"] + amounts["5100"]
-	cogs := -amounts["5000"]
-	damageLoss := -amounts["5200"]
-	opex := -amounts["6000"]
+	revenue := amounts[accountRevenue] + amounts[accountSalesReturn]
+	cogs := -amounts[accountCOGS]
+	damageLoss := -amounts[accountDamageLoss]
+	opex := -amounts[accountOperatingExpense]
 	grossProfit := revenue - cogs
+	grossMargin, netMargin := 0.0, 0.0
+	if revenue != 0 {
+		grossMargin = grossProfit / revenue * 100
+		netMargin = (grossProfit - damageLoss - opex) / revenue * 100
+	}
 	return fiber.Map{
-		"revenue": revenue, "salesRevenue": amounts["4000"], "salesReturns": -amounts["5100"],
+		"revenue": revenue, "salesRevenue": amounts[accountRevenue], "salesReturns": -amounts[accountSalesReturn],
 		"cogs": cogs, "grossProfit": grossProfit, "damageLoss": damageLoss, "operatingExpenses": opex,
-		"netProfit":          grossProfit - damageLoss - opex,
-		"accountsReceivable": -amounts["1200"], "inventory": -amounts["1300"], "cash": -amounts["1100"], "bank": -amounts["1110"],
+		"netProfit": grossProfit - damageLoss - opex, "grossMargin": grossMargin, "netMargin": netMargin,
+		"accountsReceivable": -amounts[accountAR], "inventory": -amounts[accountInventory], "cash": -amounts[accountCash], "bank": -amounts[accountBank],
 	}
 }
 

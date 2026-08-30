@@ -9,6 +9,15 @@ type Account struct {
 	IsActive bool   `gorm:"default:true" json:"isActive"`
 }
 
+// AccountMapping controls which account code is used by automatic posting.
+type AccountMapping struct {
+	ID          uint   `gorm:"primaryKey;autoIncrement" json:"id"`
+	MappingKey  string `gorm:"uniqueIndex;not null" json:"mappingKey"`
+	AccountCode string `gorm:"not null" json:"accountCode"`
+	Description string `json:"description"`
+	IsActive    bool   `gorm:"default:true" json:"isActive"`
+}
+
 // JournalEntry is an immutable posted accounting document.
 type JournalEntry struct {
 	ID           uint          `gorm:"primaryKey;autoIncrement" json:"id"`
@@ -63,8 +72,13 @@ type CreditNote struct {
 	SalesOrderID  uint    `gorm:"index;not null" json:"salesOrderId"`
 	SoRef         string  `gorm:"index" json:"soRef"`
 	Date          string  `json:"date"`
+	Subtotal      float64 `gorm:"default:0" json:"subtotal"`
+	VATAmount     float64 `gorm:"default:0" json:"vatAmount"`
+	Discount      float64 `gorm:"default:0" json:"discount"`
 	Amount        float64 `json:"amount"`
 	Reason        string  `json:"reason"`
 	Status        string  `gorm:"default:'Posted'" json:"status"`
 	CreatedBy     string  `json:"createdBy"`
+	ReversalOfID  *uint   `gorm:"index" json:"reversalOfId,omitempty"`
+	ReversedAt    string  `json:"reversedAt,omitempty"`
 }
