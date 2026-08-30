@@ -38,6 +38,27 @@ func NextID(db *gorm.DB, prefix string, model interface{}, idField string) (stri
 	return NextCode(db, prefix, model, idField)
 }
 
+func isNumericID(val string) bool {
+	if val == "" {
+		return false
+	}
+	_, err := strconv.ParseUint(val, 10, 64)
+	return err == nil
+}
+
+// ByIDOrCode applies a query condition for an ID or Code parameter safely without PostgreSQL syntax errors (SQLSTATE 22P02).
+func ByIDOrCode(db *gorm.DB, val string, codeColumn ...string) *gorm.DB {
+	codeCol := "code"
+	if len(codeColumn) > 0 && codeColumn[0] != "" {
+		codeCol = codeColumn[0]
+	}
+	if isNumericID(val) {
+		numID, _ := strconv.ParseUint(val, 10, 64)
+		return db.Where(fmt.Sprintf("id = ? OR %s = ?", codeCol), numID, val)
+	}
+	return db.Where(fmt.Sprintf("%s = ?", codeCol), val)
+}
+
 // NotFound returns the standard API not-found response.
 func NotFound(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Resource not found"})

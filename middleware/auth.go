@@ -11,6 +11,34 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+// PermissionMatrix is the central RBAC policy for API actions.
+var PermissionMatrix = map[string][]string{
+	"View":    {"owner", "sales", "warehouse", "accountant"},
+	"Create":  {"owner", "sales", "warehouse", "accountant"},
+	"Edit":    {"owner", "sales", "warehouse", "accountant"},
+	"Delete":  {"owner", "accountant"},
+	"Approve": {"owner", "accountant", "warehouse"},
+	"Post":    {"owner", "accountant"},
+	"Cancel":  {"owner", "accountant", "warehouse"},
+	"Reverse": {"owner", "accountant"},
+	"Export":  {"owner", "sales", "warehouse", "accountant"},
+}
+
+func RequirePermission(permission string) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		role, ok := c.Locals("role").(string)
+		if !ok {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Access denied"})
+		}
+		for _, allowed := range PermissionMatrix[permission] {
+			if role == allowed {
+				return c.Next()
+			}
+		}
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Permission denied", "permission": permission})
+	}
+}
+
 // AuthRequired is a middleware that verifies JWT token in request headers
 func AuthRequired(c *fiber.Ctx) error {
 	authHeader := c.Get("Authorization")

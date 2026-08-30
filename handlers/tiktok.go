@@ -13,16 +13,20 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"chawy-erp-api/database"
 	"chawy-erp-api/models"
 	"github.com/gofiber/fiber/v2"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const (
@@ -31,6 +35,73 @@ const (
 	tiktokRefreshURL    = "https://auth.tiktok-shops.com/api/v2/token/refresh"
 	tiktokRefreshWindow = 24 * time.Hour
 )
+
+var errTiktokSKUUnmapped = errors.New("TikTok SKU is not mapped")
+
+// ReceiveTiktokWebhook authenticates and records webhook events before processing.
+func ReceiveTiktokWebhook(c *fiber.Ctx) error {
+	secret := strings.TrimSpace(os.Getenv("TIKTOK_WEBHOOK_SECRET"))
+	if secret == "" {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "TikTok webhook secret is not configured"})
+	}
+	eventID := strings.TrimSpace(c.Get("X-TikTok-Event-Id"))
+	timestamp := strings.TrimSpace(c.Get("X-TikTok-Timestamp"))
+	signature := strings.TrimSpace(c.Get("X-TikTok-Signature"))
+	unixTimestamp, err := strconv.ParseInt(timestamp, 10, 64)
+	if eventID == "" || err != nil || signature == "" || math.Abs(float64(time.Now().Unix()-unixTimestamp)) > 300 {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid webhook authentication"})
+	}
+	body := c.Body()
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(timestamp + "."))
+	_, _ = mac.Write(body)
+	expected := hex.EncodeToString(mac.Sum(nil))
+	provided := strings.TrimPrefix(signature, "sha256=")
+	if !hmac.Equal([]byte(strings.ToLower(provided)), []byte(expected)) {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid webhook signature"})
+	}
+	var existing models.TiktokWebhookEvent
+	if database.DB.Where("event_id = ?", eventID).First(&existing).Error == nil {
+		return c.SendStatus(fiber.StatusOK)
+	}
+	event := models.TiktokWebhookEvent{EventID: eventID, EventType: c.Get("X-TikTok-Event-Type"), Payload: string(body), ReceivedAt: time.Now().UTC()}
+	if err := database.DB.Create(&event).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "could not record webhook"})
+	}
+	return c.SendStatus(fiber.StatusOK)
+}
+
+const tiktokMaxRetries = 3
+
+func doTiktokRequest(req *http.Request) (*http.Response, error) {
+	client := &http.Client{Timeout: 20 * time.Second}
+	var lastErr error
+	for attempt := 0; attempt < tiktokMaxRetries; attempt++ {
+		current := req
+		if attempt > 0 {
+			current = req.Clone(req.Context())
+			if req.GetBody != nil {
+				body, err := req.GetBody()
+				if err != nil {
+					return nil, err
+				}
+				current.Body = body
+			}
+		}
+		response, err := client.Do(current)
+		if err == nil && (response.StatusCode < 429 || attempt == tiktokMaxRetries-1) {
+			return response, nil
+		}
+		if response != nil {
+			response.Body.Close()
+		}
+		lastErr = err
+		if attempt < tiktokMaxRetries-1 {
+			time.Sleep(time.Duration(1<<attempt) * 250 * time.Millisecond)
+		}
+	}
+	return nil, lastErr
+}
 
 type tiktokTokenResponse struct {
 	Code    int    `json:"code"`
@@ -45,6 +116,205 @@ type tiktokTokenResponse struct {
 		SellerBaseRegion     string   `json:"seller_base_region"`
 		GrantedScopes        []string `json:"granted_scopes"`
 	} `json:"data"`
+}
+
+type tiktokOrderSearchResponse struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Data    struct {
+		NextPageToken string `json:"next_page_token"`
+		Orders        []struct {
+			ID         string `json:"id"`
+			Status     string `json:"status"`
+			CreateTime int64  `json:"create_time"`
+			Payment    struct {
+				TotalAmount string `json:"total_amount"`
+			} `json:"payment"`
+			LineItems []struct {
+				ID          string `json:"id"`
+				ProductName string `json:"product_name"`
+				SellerSKU   string `json:"seller_sku"`
+				Quantity    int    `json:"quantity"`
+				SalePrice   string `json:"sale_price"`
+			} `json:"line_items"`
+		} `json:"orders"`
+	} `json:"data"`
+}
+
+// SyncTiktokOrders retrieves recent orders from TikTok Shop and upserts the
+// order headers and every SKU line into the local reporting database.
+func ListTiktokSyncRuns(c *fiber.Ctx) error {
+	var runs []models.TiktokSyncRun
+	if err := database.DB.Order("started_at DESC").Limit(100).Find(&runs).Error; err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(runs)
+}
+
+func SyncTiktokOrders(c *fiber.Ctx) (result error) {
+	run := models.TiktokSyncRun{StartedAt: time.Now().UTC(), Status: "Running", Days: c.QueryInt("days", 30)}
+	if err := database.DB.Create(&run).Error; err != nil {
+		return err
+	}
+	defer func() {
+		finished := time.Now().UTC()
+		run.FinishedAt = &finished
+		if result != nil {
+			run.Status = "Failed"
+			run.Error = result.Error()
+		} else {
+			run.Status = "Completed"
+		}
+		_ = database.DB.Save(&run).Error
+	}()
+	appKey, appSecret, err := tiktokCredentials()
+	if err != nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": err.Error()})
+	}
+	var connection models.TiktokConnection
+	if err := database.DB.First(&connection, 1).Error; err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "TikTok Shop is not connected"})
+	}
+	accessToken, err := ensureTiktokAccessToken(&connection, appKey, appSecret)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": err.Error()})
+	}
+	if err := ensureTiktokShopCipher(&connection, appKey, appSecret); err != nil {
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
+	}
+	if err := database.DB.Save(&connection).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Could not save TikTok shop information"})
+	}
+
+	days := c.QueryInt("days", 30)
+	if days < 1 || days > 90 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "days must be between 1 and 90"})
+	}
+	now := time.Now()
+	body, _ := json.Marshal(fiber.Map{
+		"create_time_ge": now.AddDate(0, 0, -days).Unix(),
+		"create_time_le": now.Unix(),
+	})
+	path := "/order/202309/orders/search"
+	pageToken := ""
+	orders := make([]models.TiktokOrder, 0)
+
+	for page := 0; page < 20; page++ {
+		params := map[string]string{
+			"app_key": appKey, "timestamp": fmt.Sprintf("%d", time.Now().Unix()),
+			"shop_cipher": connection.ShopCipher, "page_size": "50",
+			"sort_field": "create_time", "sort_order": "DESC",
+		}
+		if pageToken != "" {
+			params["page_token"] = pageToken
+		}
+		params["sign"] = tiktokSignature(path, params, string(body), appSecret)
+		request, _ := http.NewRequest(http.MethodPost, tiktokAPIBase+path+"?"+encodeTiktokParams(params), bytes.NewReader(body))
+		request.Header.Set("x-tts-access-token", accessToken)
+		request.Header.Set("Content-Type", "application/json")
+		response, err := doTiktokRequest(request)
+		if err != nil {
+			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "TikTok Shop Orders API is unavailable"})
+		}
+		responseBody, readErr := io.ReadAll(response.Body)
+		response.Body.Close()
+		if readErr != nil {
+			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "Could not read TikTok Shop order response"})
+		}
+		var payload tiktokOrderSearchResponse
+		if err := json.Unmarshal(responseBody, &payload); err != nil {
+			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "TikTok Shop returned an invalid order response"})
+		}
+		if response.StatusCode >= 400 || payload.Code != 0 {
+			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": fmt.Sprintf("TikTok Shop error: %s (code %d)", firstNonEmpty(payload.Message, "order sync failed"), payload.Code)})
+		}
+
+		for _, source := range payload.Data.Orders {
+			items := make([]models.TiktokOrderItem, 0, len(source.LineItems))
+			totalQty, itemAmount := 0, 0.0
+			for _, line := range source.LineItems {
+				qty := line.Quantity
+				if qty < 1 {
+					qty = 1
+				}
+				unitPrice, _ := strconv.ParseFloat(line.SalePrice, 64)
+				amount := unitPrice * float64(qty)
+				totalQty += qty
+				itemAmount += amount
+				items = append(items, models.TiktokOrderItem{OrderID: source.ID, LineItemID: line.ID, ProductName: line.ProductName, SKU: line.SellerSKU, Qty: qty, UnitPrice: unitPrice, Amount: amount})
+			}
+			amount, _ := strconv.ParseFloat(source.Payment.TotalAmount, 64)
+			if amount == 0 {
+				amount = itemAmount
+			}
+			product, sku := "", ""
+			if len(items) > 0 {
+				product, sku = items[0].ProductName, items[0].SKU
+			}
+			if len(items) > 1 {
+				product = fmt.Sprintf("%s +%d à¸£à¸²à¸¢à¸à¸²à¸£", product, len(items)-1)
+			}
+			date := time.Unix(source.CreateTime, 0).In(time.FixedZone("Asia/Bangkok", 7*60*60)).Format("2006-01-02")
+			orders = append(orders, models.TiktokOrder{ID: source.ID, Date: date, Product: product, SKU: sku, Qty: totalQty, Amount: amount, Status: source.Status, Items: items})
+		}
+		pageToken = payload.Data.NextPageToken
+		if pageToken == "" {
+			break
+		}
+	}
+
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		for i := range orders {
+			order := &orders[i]
+			if err := tx.Omit("Items").Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "id"}},
+				DoUpdates: clause.AssignmentColumns([]string{"date", "product", "sku", "qty", "amount", "status"}),
+			}).Create(order).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("order_id = ?", order.ID).Delete(&models.TiktokOrderItem{}).Error; err != nil {
+				return err
+			}
+			if len(order.Items) > 0 {
+				if err := tx.Create(&order.Items).Error; err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	deducted := 0
+	deductionErrors := make([]string, 0)
+	deductionWarnings := make([]string, 0)
+	for i := range orders {
+		order := &orders[i]
+		if !tiktokOrderNeedsStockDeduction(order.Status) || order.StockDeducted {
+			continue
+		}
+		deduction, err := deductTiktokOrderStock(order.ID)
+		if err != nil {
+			deductionErrors = append(deductionErrors, fmt.Sprintf("%s: %s", order.ID, err.Error()))
+			continue
+		}
+		if deduction.DidDeduct {
+			deducted++
+		}
+		for _, warning := range deduction.Warnings {
+			deductionWarnings = append(deductionWarnings, fmt.Sprintf("%s: %s", order.ID, warning))
+		}
+	}
+	responseResult := fiber.Map{"synced": len(orders), "days": days, "stockDeducted": deducted}
+	if len(deductionErrors) > 0 {
+		responseResult["stockDeductionErrors"] = deductionErrors
+	}
+	if len(deductionWarnings) > 0 {
+		responseResult["stockDeductionWarnings"] = deductionWarnings
+	}
+	run.Synced, run.StockDeducted = len(orders), deducted
+	return c.JSON(responseResult)
 }
 
 func tiktokCredentials() (string, string, error) {
@@ -153,7 +423,7 @@ func TiktokCallback(c *fiber.Ctx) error {
 	if successURL := strings.TrimSpace(os.Getenv("TIKTOK_OAUTH_SUCCESS_URL")); successURL != "" {
 		return c.Redirect(successURL, fiber.StatusFound)
 	}
-	return c.JSON(fiber.Map{"connected": true, "message": "เชื่อมต่อ TikTok Shop สำเร็จ", "shopCipher": connection.ShopCipher, "sellerName": connection.SellerName})
+	return c.JSON(fiber.Map{"connected": true, "message": "à¹€à¸Šà¸·à¹ˆà¸­à¸¡à¸•à¹ˆà¸­ TikTok Shop à¸ªà¸³à¹€à¸£à¹‡à¸ˆ", "shopCipher": connection.ShopCipher, "sellerName": connection.SellerName})
 }
 
 func GetTiktokConnection(c *fiber.Ctx) error {
@@ -205,7 +475,7 @@ func GetTiktokProducts(c *fiber.Ctx) error {
 	req, _ := http.NewRequest(http.MethodPost, tiktokAPIBase+path+"?"+encodeTiktokParams(params), bytes.NewReader(body))
 	req.Header.Set("x-tts-access-token", accessToken)
 	req.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	response, err := doTiktokRequest(req)
 	if err != nil {
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "TikTok Shop API is unavailable"})
 	}
@@ -257,11 +527,82 @@ func GetTiktokProducts(c *fiber.Ctx) error {
 	return c.Type(fiber.MIMEApplicationJSON).Send(responseBody)
 }
 
+// ImportTiktokProducts upserts marketplace products into the ERP SKU master by SKU.
+func ImportTiktokProducts(c *fiber.Ctx) error {
+	var req struct {
+		Products []struct {
+			SKU      string  `json:"sku"`
+			Name     string  `json:"name"`
+			Barcode  string  `json:"barcode"`
+			Price    float64 `json:"price"`
+			IsActive *bool   `json:"isActive"`
+		} `json:"products"`
+	}
+	if err := c.BodyParser(&req); err != nil || len(req.Products) == 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "products are required"})
+	}
+	created, updated := 0, 0
+	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		for _, input := range req.Products {
+			input.SKU = strings.TrimSpace(input.SKU)
+			input.Name = strings.TrimSpace(input.Name)
+			if input.SKU == "" || input.Name == "" {
+				return errors.New("each product requires sku and name")
+			}
+			var product models.Product
+			findErr := tx.Where("sku = ?", input.SKU).First(&product).Error
+			if findErr == gorm.ErrRecordNotFound {
+				active := true
+				if input.IsActive != nil {
+					active = *input.IsActive
+				}
+				product = models.Product{SKU: input.SKU, Name: input.Name, Barcode: input.Barcode, Price: input.Price, RetailPrice: input.Price, IsActive: active, Type: "Finished Product"}
+				if err := tx.Create(&product).Error; err != nil {
+					return err
+				}
+				created++
+			} else if findErr != nil {
+				return findErr
+			} else {
+				product.Name, product.Barcode, product.Price, product.RetailPrice = input.Name, input.Barcode, input.Price, input.Price
+				if input.IsActive != nil {
+					product.IsActive = *input.IsActive
+				}
+				if err := tx.Save(&product).Error; err != nil {
+					return err
+				}
+				updated++
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"created": created, "updated": updated})
+}
+
+func TiktokStockSyncPreview(c *fiber.Ctx) error {
+	var products []models.Product
+	if err := database.DB.Where("is_active = ?", true).Order("sku").Find(&products).Error; err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	rows := make([]fiber.Map, 0, len(products))
+	for _, product := range products {
+		available := product.Stock - product.ReservedQty
+		if available < 0 {
+			available = 0
+		}
+		rows = append(rows, fiber.Map{"sku": product.SKU, "stock": product.Stock, "reserved": product.ReservedQty, "available": available, "isBundle": product.IsBundle})
+	}
+	return c.JSON(fiber.Map{"count": len(rows), "rows": rows})
+}
+
 func redactTiktokValue(value string) string {
 	if len(value) <= 4 {
 		return "[redacted]"
 	}
-	return value[:2] + "…" + value[len(value)-2:]
+	return value[:2] + "â€¦" + value[len(value)-2:]
 }
 
 func exchangeTiktokCode(appKey, appSecret, code string) (models.TiktokConnection, error) {
@@ -318,7 +659,7 @@ func ensureTiktokShopCipher(connection *models.TiktokConnection, appKey, appSecr
 		return errors.New("Could not create TikTok shop request")
 	}
 	req.Header.Set("x-tts-access-token", accessToken)
-	response, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	response, err := doTiktokRequest(req)
 	if err != nil {
 		return errors.New("TikTok Shop API is unavailable")
 	}
@@ -493,4 +834,221 @@ func decryptTiktokToken(value string) (string, error) {
 	}
 	plain, err := aead.Open(nil, raw[:aead.NonceSize()], raw[aead.NonceSize():], nil)
 	return string(plain), err
+}
+
+func normalizeTiktokStatus(status string) string {
+	return strings.ToUpper(strings.TrimSpace(status))
+}
+
+func tiktokOrderNeedsStockDeduction(status string) bool {
+	// Stock is consumed when TikTok has confirmed the order has left the seller's
+	// fulfillment flow. Keep this centralized so status variants are handled consistently.
+	switch normalizeTiktokStatus(status) {
+	case "SHIPPED", "IN_TRANSIT", "DELIVERED", "COMPLETED":
+		return true
+	default:
+		return false
+	}
+}
+
+func resolveTiktokERPSKU(tx *gorm.DB, tiktokSKU string) (string, error) {
+	sku := strings.ToUpper(strings.TrimSpace(tiktokSKU))
+	if sku == "" {
+		return "", fmt.Errorf("%w: Seller SKU is empty", errTiktokSKUUnmapped)
+	}
+	var mapping models.TiktokSKUMapping
+	if err := tx.Where("tiktok_sku = ?", sku).First(&mapping).Error; err == nil {
+		return strings.ToUpper(strings.TrimSpace(mapping.ERPSKU)), nil
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", err
+	}
+	// Backward-compatible fallback: existing installations where TikTok Seller SKU
+	// already equals the ERP SKU continue to work without a mapping row.
+	var product models.Product
+	if err := tx.First(&product, "sku = ?", sku).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", fmt.Errorf("%w: TikTok SKU %s has no ERP product or mapping", errTiktokSKUUnmapped, sku)
+		}
+		return "", err
+	}
+	return product.SKU, nil
+}
+
+type tiktokStockDeductionResult struct {
+	DidDeduct bool
+	Warnings  []string
+}
+
+// deductTiktokOrderStock consumes ERP stock when a TikTok order is delivered.
+// Bundle SKUs are expanded into their component SKUs; normal SKUs are consumed directly.
+// The whole order is processed in one transaction and StockDeducted makes the operation idempotent.
+func deductTiktokOrderStock(orderID string) (tiktokStockDeductionResult, error) {
+	result := tiktokStockDeductionResult{Warnings: make([]string, 0)}
+	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		var order models.TiktokOrder
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Preload("Items").First(&order, "id = ?", orderID).Error; err != nil {
+			return fmt.Errorf("TikTok order not found")
+		}
+		if order.StockDeducted || !tiktokOrderNeedsStockDeduction(order.Status) {
+			return nil
+		}
+		if len(order.Items) == 0 {
+			return fmt.Errorf("order has no items")
+		}
+
+		requirements := make(map[string]int)
+		for _, item := range order.Items {
+			if item.Qty <= 0 {
+				return fmt.Errorf("invalid quantity for SKU %s", item.SKU)
+			}
+			erpSKU, err := resolveTiktokERPSKU(tx, item.SKU)
+			if err != nil {
+				if shouldSkipUnmappedTiktokItem(item, err) {
+					result.Warnings = append(result.Warnings, fmt.Sprintf("ข้ามรายการมูลค่า 0 ที่ไม่ผูก Stock: %s (%s)", firstNonEmpty(item.ProductName, "ไม่ระบุชื่อ"), firstNonEmpty(strings.TrimSpace(item.SKU), "ไม่มี Seller SKU")))
+					continue
+				}
+				return err
+			}
+			if err := expandTiktokSKU(tx, erpSKU, item.Qty, requirements, map[string]bool{}); err != nil {
+				return err
+			}
+		}
+		if len(requirements) == 0 {
+			return fmt.Errorf("order has no stock-tracked items")
+		}
+		for sku, qty := range requirements {
+			if err := deductTiktokComponentFEFO(tx, sku, qty, order.ID); err != nil {
+				return err
+			}
+		}
+		if err := tx.Model(&order).Update("stock_deducted", true).Error; err != nil {
+			return err
+		}
+		result.DidDeduct = true
+		return nil
+	})
+	if err != nil {
+		result.DidDeduct = false
+		result.Warnings = nil
+	}
+	return result, err
+}
+
+func expandTiktokSKU(tx *gorm.DB, sku string, qty int, requirements map[string]int, visiting map[string]bool) error {
+	var product models.Product
+	if err := tx.First(&product, "sku = ?", sku).Error; err != nil {
+		return fmt.Errorf("ERP SKU %s not found", sku)
+	}
+	if !product.IsBundle && product.Type != "Bundle" {
+		requirements[sku] += qty
+		return nil
+	}
+	if visiting[sku] {
+		return fmt.Errorf("circular bundle detected at %s", sku)
+	}
+	visiting[sku] = true
+	defer delete(visiting, sku)
+	var components []models.BundleComponent
+	if err := tx.Where("bundle_sku = ?", sku).Find(&components).Error; err != nil {
+		return err
+	}
+	if len(components) == 0 {
+		return fmt.Errorf("bundle %s has no components", sku)
+	}
+	for _, component := range components {
+		componentQty := int(math.Ceil(component.Qty * float64(qty)))
+		componentProductSKU := ""
+		if component.ComponentProductID != 0 {
+			var componentProduct models.Product
+			if err := tx.First(&componentProduct, component.ComponentProductID).Error; err != nil {
+				return fmt.Errorf("bundle %s component product %d could not be resolved: %w", sku, component.ComponentProductID, err)
+			}
+			componentProductSKU = componentProduct.SKU
+		}
+		componentSKU, err := resolveTiktokBundleComponentSKU(sku, component, componentProductSKU)
+		if err != nil {
+			return err
+		}
+		if componentQty <= 0 {
+			return fmt.Errorf("bundle %s has invalid component quantity for %s", sku, componentSKU)
+		}
+		if err := expandTiktokSKU(tx, componentSKU, componentQty, requirements, visiting); err != nil {
+			return fmt.Errorf("bundle %s component %s: %w", sku, componentSKU, err)
+		}
+	}
+	return nil
+}
+
+func shouldSkipUnmappedTiktokItem(item models.TiktokOrderItem, err error) bool {
+	return item.Amount == 0 && errors.Is(err, errTiktokSKUUnmapped)
+}
+
+func resolveTiktokBundleComponentSKU(bundleSKU string, component models.BundleComponent, productSKU string) (string, error) {
+	storedSKU := strings.ToUpper(strings.TrimSpace(component.ComponentSku))
+	resolvedSKU := strings.ToUpper(strings.TrimSpace(productSKU))
+	if component.ComponentProductID != 0 {
+		if resolvedSKU == "" {
+			return "", fmt.Errorf("bundle %s component product %d has no valid ERP SKU", bundleSKU, component.ComponentProductID)
+		}
+		if storedSKU != "" && storedSKU != resolvedSKU {
+			return "", fmt.Errorf("bundle %s component data mismatch: product %d is SKU %s but component stores SKU %s", bundleSKU, component.ComponentProductID, resolvedSKU, storedSKU)
+		}
+		return resolvedSKU, nil
+	}
+	if storedSKU == "" {
+		return "", fmt.Errorf("bundle %s has component with no valid ERP SKU", bundleSKU)
+	}
+	return storedSKU, nil
+}
+
+func deductTiktokComponentFEFO(tx *gorm.DB, sku string, qty int, orderID string) error {
+	var product models.Product
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&product, "sku = ?", sku).Error; err != nil {
+		return fmt.Errorf("ERP SKU %s not found", sku)
+	}
+	if product.IsBundle || product.Type == "Bundle" {
+		return fmt.Errorf("bundle %s cannot hold physical stock", sku)
+	}
+	if product.Stock-product.ReservedQty < qty {
+		return fmt.Errorf("stock not sufficient for %s: need %d, available %d", sku, qty, product.Stock-product.ReservedQty)
+	}
+	if err := ensureLotBalance(tx, product); err != nil {
+		return err
+	}
+	var lots []models.StockLot
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("sku = ? AND remaining_qty > 0", sku).
+		Order("CASE WHEN expiry_date IS NULL OR expiry_date = '' THEN 1 ELSE 0 END, expiry_date ASC, received_date ASC, id ASC").Find(&lots).Error; err != nil {
+		return err
+	}
+	remaining := qty
+	for i := range lots {
+		if remaining == 0 {
+			break
+		}
+		deduct := lots[i].RemainingQty
+		if deduct > remaining {
+			deduct = remaining
+		}
+		lots[i].RemainingQty -= deduct
+		remaining -= deduct
+		if err := tx.Save(&lots[i]).Error; err != nil {
+			return err
+		}
+		movement := models.StockMovement{
+			Code: fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), sku), ProductID: product.ID, SKU: sku,
+			Type: "OUT", Qty: deduct, RefDoc: orderID, RefDocType: "tiktok_orders", RefDocID: nil,
+			Date: time.Now().Format("2006-01-02"), Note: fmt.Sprintf("TikTok delivered FEFO lot %s", lots[i].Lot), ChangedBy: "TikTok Sync",
+		}
+		if err := tx.Create(&movement).Error; err != nil {
+			return err
+		}
+	}
+	if remaining > 0 {
+		return fmt.Errorf("lot stock not sufficient for %s: missing %d", sku, remaining)
+	}
+	product.Stock -= qty
+	if err := tx.Save(&product).Error; err != nil {
+		return err
+	}
+	return nil
 }

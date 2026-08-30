@@ -35,7 +35,15 @@ func CreateExpense(c *fiber.Ctx) error {
 		if err := tx.Create(&exp).Error; err != nil {
 			return err
 		}
-		return nil
+		if exp.Amount <= 0 {
+			return fiber.NewError(fiber.StatusBadRequest, "expense amount must be greater than zero")
+		}
+		_, err = postJournal(tx, postingRequest{
+			Date: exp.Date, SourceType: "expense", SourceID: exp.ID, SourceRef: exp.Code,
+			Description: exp.Description, CreatedBy: username.(string),
+			Lines: []postingLine{{AccountCode: accountOperatingExpense, Debit: exp.Amount, Channel: exp.Channel}, {AccountCode: accountCash, Credit: exp.Amount, Channel: exp.Channel}},
+		})
+		return err
 	})
 
 	if err != nil {
@@ -50,6 +58,9 @@ func UpsertBudget(c *fiber.Ctx) error {
 	var req models.MonthBudget
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	if req.Year < 2000 || req.Month < 1 || req.Month > 12 || req.BudgetAmount < 0 || req.Category == "" || req.Channel == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "budget requires valid year, month, category, channel, and non-negative amount"})
 	}
 
 	var budget models.MonthBudget

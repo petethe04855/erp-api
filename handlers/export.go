@@ -256,35 +256,20 @@ func ExportPL(c *fiber.Ctx) error {
 	filename := fmt.Sprintf("pl-report-%s.xlsx", selectedMonth)
 
 	return streamXlsx(c, filename, headers, func(sw *excelize.StreamWriter) error {
-		// Calculate Revenue
-		var soRevenue float64
-		database.DB.Model(&models.SalesOrder{}).
-			Where("date LIKE ? AND status = 'Completed'", selectedMonth+"%").
-			Select("COALESCE(SUM(amount), 0)").Scan(&soRevenue)
-
-		var moRevenue float64
-		database.DB.Model(&models.ManualOrder{}).
-			Where("date LIKE ? AND status = 'Completed'", selectedMonth+"%").
-			Select("COALESCE(SUM(amount), 0)").Scan(&moRevenue)
-
-		var ttRevenue float64
-		database.DB.Model(&models.TiktokOrder{}).
-			Where("date LIKE ? AND settled = true", selectedMonth+"%").
-			Select("COALESCE(SUM(net_revenue), 0)").Scan(&ttRevenue)
-
-		totalRevenue := soRevenue + moRevenue + ttRevenue
-
-		// Calculate COGS
-		var cogs float64
-		database.DB.Model(&models.Expense{}).
-			Where("date LIKE ? AND category = 'COGS/วัตถุดิบ'", selectedMonth+"%").
-			Select("COALESCE(SUM(amount), 0)").Scan(&cogs)
-
-		// Calculate OpEx
-		var opex float64
-		database.DB.Model(&models.Expense{}).
-			Where("date LIKE ? AND category != 'COGS/วัตถุดิบ'", selectedMonth+"%").
-			Select("COALESCE(SUM(amount), 0)").Scan(&opex)
+		accountNet := func(code string) float64 {
+			var value float64
+			database.DB.Table("journal_lines jl").
+				Joins("JOIN journal_entries je ON je.id = jl.journal_entry_id").
+				Where("je.status = ? AND je.date LIKE ? AND jl.account_code = ?", "Posted", selectedMonth+"%", code).
+				Select("COALESCE(SUM(jl.credit - jl.debit), 0)").Scan(&value)
+			return value
+		}
+		salesRevenue := accountNet("4000")
+		salesReturns := -accountNet("5100")
+		totalRevenue := salesRevenue - salesReturns
+		cogs := -accountNet("5000")
+		damageLoss := -accountNet("5200")
+		opex := -accountNet("6000") + damageLoss
 
 		grossProfit := totalRevenue - cogs
 		netProfit := grossProfit - opex
@@ -294,10 +279,9 @@ func ExportPL(c *fiber.Ctx) error {
 			Label string
 			Val   float64
 		}{
-			{"Total Revenue (Completed Orders + TikTok Net)", totalRevenue},
-			{"  - Sales Orders (Manual/Website)", soRevenue},
-			{"  - Manual Orders", moRevenue},
-			{"  - TikTok Net Revenue", ttRevenue},
+			{"Net Revenue (Journal Ledger)", totalRevenue},
+			{"  - Sales Revenue", salesRevenue},
+			{"  - Sales Returns / Credit Notes", -salesReturns},
 			{"Cost of Goods Sold (COGS)", cogs},
 			{"Gross Profit", grossProfit},
 			{"Operating Expenses (OpEx)", opex},
@@ -349,10 +333,15 @@ func ExportBudget(c *fiber.Ctx) error {
 		rowIdx := 2
 		for _, b := range budgets {
 			var actual float64
-			database.DB.Model(&models.Expense{}).
-				Where("date LIKE ? AND category = ? AND channel = ?", selectedMonth+"%", b.Category, b.Channel).
-				Select("COALESCE(SUM(amount), 0)").
-				Scan(&actual)
+			// Budget Actual is sourced from posted journal lines only.
+			accountCode := "6000"
+			if b.Category == "COGS/วัตถุดิบ" {
+				accountCode = "5000"
+			}
+			database.DB.Table("journal_lines jl").
+				Joins("JOIN journal_entries je ON je.id = jl.journal_entry_id").
+				Where("je.status = ? AND je.date LIKE ? AND jl.account_code = ? AND jl.channel = ?", "Posted", selectedMonth+"%", accountCode, b.Channel).
+				Select("COALESCE(SUM(jl.debit - jl.credit), 0)").Scan(&actual)
 
 			var pctStr string
 			if b.BudgetAmount > 0 {

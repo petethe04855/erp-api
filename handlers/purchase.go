@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"chawy-erp-api/database"
@@ -68,9 +69,8 @@ func UpdatePRStatus(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-
 	var pr models.PurchaseRequest
-	if err := database.DB.First(&pr, "id = ? OR code = ?", id, id).Error; err != nil {
+	if err := ByIDOrCode(database.DB, id).First(&pr).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "PR not found"})
 	}
 
@@ -93,7 +93,7 @@ type ConvertPRtoPORequest struct {
 func ConvertPRtoPO(c *fiber.Ctx) error {
 	id := c.Params("id")
 	var pr models.PurchaseRequest
-	if err := database.DB.Preload("Items").First(&pr, "id = ? OR code = ?", id, id).Error; err != nil {
+	if err := ByIDOrCode(database.DB, id).Preload("Items").First(&pr).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "PR not found"})
 	}
 
@@ -266,7 +266,7 @@ func UpdatePOStatus(c *fiber.Ctx) error {
 	}
 
 	var po models.PurchaseOrder
-	if err := database.DB.Preload("Items").First(&po, "id = ? OR code = ?", id, id).Error; err != nil {
+	if err := ByIDOrCode(database.DB, id).Preload("Items").First(&po).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "PO not found"})
 	}
 
@@ -312,21 +312,33 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	if (gr.PoRef == "" && gr.PurchaseOrderID == nil) || gr.ReceiveDate == "" || len(gr.Items) == 0 {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "GR requires PO reference, receiveDate, and at least one item"})
+	if gr.ReceiveDate == "" || len(gr.Items) == 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Stock receipt requires receiveDate and at least one item"})
+	}
+	for _, item := range gr.Items {
+		if item.ExpiryDate == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "expiry date is required for every received lot"})
+		}
+		if item.ExpiryDate < gr.ReceiveDate {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "lot expiry date cannot be before receive date"})
+		}
 	}
 
+	hasPO := gr.PoRef != "" || gr.PurchaseOrderID != nil
 	var po models.PurchaseOrder
-	if err := database.DB.Preload("Items").First(&po, "id = ? OR code = ?", gr.PoRef, gr.PoRef).Error; err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Matching PO not found"})
+	if hasPO {
+		if err := ByIDOrCode(database.DB, gr.PoRef).Preload("Items").First(&po).Error; err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Matching PO not found"})
+		}
+		if po.Status != "Sent" && po.Status != "Partial Received" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "PO must be Sent or Partial Received status to receive goods"})
+		}
+		gr.PurchaseOrderID = &po.ID
+		gr.PoRef = po.Code
+	} else {
+		gr.PurchaseOrderID = nil
+		gr.PoRef = ""
 	}
-
-	if po.Status != "Sent" && po.Status != "Partial Received" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "PO must be Sent or Partial Received status to receive goods"})
-	}
-
-	gr.PurchaseOrderID = &po.ID
-	gr.PoRef = po.Code
 
 	username := c.Locals("name")
 	if username == nil {
@@ -339,138 +351,132 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 			return err
 		}
 		gr.Code = code
+		if _, err := time.Parse("2006-01-02", gr.ReceiveDate); err != nil {
+			return fmt.Errorf("receiveDate must use YYYY-MM-DD format")
+		}
+		dateCode := strings.ReplaceAll(gr.ReceiveDate, "-", "")
+		receiptNo := strings.TrimPrefix(gr.Code, "GR-2026-")
+		for idx := range gr.Items {
+			gr.Items[idx].Lot = fmt.Sprintf("LOT-%s-%02d-%s", receiptNo, idx+1, dateCode)
+			gr.Items[idx].LandedUnitCost = 0
+		}
+		// Stock Receipt records quantity and lot only. Costing will be handled later.
+		gr.LandedCosts = nil
 
-		if err := tx.Create(&gr).Error; err != nil {
+		// Create the receipt header first. Items need ProductID validation before
+		// insertion, so they must not be auto-created by GORM associations here.
+		if err := tx.Omit("Items", "LandedCosts", "AuditTrail").Create(&gr).Error; err != nil {
 			return err
-		}
-
-		// Assign GoodsReceiveID to LandedCosts
-		for idx := range gr.LandedCosts {
-			gr.LandedCosts[idx].GoodsReceiveID = gr.ID
-			tx.Model(&gr.LandedCosts[idx]).Update("goods_receive_id", gr.ID)
-		}
-
-		// รวมค่า landed ที่ allocatable
-		totalLanded := 0.0
-		for _, lc := range gr.LandedCosts {
-			if lc.Allocatable {
-				totalLanded += lc.Amount
-			}
-		}
-
-		// มูลค่ารวมของที่รับ (ใช้ราคา PO เป็นฐานการปัน)
-		totalValue := 0.0
-		for i := range gr.Items {
-			var poItem *models.PurchaseOrderItem
-			for j := range po.Items {
-				if po.Items[j].SKU == gr.Items[i].SKU {
-					poItem = &po.Items[j]
-					break
-				}
-			}
-			if poItem != nil {
-				totalValue += float64(gr.Items[i].QtyReceived) * poItem.UnitCost
-			}
 		}
 
 		for i := range gr.Items {
 			item := &gr.Items[i]
 			item.GoodsReceiveID = gr.ID
+			if item.QCStatus == "" {
+				item.QCStatus = "Accepted"
+			}
+			if item.RejectedQty < 0 || item.RejectedQty > item.QtyReceived {
+				return fmt.Errorf("invalid rejected quantity for item %s", item.SKU)
+			}
+			item.AcceptedQty = item.QtyReceived - item.RejectedQty
+			if item.QCStatus == "Rejected" {
+				item.AcceptedQty = 0
+				item.RejectedQty = item.QtyReceived
+			}
 
-			if item.QtyReceived <= 0 {
+			if item.QtyReceived <= 0 || item.Lot == "" {
 				return fmt.Errorf("Invalid QtyReceived for item %s", item.SKU)
 			}
 
-			// Verify with PO item limits
+			var product models.Product
+			if err := tx.First(&product, "sku = ?", item.SKU).Error; err != nil {
+				return fmt.Errorf("finished product %s not found in Item Master", item.SKU)
+			}
+			if !hasPO && !isSellableProduct(product) {
+				return fmt.Errorf("stock receipt item %s must be a Finished Product", item.SKU)
+			}
+			item.ProductID = product.ID
+
+			var duplicateLot int64
+			if err := tx.Model(&models.StockLot{}).Where("sku = ? AND lot = ?", item.SKU, item.Lot).Count(&duplicateLot).Error; err != nil {
+				return err
+			}
+			if duplicateLot > 0 {
+				return fmt.Errorf("lot %s already exists for item %s", item.Lot, item.SKU)
+			}
+
 			var poItem *models.PurchaseOrderItem
-			for j := range po.Items {
-				if po.Items[j].SKU == item.SKU {
-					poItem = &po.Items[j]
-					break
+			if hasPO {
+				for j := range po.Items {
+					if po.Items[j].SKU == item.SKU {
+						poItem = &po.Items[j]
+						break
+					}
+				}
+				if poItem == nil {
+					return fmt.Errorf("Item %s not found in PO %s", item.SKU, gr.PoRef)
+				}
+				if err := validatePurchasableItem(tx, item.SKU); err != nil {
+					return err
+				}
+				if item.QtyReceived > (poItem.Qty - poItem.ReceivedQty) {
+					return fmt.Errorf("Cannot receive more than ordered qty for item %s", item.SKU)
 				}
 			}
-
-			if poItem == nil {
-				return fmt.Errorf("Item %s not found in PO %s", item.SKU, gr.PoRef)
-			}
-			if err := validatePurchasableItem(tx, item.SKU); err != nil {
+			item.LandedUnitCost = 0
+			if err := tx.Save(item).Error; err != nil {
 				return err
 			}
 
-			if item.QtyReceived > (poItem.Qty - poItem.ReceivedQty) {
-				return fmt.Errorf("Cannot receive more than ordered qty for item %s", item.SKU)
-			}
-
-			// มูลค่าของบรรทัดนี้
-			lineValue := float64(item.QtyReceived) * poItem.UnitCost
-
-			// ค่าขนส่งที่ปันมาที่บรรทัดนี้
-			allocatedFreight := 0.0
-			if totalValue > 0 {
-				allocatedFreight = totalLanded * (lineValue / totalValue)
-			}
-
-			// ต้นทุนรวมต่อหน่วย = (ราคาซื้อ + ค่าขนส่งปัน) / จำนวน
-			item.LandedUnitCost = (lineValue + allocatedFreight) / float64(item.QtyReceived)
-
-			// Update PO item received quantity
-			poItem.ReceivedQty += item.QtyReceived
-			if err := tx.Save(poItem).Error; err != nil {
-				return err
+			if hasPO {
+				poItem.ReceivedQty += item.QtyReceived
+				if err := tx.Save(poItem).Error; err != nil {
+					return err
+				}
 			}
 
 			// Create Stock Lot
 			lot := models.StockLot{
-				Code:           fmt.Sprintf("LOT-%d-%s", time.Now().UnixNano(), item.Lot),
-				SKU:            item.SKU,
-				Lot:            item.Lot,
-				Qty:            item.QtyReceived,
-				RemainingQty:   item.QtyReceived,
-				LandedUnitCost: item.LandedUnitCost,
-				ExpiryDate:     item.ExpiryDate,
-				ReceivedDate:   gr.ReceiveDate,
-				GoodsReceiveID: &gr.ID,
-				GrRef:          gr.Code,
-				PurchaseOrderID: &po.ID,
-				PoRef:          po.Code,
+				Code:            fmt.Sprintf("LOT-%d-%s", time.Now().UnixNano(), item.Lot),
+				ProductID:       product.ID,
+				SKU:             item.SKU,
+				Lot:             item.Lot,
+				Qty:             item.AcceptedQty,
+				RemainingQty:    item.AcceptedQty,
+				LandedUnitCost:  0,
+				ExpiryDate:      item.ExpiryDate,
+				SupplierLot:     item.SupplierLot,
+				QCStatus:        item.QCStatus,
+				ReceivedDate:    gr.ReceiveDate,
+				GoodsReceiveID:  &gr.ID,
+				GrRef:           gr.Code,
+				PurchaseOrderID: gr.PurchaseOrderID,
+				PoRef:           gr.PoRef,
 			}
 			if err := tx.Create(&lot).Error; err != nil {
 				return err
 			}
 
 			// Update product stock balance
-			var p models.Product
-			if err := tx.First(&p, "sku = ?", item.SKU).Error; err == nil {
-				oldStock := p.Stock
-				if oldStock+item.QtyReceived > 0 {
-					p.Cost = ((float64(oldStock) * p.Cost) + (float64(item.QtyReceived) * item.LandedUnitCost)) /
-						float64(oldStock+item.QtyReceived)
-				}
-				p.Stock += item.QtyReceived
-				if err := tx.Save(&p).Error; err != nil {
+			if product.ID > 0 {
+				product.Stock += item.AcceptedQty
+				if err := tx.Save(&product).Error; err != nil {
 					return err
-				}
-
-				// Recalculate any parent BOMs that use this raw material SKU
-				var parentComponents []models.BundleComponent
-				if err := tx.Where("component_sku = ?", item.SKU).Find(&parentComponents).Error; err == nil {
-					for _, pc := range parentComponents {
-						_ = recalculateProductBOMCost(tx, pc.BundleSku)
-					}
 				}
 			}
 
 			// Create Stock Movement
 			movement := models.StockMovement{
 				Code:       fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), item.SKU),
+				ProductID:  product.ID,
 				SKU:        item.SKU,
 				Type:       "IN",
-				Qty:        item.QtyReceived,
+				Qty:        item.AcceptedQty,
 				RefDoc:     gr.Code,
 				RefDocType: "goods_receives",
 				RefDocID:   &gr.ID,
 				Date:       gr.ReceiveDate,
-				Note:       fmt.Sprintf("รับจาก %s (%s) lot %s exp %s", po.Supplier, gr.PoRef, item.Lot, item.ExpiryDate),
+				Note:       fmt.Sprintf("รับสินค้าสำเร็จรูปเข้าคลัง lot %s exp %s", item.Lot, item.ExpiryDate),
 				ChangedBy:  username.(string),
 			}
 			if err := tx.Create(&movement).Error; err != nil {
@@ -478,22 +484,23 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 			}
 		}
 
-		// Check if PO completed
-		allCompleted := true
-		for _, pi := range po.Items {
-			if pi.ReceivedQty < pi.Qty {
-				allCompleted = false
-				break
+		newStatus := ""
+		if hasPO {
+			allCompleted := true
+			for _, pi := range po.Items {
+				if pi.ReceivedQty < pi.Qty {
+					allCompleted = false
+					break
+				}
 			}
-		}
-
-		newStatus := "Partial Received"
-		if allCompleted {
-			newStatus = "Completed"
-		}
-		po.Status = newStatus
-		if err := tx.Save(&po).Error; err != nil {
-			return err
+			newStatus = "Partial Received"
+			if allCompleted {
+				newStatus = "Completed"
+			}
+			po.Status = newStatus
+			if err := tx.Save(&po).Error; err != nil {
+				return err
+			}
 		}
 
 		// Add audit trail for Goods Receive
@@ -503,23 +510,20 @@ func CreateGoodsReceive(c *fiber.Ctx) error {
 			Action:    "Created",
 			By:        username.(string),
 			At:        getNowStr(),
-			Note:      fmt.Sprintf("รับสินค้าจาก %s", po.Supplier),
+			Note:      "รับสินค้าสำเร็จรูปเข้าคลัง",
 		}
 		if err := tx.Create(&grAudit).Error; err != nil {
 			return err
 		}
 
-		// Add audit trail for PO update
-		poAudit := models.AuditEvent{
-			OwnerID:   po.ID,
-			OwnerType: "purchase_orders",
-			Action:    newStatus,
-			By:        username.(string),
-			At:        getNowStr(),
-			Note:      fmt.Sprintf("รับสินค้า %s", gr.Code),
-		}
-		if err := tx.Create(&poAudit).Error; err != nil {
-			return err
+		if hasPO {
+			poAudit := models.AuditEvent{
+				OwnerID: po.ID, OwnerType: "purchase_orders", Action: newStatus,
+				By: username.(string), At: getNowStr(), Note: fmt.Sprintf("รับสินค้า %s", gr.Code),
+			}
+			if err := tx.Create(&poAudit).Error; err != nil {
+				return err
+			}
 		}
 
 		return nil

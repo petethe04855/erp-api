@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"chawy-erp-api/database"
+	"chawy-erp-api/middleware"
 	"chawy-erp-api/models"
 
 	"github.com/gofiber/fiber/v2"
@@ -21,6 +22,10 @@ import (
 type LoginRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
+}
+
+func GetPermissionMatrix(c *fiber.Ctx) error {
+	return c.JSON(middleware.PermissionMatrix)
 }
 
 // Login verifies credentials and returns a signed JWT token
@@ -82,6 +87,10 @@ func Login(c *fiber.Ctx) error {
 	now := time.Now()
 	database.DB.Model(&user).Update("last_login_at", &now)
 	user.LastLoginAt = &now
+	database.DB.Create(&models.AuditLog{
+		Actor: user.Email, Action: "Login", Entity: "auth", EntityID: fmt.Sprint(user.ID),
+		After: "Success", SourceRef: "/api/auth/login", CreatedAt: now.UTC().Format(time.RFC3339),
+	})
 
 	return c.JSON(fiber.Map{
 		"token": tokenString,

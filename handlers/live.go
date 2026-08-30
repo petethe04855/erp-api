@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"math"
 	"time"
 
 	"chawy-erp-api/database"
@@ -8,6 +9,35 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 )
+
+func TiktokSettlementReconciliation(c *fiber.Ctx) error {
+	var orders []models.TiktokOrder
+	db := database.DB.Where("settled = ?", true)
+	if from := c.Query("from"); from != "" {
+		db = db.Where("date >= ?", from)
+	}
+	if to := c.Query("to"); to != "" {
+		db = db.Where("date <= ?", to)
+	}
+	if err := db.Order("date DESC").Find(&orders).Error; err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+	rows := make([]fiber.Map, 0, len(orders))
+	var expected, settled, difference float64
+	for _, order := range orders {
+		expectedAmount := order.Amount - order.PlatformFee
+		diff := order.NetRevenue - expectedAmount
+		status := "Matched"
+		if math.Abs(diff) > 0.01 {
+			status = "Difference"
+		}
+		expected += expectedAmount
+		settled += order.NetRevenue
+		difference += diff
+		rows = append(rows, fiber.Map{"orderId": order.ID, "date": order.Date, "settlementRef": order.SettlementRef, "orderAmount": order.Amount, "platformFee": order.PlatformFee, "expectedNetRevenue": expectedAmount, "netRevenue": order.NetRevenue, "difference": diff, "status": status})
+	}
+	return c.JSON(fiber.Map{"from": c.Query("from"), "to": c.Query("to"), "count": len(rows), "expectedNetRevenue": expected, "netRevenue": settled, "difference": difference, "rows": rows})
+}
 
 // POST /api/tiktok-orders
 func CreateTiktokOrder(c *fiber.Ctx) error {

@@ -16,14 +16,14 @@ func RegisterOrderRoutes(api fiber.Router) {
 	api.Post("/quotations/:id/convert", handlers.ConvertQuotationToSalesOrder)
 
 	// Sales Orders
-	api.Get("/sales-orders", handlers.ListResource(func() interface{} { return &[]models.SalesOrder{} }, "Lines", "AuditTrail"))
-	api.Get("/sales-orders/:id", handlers.GetResource(func() interface{} { return &models.SalesOrder{} }, "id", "id", "Lines", "AuditTrail"))
+	api.Get("/sales-orders", handlers.ListResource(func() interface{} { return &[]models.SalesOrder{} }, "Lines", "Lines.Allocations", "AuditTrail"))
+	api.Get("/sales-orders/:id", handlers.GetResource(func() interface{} { return &models.SalesOrder{} }, "id", "id", "Lines", "Lines.Allocations", "AuditTrail"))
 	api.Post("/sales-orders", handlers.CreateSalesOrder)
 	api.Put("/sales-orders/:id/status", handlers.UpdateSalesOrderStatus)
 
 	// Invoices
-	api.Get("/invoices", handlers.ListResource(func() interface{} { return &[]models.Invoice{} }, "AuditTrail"))
-	api.Get("/invoices/:id", handlers.GetResource(func() interface{} { return &models.Invoice{} }, "id", "id", "AuditTrail"))
+	api.Get("/invoices", handlers.ListResource(func() interface{} { return &[]models.Invoice{} }, "Lines", "AuditTrail"))
+	api.Get("/invoices/:id", handlers.GetResource(func() interface{} { return &models.Invoice{} }, "id", "id", "Lines", "AuditTrail"))
 	api.Post("/invoices", handlers.CreateInvoice)
 	api.Post("/invoices/from-so/:soId", handlers.CreateInvoiceFromSO)
 	api.Post("/invoices/:id/payment", handlers.RecordPayment)

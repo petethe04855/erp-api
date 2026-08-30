@@ -2,6 +2,25 @@ package models
 
 import "time"
 
+type TiktokWebhookEvent struct {
+	ID         uint      `gorm:"primaryKey;autoIncrement" json:"id"`
+	EventID    string    `gorm:"uniqueIndex;not null" json:"eventId"`
+	EventType  string    `json:"eventType"`
+	Payload    string    `gorm:"type:text" json:"-"`
+	ReceivedAt time.Time `json:"receivedAt"`
+}
+
+type TiktokSyncRun struct {
+	ID            uint       `gorm:"primaryKey;autoIncrement" json:"id"`
+	StartedAt     time.Time  `json:"startedAt"`
+	FinishedAt    *time.Time `json:"finishedAt,omitempty"`
+	Status        string     `json:"status"`
+	Days          int        `json:"days"`
+	Synced        int        `json:"synced"`
+	StockDeducted int        `json:"stockDeducted"`
+	Error         string     `json:"error,omitempty"`
+}
+
 // TiktokConnection holds the server-side OAuth credentials for the TikTok Shop
 // connection. Token values are encrypted before being persisted.
 type TiktokConnection struct {
@@ -20,19 +39,32 @@ type TiktokConnection struct {
 
 // TiktokOrder represents a TikTok shop sales order
 type TiktokOrder struct {
-	ID            string  `gorm:"primaryKey" json:"id"`
-	Date          string  `json:"date"`
-	Product       string  `json:"product"`
-	SKU           string  `json:"sku"`
-	Qty           int     `json:"qty"`
-	Amount        float64 `json:"amount"`
-	Status        string  `json:"status"`
-	StockDeducted bool    `json:"stockDeducted"`
-	Imported      bool    `json:"imported"`
-	NetRevenue    float64 `json:"netRevenue,omitempty"`
-	PlatformFee   float64 `json:"platformFee,omitempty"`
-	Settled       bool    `json:"settled"`
-	SettlementRef string  `json:"settlementRef,omitempty"`
+	ID            string            `gorm:"primaryKey" json:"id"`
+	Date          string            `json:"date"`
+	Product       string            `json:"product"`
+	SKU           string            `json:"sku"`
+	Qty           int               `json:"qty"`
+	Amount        float64           `json:"amount"`
+	Status        string            `json:"status"`
+	StockDeducted bool              `json:"stockDeducted"`
+	Imported      bool              `json:"imported"`
+	NetRevenue    float64           `json:"netRevenue,omitempty"`
+	PlatformFee   float64           `json:"platformFee,omitempty"`
+	Settled       bool              `json:"settled"`
+	SettlementRef string            `json:"settlementRef,omitempty"`
+	Items         []TiktokOrderItem `gorm:"foreignKey:OrderID;references:ID;constraint:OnDelete:CASCADE" json:"items"`
+}
+
+// TiktokOrderItem stores each SKU returned by TikTok Shop for an order.
+type TiktokOrderItem struct {
+	ID          uint    `gorm:"primaryKey;autoIncrement" json:"id"`
+	OrderID     string  `gorm:"index;not null" json:"orderId"`
+	LineItemID  string  `gorm:"index" json:"lineItemId"`
+	ProductName string  `json:"productName"`
+	SKU         string  `json:"sku"`
+	Qty         int     `json:"qty"`
+	UnitPrice   float64 `json:"unitPrice"`
+	Amount      float64 `json:"amount"`
 }
 
 // ManualOrder represents sales orders recorded manually
@@ -84,4 +116,13 @@ type LiveSession struct {
 	UpdatedBy     string `json:"updatedBy"`
 	UpdatedAt     string `json:"updatedAt"`
 	AuditTrailStr string `json:"auditTrail"` // JSON string for ease of storing/displaying audit logs
+}
+
+// TiktokSKUMapping maps a TikTok Seller SKU to the ERP master SKU used for stock deduction.
+type TiktokSKUMapping struct {
+	ID        uint      `gorm:"primaryKey;autoIncrement" json:"id"`
+	TiktokSKU string    `gorm:"uniqueIndex;not null" json:"tiktokSku"`
+	ERPSKU    string    `gorm:"index;not null" json:"erpSku"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }

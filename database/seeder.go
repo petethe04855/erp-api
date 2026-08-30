@@ -23,6 +23,7 @@ func CleanMockData() {
 		"live_sessions",
 		"manual_orders",
 		"month_budgets",
+		"tiktok_order_items",
 		"tiktok_orders",
 		"tiktok_connections",
 		"boms",

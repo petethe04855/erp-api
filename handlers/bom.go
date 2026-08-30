@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"math"
+	"sort"
 	"time"
 
 	"chawy-erp-api/database"
@@ -49,6 +50,7 @@ type BOMDetailResponse struct {
 	ReadyItems       int               `json:"readyItems"`
 	TotalPRValue     float64           `json:"totalPrValue"`
 	TotalCostPerUnit float64           `json:"totalCostPerUnit"`
+	MaxProducibleQty int               `json:"maxProducibleQty"`
 	BomCode          string            `json:"bomCode"`
 	BomName          string            `json:"bomName"`
 	BomOutputQty     float64           `json:"bomOutputQty"`
@@ -105,7 +107,8 @@ type BOMComponentResponse struct {
 
 type BOMListResponse struct {
 	models.BOM
-	Components []BOMComponentResponse `json:"components"`
+	Components       []BOMComponentResponse `json:"components"`
+	MaxProducibleQty int                    `json:"maxProducibleQty"`
 }
 
 // GET /api/boms — list standalone BOM records
@@ -117,7 +120,17 @@ func ListBOMs(c *fiber.Ctx) error {
 	result := make([]BOMListResponse, 0, len(boms))
 	for _, bom := range boms {
 		components, _ := buildStandaloneBOMComponents(database.DB, bom)
-		result = append(result, BOMListResponse{BOM: bom, Components: components})
+		maxProducibleQty := 0
+		if bom.Status == "Active" {
+			if detail, err := buildBOMDetail(bom.FgSku, 1); err == nil {
+				maxProducibleQty = detail.MaxProducibleQty
+			}
+		}
+		result = append(result, BOMListResponse{
+			BOM:              bom,
+			Components:       components,
+			MaxProducibleQty: maxProducibleQty,
+		})
 	}
 	return c.JSON(result)
 }
@@ -218,7 +231,7 @@ func DeleteBOM(c *fiber.Ctx) error {
 	if id == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "ID or Code is required"})
 	}
-	if err := database.DB.Where("id = ? OR code = ?", id, id).Delete(&models.BOM{}).Error; err != nil {
+	if err := ByIDOrCode(database.DB, id).Delete(&models.BOM{}).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"message": "BOM deleted successfully"})
@@ -334,16 +347,55 @@ func buildBOMDetail(sku string, productionQty int) (BOMDetailResponse, error) {
 	}
 
 	lines := make([]BOMLineResponse, 0, len(components))
+	materialRequirements := map[string]float64{}
+	for _, component := range components {
+		if component.ComponentType == "expense" {
+			line, err := buildBOMLine(component, productionQty)
+			if err != nil {
+				return BOMDetailResponse{}, err
+			}
+			lines = append(lines, line)
+			continue
+		}
+		var componentProduct models.Product
+		if err := database.DB.First(&componentProduct, "sku = ?", component.ComponentSku).Error; err != nil {
+			return BOMDetailResponse{}, err
+		}
+		yield := component.YieldFactor
+		if yield <= 0 {
+			yield = 1
+		}
+		batchSize := componentQtyBatchSize(component.BundleSku)
+		directQty := convertBOMQty(grossBOMQty(component.Qty/yield, component.ScrapRate), component.Unit, componentProduct.BaseUnit) * (float64(productionQty) / batchSize)
+		expanded, err := expandBOMMaterialRequirements(database.DB, component.ComponentSku, directQty, map[string]bool{sku: true})
+		if err != nil {
+			return BOMDetailResponse{}, err
+		}
+		for materialSKU, requiredQty := range expanded {
+			materialRequirements[materialSKU] += requiredQty
+		}
+	}
+
+	materialSKUs := make([]string, 0, len(materialRequirements))
+	for materialSKU := range materialRequirements {
+		materialSKUs = append(materialSKUs, materialSKU)
+	}
+	sort.Strings(materialSKUs)
+	for _, materialSKU := range materialSKUs {
+		line, err := buildBOMMaterialLine(materialSKU, materialRequirements[materialSKU], productionQty)
+		if err != nil {
+			return BOMDetailResponse{}, err
+		}
+		lines = append(lines, line)
+	}
+
 	readyItems := 0
 	prRequired := 0
 	totalPRValue := 0.0
 	totalCostPerUnit := 0.0
-
-	for _, component := range components {
-		line, err := buildBOMLine(component, productionQty)
-		if err != nil {
-			return BOMDetailResponse{}, err
-		}
+	maxProducibleQty := math.MaxInt
+	hasMaterialRequirement := false
+	for _, line := range lines {
 		if line.Shortage == 0 {
 			readyItems++
 		}
@@ -352,7 +404,13 @@ func buildBOMDetail(sku string, productionQty int) (BOMDetailResponse, error) {
 			totalPRValue += line.PRValue
 		}
 		totalCostPerUnit += line.CostPerFinishedUnit
-		lines = append(lines, line)
+		if line.SKU != "" && line.QtyPerUnit > 0 {
+			hasMaterialRequirement = true
+			maxProducibleQty = min(maxProducibleQty, int(math.Floor(line.StockQty/line.QtyPerUnit)))
+		}
+	}
+	if !hasMaterialRequirement {
+		maxProducibleQty = 0
 	}
 
 	return BOMDetailResponse{
@@ -364,6 +422,7 @@ func buildBOMDetail(sku string, productionQty int) (BOMDetailResponse, error) {
 		ReadyItems:       readyItems,
 		TotalPRValue:     totalPRValue,
 		TotalCostPerUnit: totalCostPerUnit,
+		MaxProducibleQty: maxProducibleQty,
 		Lines:            lines,
 	}, nil
 }
@@ -401,9 +460,13 @@ func buildBOMLine(component models.BundleComponent, productionQty int) (BOMLineR
 		componentUnit = "piece"
 	}
 	batchSize := componentQtyBatchSize(component.BundleSku)
-	netRequiredQty := component.Qty * (float64(productionQty) / batchSize)
+	yield := component.YieldFactor
+	if yield <= 0 {
+		yield = 1
+	}
+	netRequiredQty := (component.Qty / yield) * (float64(productionQty) / batchSize)
 	requiredQty := convertBOMQty(grossBOMQty(netRequiredQty, component.ScrapRate), componentUnit, componentProduct.BaseUnit)
-	qtyPerUnit := convertBOMQty(grossBOMQty(component.Qty/batchSize, component.ScrapRate), componentUnit, componentProduct.BaseUnit)
+	qtyPerUnit := convertBOMQty(grossBOMQty((component.Qty/yield)/batchSize, component.ScrapRate), componentUnit, componentProduct.BaseUnit)
 	stockQty := float64(componentProduct.Stock)
 	shortage := math.Max(requiredQty-stockQty, 0)
 	unitCost := componentProduct.Cost
@@ -453,6 +516,90 @@ func componentQtyBatchSize(fgSku string) float64 {
 		return bom.OutputQty
 	}
 	return 1
+}
+
+func buildBOMMaterialLine(sku string, requiredQty float64, productionQty int) (BOMLineResponse, error) {
+	var product models.Product
+	if err := database.DB.First(&product, "sku = ?", sku).Error; err != nil {
+		return BOMLineResponse{}, err
+	}
+	stockQty := float64(product.Stock - product.ReservedQty)
+	if stockQty < 0 {
+		stockQty = 0
+	}
+	shortage := math.Max(requiredQty-stockQty, 0)
+	qtyPerUnit := requiredQty / float64(productionQty)
+	return BOMLineResponse{
+		SKU:                 product.SKU,
+		Name:                product.Name,
+		Category:            product.Type,
+		Unit:                product.BaseUnit,
+		QtyPerUnit:          qtyPerUnit,
+		RequiredQty:         requiredQty,
+		StockQty:            stockQty,
+		Shortage:            shortage,
+		UnitCost:            product.Cost,
+		CostPerFinishedUnit: qtyPerUnit * product.Cost,
+		PRValue:             shortage * product.Cost,
+		CanCreatePR:         shortage > 0,
+	}, nil
+}
+
+// expandBOMMaterialRequirements resolves a bundle recursively into purchasable
+// leaf materials. Every level applies its own yield, scrap rate, and unit conversion.
+func expandBOMMaterialRequirements(tx *gorm.DB, sku string, qty float64, visiting map[string]bool) (map[string]float64, error) {
+	if qty <= 0 {
+		return map[string]float64{}, nil
+	}
+	if visiting[sku] {
+		return nil, fmt.Errorf("BOM cycle detected at %s", sku)
+	}
+
+	var product models.Product
+	if err := tx.First(&product, "sku = ?", sku).Error; err != nil {
+		return nil, err
+	}
+	if !product.IsBundle {
+		return map[string]float64{sku: qty}, nil
+	}
+
+	visiting[sku] = true
+	defer delete(visiting, sku)
+	var components []models.BundleComponent
+	if err := tx.Where("bundle_sku = ?", sku).Find(&components).Error; err != nil {
+		return nil, err
+	}
+	if len(components) == 0 {
+		return nil, fmt.Errorf("bundle %s has no BOM components", sku)
+	}
+
+	result := map[string]float64{}
+	batchSize := componentQtyBatchSize(sku)
+	for _, component := range components {
+		if component.ComponentType == "expense" {
+			continue
+		}
+		var componentProduct models.Product
+		if err := tx.First(&componentProduct, "sku = ?", component.ComponentSku).Error; err != nil {
+			return nil, err
+		}
+		yield := component.YieldFactor
+		if yield <= 0 {
+			yield = 1
+		}
+		// Component Qty is defined per BOM batch, while qty is the requested
+		// number of parent output units. Convert it to the per-unit requirement
+		// before expanding lower BOM levels.
+		required := convertBOMQty(grossBOMQty(component.Qty/yield, component.ScrapRate), component.Unit, componentProduct.BaseUnit) * (qty / batchSize)
+		children, err := expandBOMMaterialRequirements(tx, component.ComponentSku, required, visiting)
+		if err != nil {
+			return nil, err
+		}
+		for childSKU, childQty := range children {
+			result[childSKU] += childQty
+		}
+	}
+	return result, nil
 }
 
 type SaveBOMInput struct {

@@ -55,7 +55,7 @@ func AddSamplingRecipient(c *fiber.Ctx) error {
 	}
 
 	var campaign models.SamplingCampaign
-	if err := database.DB.Preload("Recipients").First(&campaign, "id = ? OR code = ?", campaignID, campaignID).Error; err != nil {
+	if err := ByIDOrCode(database.DB, campaignID).Preload("Recipients").First(&campaign).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Sampling campaign not found"})
 	}
 
@@ -136,7 +136,7 @@ func UpdateSamplingStatus(c *fiber.Ctx) error {
 	}
 
 	var campaign models.SamplingCampaign
-	if err := database.DB.First(&campaign, "id = ? OR code = ?", id, id).Error; err != nil {
+	if err := ByIDOrCode(database.DB, id).First(&campaign).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Sampling campaign not found"})
 	}
 

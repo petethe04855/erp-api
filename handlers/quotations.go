@@ -62,7 +62,7 @@ func UpdateQuotationStatus(c *fiber.Ctx) error {
 	}
 
 	var qt models.Quotation
-	if err := database.DB.First(&qt, "id = ? OR code = ?", id, id).Error; err != nil {
+	if err := ByIDOrCode(database.DB, id).First(&qt).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Quotation not found"})
 	}
 
@@ -79,7 +79,7 @@ func UpdateQuotationStatus(c *fiber.Ctx) error {
 func ConvertQuotationToSalesOrder(c *fiber.Ctx) error {
 	id := c.Params("id")
 	var qt models.Quotation
-	if err := database.DB.Preload("Lines").First(&qt, "id = ? OR code = ?", id, id).Error; err != nil {
+	if err := ByIDOrCode(database.DB, id).Preload("Lines").First(&qt).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Quotation not found"})
 	}
 
@@ -126,6 +126,8 @@ func ConvertQuotationToSalesOrder(c *fiber.Ctx) error {
 				ProductID:    ql.ProductID,
 				SKU:          ql.SKU,
 				Qty:          ql.Qty,
+				UnitPrice:    ql.Price,
+				LineTotal:    ql.Price * float64(ql.Qty),
 			}
 			if err := tx.Create(&soLine).Error; err != nil {
 				return err
@@ -133,13 +135,13 @@ func ConvertQuotationToSalesOrder(c *fiber.Ctx) error {
 			soLines = append(soLines, soLine)
 			totalItems += ql.Qty
 
-			// Update ReservedQty on products
+			// Reserve finished-goods stock using the same rule as direct Sales Entry.
 			var prod models.Product
-			if err := tx.First(&prod, "sku = ?", ql.SKU).Error; err == nil {
-				prod.ReservedQty += ql.Qty
-				if err := tx.Save(&prod).Error; err != nil {
-					return err
-				}
+			if err := tx.First(&prod, "sku = ?", ql.SKU).Error; err != nil {
+				return err
+			}
+			if err := reserveSalesStock(tx, prod, ql.Qty, 1); err != nil {
+				return err
 			}
 		}
 

@@ -55,8 +55,8 @@ type PurchaseOrderItem struct {
 type LandedCostLine struct {
 	ID             uint    `gorm:"primaryKey;autoIncrement" json:"id"`
 	GoodsReceiveID uint    `gorm:"index" json:"goodsReceiveId"`
-	Type           string  `json:"type"`                    // freight, duty, shipping, other
-	Amount         float64 `json:"amount"`                  // บาท
+	Type           string  `json:"type"`                            // freight, duty, shipping, other
+	Amount         float64 `json:"amount"`                          // บาท
 	Allocatable    bool    `gorm:"default:true" json:"allocatable"` // true = ปันเข้าต้นทุน, false = บันทึกเป็นค่าใช้จ่ายเฉยๆ
 	Note           string  `json:"note"`
 }
@@ -68,6 +68,7 @@ type GoodsReceive struct {
 	PurchaseOrderID *uint              `gorm:"index" json:"purchaseOrderId,omitempty"`
 	PoRef           string             `json:"poRef"`
 	ReceiveDate     string             `json:"receiveDate"`
+	Note            string             `json:"note"`
 	Items           []GoodsReceiveItem `gorm:"foreignKey:GoodsReceiveID" json:"items"`
 	LandedCosts     []LandedCostLine   `gorm:"foreignKey:GoodsReceiveID" json:"landedCosts"`
 	AuditTrail      []AuditEvent       `gorm:"polymorphic:Owner;" json:"auditTrail"`
@@ -82,5 +83,10 @@ type GoodsReceiveItem struct {
 	QtyReceived    int     `json:"qtyReceived"`
 	Lot            string  `json:"lot"`
 	ExpiryDate     string  `json:"expiryDate"`
-	LandedUnitCost float64 `json:"landedUnitCost"` // ราคาซื้อ + ค่าขนส่งปันส่วน ต่อหน่วย (คำนวณตอน GR)
+	SupplierLot    string  `json:"supplierLot"`
+	QCStatus       string  `json:"qcStatus"`
+	AcceptedQty    int     `json:"acceptedQty"`
+	RejectedQty    int     `json:"rejectedQty"`
+	QCNote         string  `json:"qcNote"`
+	LandedUnitCost float64 `json:"landedUnitCost"` // ยังไม่คำนวณในขั้นตอน Stock Receipt
 }

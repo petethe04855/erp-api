@@ -57,6 +57,15 @@ func ConnectDB() {
 	if os.Getenv("CLEAN_DB") == "true" {
 		log.Println("CLEAN_DB is true: Dropping all tables to ensure clean migration...")
 		tables := []string{
+			"integrity_issues",
+			"integrity_runs",
+			"journal_lines",
+			"journal_entries",
+			"customer_payments",
+			"credit_notes",
+			"return_stock_allocations",
+			"sales_stock_allocations",
+			"accounts",
 			"audit_events",
 			"sales_order_lines",
 			"sales_orders",
@@ -84,6 +93,7 @@ func ConnectDB() {
 			"stock_adjustments",
 			"stock_transfers",
 			"goods_issues",
+			"production_runs",
 			"stock_returns",
 			"sampling_recipients",
 			"sampling_campaigns",
@@ -114,16 +124,26 @@ func ConnectDB() {
 		&models.ModuleSettings{},
 		&models.LivePayrollSettings{},
 		&models.Product{},
+		&models.Account{},
+		&models.AccountMapping{},
+		&models.AuditLog{},
+		&models.JournalEntry{},
+		&models.CustomerPayment{},
+		&models.CreditNote{},
+		&models.IntegrityRun{},
+		&models.IntegrityIssue{},
 		&models.BOM{},
 		&models.BundleComponent{},
 		&models.StockLot{},
 		&models.GoodsIssue{},
+		&models.ProductionRun{},
 		&models.StockReturn{},
 		&models.StockAdjustment{},
 		&models.StockTransfer{},
 		&models.Quotation{},
 		&models.SalesOrder{},
 		&models.Invoice{},
+		&models.InvoiceLine{},
 		&models.PurchaseRequest{},
 		&models.PurchaseOrder{},
 		&models.GoodsReceive{},
@@ -132,7 +152,11 @@ func ConnectDB() {
 		&models.Expense{},
 		&models.MonthBudget{},
 		&models.TiktokOrder{},
+		&models.TiktokOrderItem{},
+		&models.TiktokSKUMapping{},
 		&models.TiktokConnection{},
+		&models.TiktokWebhookEvent{},
+		&models.TiktokSyncRun{},
 		&models.ManualOrder{},
 		&models.ContentScheduleItem{},
 		&models.LiveSession{},
@@ -142,15 +166,38 @@ func ConnectDB() {
 		&models.StockAdjustmentItem{},
 		&models.QuotationLine{},
 		&models.SalesOrderLine{},
+		&models.SalesStockAllocation{},
+		&models.ReturnStockAllocation{},
+		&models.JournalLine{},
 		&models.PurchaseRequestItem{},
 		&models.PurchaseOrderItem{},
 		&models.GoodsReceiveItem{},
+		&models.TiktokOrderItem{},
 		&models.SamplingRecipient{},
 		&models.AuditEvent{},
 		&models.TiktokOAuthState{},
 	)
 	if err != nil {
 		log.Fatalf("Database migration failed: %v", err)
+	}
+
+	defaultAccounts := []models.Account{
+		{Code: "1100", Name: "เงินสด", Type: "Asset", IsActive: true},
+		{Code: "1110", Name: "เงินฝากธนาคาร", Type: "Asset", IsActive: true},
+		{Code: "1200", Name: "ลูกหนี้การค้า", Type: "Asset", IsActive: true},
+		{Code: "1300", Name: "สินค้าคงเหลือ", Type: "Asset", IsActive: true},
+		{Code: "2000", Name: "บัญชีพักรับสินค้า", Type: "Liability", IsActive: true},
+		{Code: "2100", Name: "ภาษีขาย", Type: "Liability", IsActive: true},
+		{Code: "4000", Name: "รายได้จากการขาย", Type: "Revenue", IsActive: true},
+		{Code: "5000", Name: "ต้นทุนขาย", Type: "Expense", IsActive: true},
+		{Code: "5100", Name: "ส่วนลดและคืนสินค้า", Type: "Expense", IsActive: true},
+		{Code: "5200", Name: "ขาดทุนจากสินค้าคืนเสียหาย", Type: "Expense", IsActive: true},
+		{Code: "6000", Name: "ค่าใช้จ่ายดำเนินงาน", Type: "Expense", IsActive: true},
+	}
+	for _, account := range defaultAccounts {
+		if err := DB.Where("code = ?", account.Code).FirstOrCreate(&account).Error; err != nil {
+			log.Fatalf("Default account seed failed: %v", err)
+		}
 	}
 
 	// Drop incorrect polymorphic foreign key constraints if they exist

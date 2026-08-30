@@ -9,6 +9,7 @@ import (
 )
 
 func RegisterUserRoutes(api fiber.Router) {
+	api.Get("/rbac/permission-matrix", middleware.RequireRoles("owner"), handlers.GetPermissionMatrix)
 	api.Get("/users", middleware.RequireRoles("owner"), handlers.ListResource(func() interface{} { return &[]models.AppUser{} }))
 	api.Get("/users/:id", middleware.RequireRoles("owner"), handlers.GetResource(func() interface{} { return &models.AppUser{} }, "id", "id"))
 	api.Post("/users", middleware.RequireRoles("owner"), handlers.CreateUser)
