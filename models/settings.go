@@ -56,7 +56,8 @@ type ModuleSettings struct {
 
 // LivePayrollSettings represents live staff wage rates
 type LivePayrollSettings struct {
-	ID         uint `gorm:"primaryKey" json:"-"`
-	HourlyRate int  `json:"hourlyRate"`
-	ClipBonus  int  `json:"clipBonus"`
+	ID         uint           `gorm:"primaryKey" json:"-"`
+	HourlyRate int            `json:"hourlyRate"`
+	ClipBonus  int            `json:"clipBonus"`
+	StaffRates map[string]int `gorm:"serializer:json" json:"staffRates"`
 }

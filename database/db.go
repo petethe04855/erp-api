@@ -207,5 +207,21 @@ func ConnectDB() {
 	DB.Exec("ALTER TABLE audit_events DROP CONSTRAINT IF EXISTS fk_purchase_orders_audit_trail")
 	DB.Exec("ALTER TABLE audit_events DROP CONSTRAINT IF EXISTS fk_goods_receives_audit_trail")
 
+	// Synchronize Sales Order channel with source Quotation lead source if it was defaulted to Manual
+	DB.Exec(`
+		UPDATE sales_orders so
+		SET channel = CASE
+			WHEN LOWER(q.lead_source) LIKE '%tiktok%' THEN 'TikTok'
+			WHEN LOWER(q.lead_source) LIKE '%shopee%' THEN 'Shopee'
+			WHEN LOWER(q.lead_source) LIKE '%line%' THEN 'LINE'
+			ELSE q.lead_source
+		END
+		FROM quotations q
+		WHERE (so.quotation_id = q.id OR so.qt_ref = q.code)
+		  AND q.lead_source IS NOT NULL
+		  AND q.lead_source != ''
+		  AND (so.channel = 'Manual' OR so.channel = '' OR so.channel IS NULL)
+	`)
+
 	log.Println("Database schema migrated successfully")
 }

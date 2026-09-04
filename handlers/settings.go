@@ -119,6 +119,7 @@ func UpdateSettings(c *fiber.Ctx) error {
 			tx.First(&payroll)
 			payroll.HourlyRate = req.LivePayroll.HourlyRate
 			payroll.ClipBonus = req.LivePayroll.ClipBonus
+			payroll.StaffRates = req.LivePayroll.StaffRates
 			if err := tx.Save(&payroll).Error; err != nil {
 				return err
 			}

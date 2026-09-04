@@ -131,13 +131,25 @@ func ConvertQuotationToSalesOrder(c *fiber.Ctx) error {
 			return err
 		}
 
+		channel := "Manual"
+		lead := strings.ToLower(strings.TrimSpace(qt.LeadSource))
+		if strings.Contains(lead, "tiktok") {
+			channel = "TikTok"
+		} else if strings.Contains(lead, "shopee") {
+			channel = "Shopee"
+		} else if strings.Contains(lead, "line") {
+			channel = "LINE"
+		} else if qt.LeadSource != "" {
+			channel = qt.LeadSource
+		}
+
 		so = models.SalesOrder{
 			Code:        soCode,
 			Customer:    qt.Customer,
 			Date:        time.Now().Format("2006-01-02"),
 			Amount:      qt.Amount,
 			Status:      "Pending",
-			Channel:     "Manual",
+			Channel:     channel,
 			QuotationID: &qt.ID,
 			QtRef:       qt.Code,
 			SourceRef:   "",
@@ -197,7 +209,7 @@ func ConvertQuotationToSalesOrder(c *fiber.Ctx) error {
 	})
 
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 
 	database.DB.Preload("Lines").Preload("AuditTrail").First(&so, so.ID)

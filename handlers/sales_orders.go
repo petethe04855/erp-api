@@ -69,6 +69,18 @@ func CreateSalesOrder(c *fiber.Ctx) error {
 			})
 		}
 		quotation = &qt
+		lead := strings.ToLower(strings.TrimSpace(qt.LeadSource))
+		if strings.Contains(lead, "tiktok") {
+			so.Channel = "TikTok"
+		} else if strings.Contains(lead, "shopee") {
+			so.Channel = "Shopee"
+		} else if strings.Contains(lead, "line") {
+			so.Channel = "LINE"
+		} else if qt.LeadSource != "" {
+			so.Channel = qt.LeadSource
+		} else {
+			so.Channel = "Manual"
+		}
 	}
 
 	username := c.Locals("name")
@@ -161,20 +173,130 @@ func CreateSalesOrder(c *fiber.Ctx) error {
 	return c.JSON(so)
 }
 
+// expandProductRequirements recursively resolves a product SKU into required finished-goods components.
+// Non-bundle products map 1:1 to themselves. Bundles expand into their active component items.
+func expandProductRequirements(tx *gorm.DB, sku string, qty int, requirements map[string]int, visiting map[string]bool) error {
+	var product models.Product
+	if err := tx.First(&product, "sku = ?", sku).Error; err != nil {
+		return fmt.Errorf("ERP SKU %s not found", sku)
+	}
+	if !product.IsBundle && product.Type != "Bundle" {
+		requirements[sku] += qty
+		return nil
+	}
+	if visiting[sku] {
+		return fmt.Errorf("circular bundle detected at %s", sku)
+	}
+	visiting[sku] = true
+	defer delete(visiting, sku)
+
+	var components []models.BundleComponent
+	if err := tx.Where("bundle_sku = ?", sku).Find(&components).Error; err != nil {
+		return err
+	}
+	if len(components) == 0 {
+		// If bundle has no components defined in bundle_components table, fall back to treating it as regular product
+		requirements[sku] += qty
+		return nil
+	}
+	for _, component := range components {
+		if component.ComponentType == "expense" {
+			continue
+		}
+		yield := component.YieldFactor
+		if yield <= 0 {
+			yield = 1
+		}
+		reqQtyFloat := (component.Qty / yield) * float64(qty)
+		componentProductSKU := ""
+		if component.ComponentProductID != 0 {
+			var componentProduct models.Product
+			if err := tx.First(&componentProduct, component.ComponentProductID).Error; err == nil {
+				componentProductSKU = componentProduct.SKU
+				if component.Unit == "g" && componentProduct.BaseUnit == "kg" {
+					reqQtyFloat /= 1000
+				} else if component.Unit == "kg" && componentProduct.BaseUnit == "g" {
+					reqQtyFloat *= 1000
+				}
+			}
+		}
+		compSKU := strings.ToUpper(strings.TrimSpace(component.ComponentSku))
+		if compSKU == "" && componentProductSKU != "" {
+			compSKU = strings.ToUpper(strings.TrimSpace(componentProductSKU))
+		}
+		if compSKU == "" {
+			return fmt.Errorf("bundle %s has component with no valid SKU", sku)
+		}
+		componentQty := int(math.Ceil(reqQtyFloat))
+		if componentQty <= 0 {
+			return fmt.Errorf("bundle %s has invalid component quantity for %s", sku, compSKU)
+		}
+		if err := expandProductRequirements(tx, compSKU, componentQty, requirements, visiting); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // reserveSalesStock reserves physical finished-goods inventory for a sales line.
+// Bundle SKUs are expanded into component SKUs, which are reserved individually.
 func reserveSalesStock(tx *gorm.DB, product models.Product, qty int, direction int) error {
 	if qty <= 0 {
 		return fmt.Errorf("quantity must be greater than zero")
 	}
-	if direction > 0 && product.Stock-product.ReservedQty < qty {
-		available := product.Stock - product.ReservedQty
-		return fmt.Errorf("สต็อกไม่พอ: %s ต้องใช้ %d, พร้อมขาย %d", product.Name, qty, available)
+
+	requirements := make(map[string]int)
+	if err := expandProductRequirements(tx, product.SKU, qty, requirements, map[string]bool{}); err != nil {
+		return err
 	}
-	product.ReservedQty += direction * qty
-	if product.ReservedQty < 0 {
-		product.ReservedQty = 0
+
+	isPureSingleProduct := len(requirements) == 1
+	if _, ok := requirements[product.SKU]; !ok {
+		isPureSingleProduct = false
 	}
-	return tx.Save(&product).Error
+
+	if isPureSingleProduct {
+		if direction > 0 && product.Stock-product.ReservedQty < qty {
+			available := product.Stock - product.ReservedQty
+			return fmt.Errorf("สต็อกไม่พอ: %s ต้องใช้ %d, พร้อมขาย %d", product.Name, qty, available)
+		}
+		product.ReservedQty += direction * qty
+		if product.ReservedQty < 0 {
+			product.ReservedQty = 0
+		}
+		return tx.Save(&product).Error
+	}
+
+	// Bundle or multi-component product:
+	// If direction > 0 (reserving), first verify available stock on all components
+	if direction > 0 {
+		for compSKU, compQty := range requirements {
+			var compProd models.Product
+			if err := tx.First(&compProd, "sku = ?", compSKU).Error; err != nil {
+				return fmt.Errorf("component SKU %s not found: %w", compSKU, err)
+			}
+			available := compProd.Stock - compProd.ReservedQty
+			if available < compQty {
+				return fmt.Errorf("สต็อกไม่พอ: ส่วนประกอบ %s ของ %s ต้องใช้ %d, พร้อมขาย %d", compProd.Name, product.Name, compQty, available)
+			}
+		}
+	}
+
+	// Apply reservation to all components
+	for compSKU, compQty := range requirements {
+		var compProd models.Product
+		if err := tx.First(&compProd, "sku = ?", compSKU).Error; err != nil {
+			return fmt.Errorf("component SKU %s not found: %w", compSKU, err)
+		}
+		compProd.ReservedQty += direction * compQty
+		if compProd.ReservedQty < 0 {
+			compProd.ReservedQty = 0
+		}
+		if err := tx.Save(&compProd).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // PUT /api/sales-orders/:id/status
@@ -198,7 +320,7 @@ func UpdateSalesOrderStatus(c *fiber.Ctx) error {
 	if so.Status == "Completed" && req.Status != "Completed" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Completed Sales Entry is immutable; use Sales Return/Reversal"})
 	}
-	allowedStatus := map[string]bool{"Pending": true, "Processing": true, "Completed": true, "Cancelled": true}
+	allowedStatus := map[string]bool{"Pending": true, "Completed": true, "Cancelled": true}
 	if !allowedStatus[req.Status] {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid Sales Entry status"})
 	}
@@ -334,9 +456,6 @@ func deductSalesLineFefo(tx *gorm.DB, so *models.SalesOrder, line *models.SalesO
 	if err := tx.First(&product, "sku = ?", line.SKU).Error; err != nil {
 		return 0, err
 	}
-	if err := ensureLotBalance(tx, product); err != nil {
-		return 0, err
-	}
 
 	var existing int64
 	if err := tx.Model(&models.SalesStockAllocation{}).Where("sales_order_line_id = ?", line.ID).Count(&existing).Error; err != nil {
@@ -346,63 +465,155 @@ func deductSalesLineFefo(tx *gorm.DB, so *models.SalesOrder, line *models.SalesO
 		return 0, fmt.Errorf("sales line %d has already been allocated", line.ID)
 	}
 
-	var lots []models.StockLot
-	if err := tx.Where("sku = ? AND remaining_qty > 0", line.SKU).
-		Order("CASE WHEN expiry_date IS NULL OR expiry_date = '' THEN 1 ELSE 0 END, expiry_date ASC, received_date ASC, id ASC").
-		Find(&lots).Error; err != nil {
+	requirements := make(map[string]int)
+	if err := expandProductRequirements(tx, product.SKU, line.Qty, requirements, map[string]bool{}); err != nil {
 		return 0, err
 	}
 
-	remaining := line.Qty
+	isPureSingleProduct := len(requirements) == 1
+	if _, ok := requirements[product.SKU]; !ok {
+		isPureSingleProduct = false
+	}
+
+	if isPureSingleProduct {
+		if err := ensureLotBalance(tx, product); err != nil {
+			return 0, err
+		}
+
+		var lots []models.StockLot
+		if err := tx.Where("sku = ? AND remaining_qty > 0", line.SKU).
+			Order("CASE WHEN expiry_date IS NULL OR expiry_date = '' THEN 1 ELSE 0 END, expiry_date ASC, received_date ASC, id ASC").
+			Find(&lots).Error; err != nil {
+			return 0, err
+		}
+
+		remaining := line.Qty
+		totalCost := 0.0
+		for i := range lots {
+			if remaining == 0 {
+				break
+			}
+			lot := &lots[i]
+			qty := lot.RemainingQty
+			if qty > remaining {
+				qty = remaining
+			}
+			cost := float64(qty) * lot.LandedUnitCost
+			lot.RemainingQty -= qty
+			remaining -= qty
+			totalCost += cost
+			if err := tx.Save(lot).Error; err != nil {
+				return 0, err
+			}
+
+			allocation := models.SalesStockAllocation{
+				SalesOrderID: so.ID, SalesOrderLineID: line.ID, StockLotID: lot.ID,
+				SKU: line.SKU, Lot: lot.Lot, Qty: qty, UnitCost: lot.LandedUnitCost,
+				TotalCost: cost, ExpiryDate: lot.ExpiryDate,
+			}
+			if err := tx.Create(&allocation).Error; err != nil {
+				return 0, err
+			}
+			movement := models.StockMovement{
+				Code:      fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), lot.Lot),
+				ProductID: product.ID, SKU: line.SKU, Type: "OUT", Qty: qty,
+				RefDoc: so.Code, RefDocType: "sales_orders", RefDocID: &so.ID,
+				Date:      time.Now().Format("2006-01-02"),
+				Note:      fmt.Sprintf("SALES_OUT line %d FEFO lot %s exp %s cost %.2f", line.ID, lot.Lot, lot.ExpiryDate, cost),
+				ChangedBy: by,
+			}
+			if err := tx.Create(&movement).Error; err != nil {
+				return 0, err
+			}
+		}
+		if remaining > 0 {
+			return 0, fmt.Errorf("lot stock not sufficient for %s: missing %d", line.SKU, remaining)
+		}
+
+		product.Stock -= line.Qty
+		if product.Stock < 0 {
+			return 0, fmt.Errorf("stock cannot become negative for %s", line.SKU)
+		}
+		if err := tx.Save(&product).Error; err != nil {
+			return 0, err
+		}
+		line.TotalCost = totalCost
+		line.UnitCost = totalCost / float64(line.Qty)
+		if err := tx.Model(line).Updates(map[string]interface{}{"unit_cost": line.UnitCost, "total_cost": line.TotalCost}).Error; err != nil {
+			return 0, err
+		}
+		return totalCost, nil
+	}
+
+	// Bundle: deduct each component via FEFO
 	totalCost := 0.0
-	for i := range lots {
-		if remaining == 0 {
-			break
+	for compSKU, compNeeded := range requirements {
+		var compProd models.Product
+		if err := tx.First(&compProd, "sku = ?", compSKU).Error; err != nil {
+			return 0, err
 		}
-		lot := &lots[i]
-		qty := lot.RemainingQty
-		if qty > remaining {
-			qty = remaining
-		}
-		cost := float64(qty) * lot.LandedUnitCost
-		lot.RemainingQty -= qty
-		remaining -= qty
-		totalCost += cost
-		if err := tx.Save(lot).Error; err != nil {
+		if err := ensureLotBalance(tx, compProd); err != nil {
 			return 0, err
 		}
 
-		allocation := models.SalesStockAllocation{
-			SalesOrderID: so.ID, SalesOrderLineID: line.ID, StockLotID: lot.ID,
-			SKU: line.SKU, Lot: lot.Lot, Qty: qty, UnitCost: lot.LandedUnitCost,
-			TotalCost: cost, ExpiryDate: lot.ExpiryDate,
-		}
-		if err := tx.Create(&allocation).Error; err != nil {
+		var lots []models.StockLot
+		if err := tx.Where("sku = ? AND remaining_qty > 0", compSKU).
+			Order("CASE WHEN expiry_date IS NULL OR expiry_date = '' THEN 1 ELSE 0 END, expiry_date ASC, received_date ASC, id ASC").
+			Find(&lots).Error; err != nil {
 			return 0, err
 		}
-		movement := models.StockMovement{
-			Code:      fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), lot.Lot),
-			ProductID: product.ID, SKU: line.SKU, Type: "OUT", Qty: qty,
-			RefDoc: so.Code, RefDocType: "sales_orders", RefDocID: &so.ID,
-			Date:      time.Now().Format("2006-01-02"),
-			Note:      fmt.Sprintf("SALES_OUT line %d FEFO lot %s exp %s cost %.2f", line.ID, lot.Lot, lot.ExpiryDate, cost),
-			ChangedBy: by,
+
+		remaining := compNeeded
+		for i := range lots {
+			if remaining == 0 {
+				break
+			}
+			lot := &lots[i]
+			qty := lot.RemainingQty
+			if qty > remaining {
+				qty = remaining
+			}
+			cost := float64(qty) * lot.LandedUnitCost
+			lot.RemainingQty -= qty
+			remaining -= qty
+			totalCost += cost
+			if err := tx.Save(lot).Error; err != nil {
+				return 0, err
+			}
+
+			allocation := models.SalesStockAllocation{
+				SalesOrderID: so.ID, SalesOrderLineID: line.ID, StockLotID: lot.ID,
+				SKU: compSKU, Lot: lot.Lot, Qty: qty, UnitCost: lot.LandedUnitCost,
+				TotalCost: cost, ExpiryDate: lot.ExpiryDate,
+			}
+			if err := tx.Create(&allocation).Error; err != nil {
+				return 0, err
+			}
+			movement := models.StockMovement{
+				Code:      fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), lot.Lot),
+				ProductID: compProd.ID, SKU: compSKU, Type: "OUT", Qty: qty,
+				RefDoc: so.Code, RefDocType: "sales_orders", RefDocID: &so.ID,
+				Date:      time.Now().Format("2006-01-02"),
+				Note:      fmt.Sprintf("SALES_OUT line %d (bundle %s) FEFO lot %s exp %s cost %.2f", line.ID, product.SKU, lot.Lot, lot.ExpiryDate, cost),
+				ChangedBy: by,
+			}
+			if err := tx.Create(&movement).Error; err != nil {
+				return 0, err
+			}
 		}
-		if err := tx.Create(&movement).Error; err != nil {
+		if remaining > 0 {
+			return 0, fmt.Errorf("lot stock not sufficient for component %s: missing %d", compSKU, remaining)
+		}
+
+		compProd.Stock -= compNeeded
+		if compProd.Stock < 0 {
+			return 0, fmt.Errorf("stock cannot become negative for component %s", compSKU)
+		}
+		if err := tx.Save(&compProd).Error; err != nil {
 			return 0, err
 		}
-	}
-	if remaining > 0 {
-		return 0, fmt.Errorf("lot stock not sufficient for %s: missing %d", line.SKU, remaining)
 	}
 
-	product.Stock -= line.Qty
-	if product.Stock < 0 {
-		return 0, fmt.Errorf("stock cannot become negative for %s", line.SKU)
-	}
-	if err := tx.Save(&product).Error; err != nil {
-		return 0, err
-	}
 	line.TotalCost = totalCost
 	line.UnitCost = totalCost / float64(line.Qty)
 	if err := tx.Model(line).Updates(map[string]interface{}{"unit_cost": line.UnitCost, "total_cost": line.TotalCost}).Error; err != nil {
