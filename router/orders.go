@@ -13,6 +13,7 @@ func RegisterOrderRoutes(api fiber.Router) {
 	api.Get("/quotations/:id", handlers.GetResource(func() interface{} { return &models.Quotation{} }, "id", "id", "Lines"))
 	api.Post("/quotations", handlers.CreateQuotation)
 	api.Put("/quotations/:id/status", handlers.UpdateQuotationStatus)
+	api.Put("/quotations/:id/lead-source", handlers.UpdateQuotationLeadSource)
 	api.Post("/quotations/:id/convert", handlers.ConvertQuotationToSalesOrder)
 
 	// Sales Orders

@@ -35,6 +35,7 @@ func CreateSalesOrder(c *fiber.Ctx) error {
 	if so.Customer == "" || len(so.Lines) == 0 {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Sales Entry requires company name and at least one item"})
 	}
+	var quotation *models.Quotation
 	if so.SourceRef != "" {
 		var existing models.SalesOrder
 		if err := database.DB.Where("source_ref = ?", so.SourceRef).First(&existing).Error; err == nil {
@@ -48,6 +49,26 @@ func CreateSalesOrder(c *fiber.Ctx) error {
 		if err := database.DB.Where("qt_ref = ?", so.QtRef).First(&existing).Error; err == nil {
 			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "quotation has already been converted to Sales Order " + existing.Code})
 		}
+		var qt models.Quotation
+		if err := ByIDOrCode(database.DB, so.QtRef).Preload("Lines").First(&qt).Error; err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "quotation not found"})
+		}
+		if qt.Status != "Approved" && qt.Status != "Sent" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "quotation must be Approved or Sent"})
+		}
+		if strings.TrimSpace(so.Customer) != strings.TrimSpace(qt.Customer) {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Sales Entry customer must match quotation customer"})
+		}
+		so.Customer = qt.Customer
+		so.QuotationID = &qt.ID
+		so.QtRef = qt.Code
+		so.Lines = make([]models.SalesOrderLine, 0, len(qt.Lines))
+		for _, line := range qt.Lines {
+			so.Lines = append(so.Lines, models.SalesOrderLine{
+				ProductID: line.ProductID, SKU: line.SKU, Qty: line.Qty, UnitPrice: line.Price,
+			})
+		}
+		quotation = &qt
 	}
 
 	username := c.Locals("name")
@@ -102,6 +123,13 @@ func CreateSalesOrder(c *fiber.Ctx) error {
 
 		if err := tx.Create(&so).Error; err != nil {
 			return err
+		}
+		if quotation != nil {
+			quotation.Status = "Converted"
+			quotation.SoRef = so.Code
+			if err := tx.Save(quotation).Error; err != nil {
+				return err
+			}
 		}
 
 		for i := range so.Lines {
@@ -529,6 +557,9 @@ func snapshotInvoiceLinesFromSO(tx *gorm.DB, invoiceID uint, lines []models.Sale
 }
 
 func normalizeInvoiceTotals(inv *models.Invoice) {
+	if !inv.IncludeVAT {
+		inv.VATAmount = 0
+	}
 	if len(inv.Lines) == 0 {
 		return
 	}
@@ -562,6 +593,12 @@ func CreateInvoice(c *fiber.Ctx) error {
 	}
 	if inv.CustomerAddress == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invoice requires billing address"})
+	}
+	if !inv.IncludeVAT {
+		inv.VATAmount = 0
+		if inv.Subtotal > 0 {
+			inv.Amount = inv.Subtotal
+		}
 	}
 	if inv.CustomerTaxID != "" && !isThirteenDigitTaxID(inv.CustomerTaxID) {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "customer tax ID must contain 13 digits"})

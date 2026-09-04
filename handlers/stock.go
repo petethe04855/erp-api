@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"chawy-erp-api/database"
@@ -98,16 +99,24 @@ func CreateProductionRun(c *fiber.Ctx) error {
 // POST /api/goods-issues
 func CreateGoodsIssue(c *fiber.Ctx) error {
 	var req struct {
-		SKU    string `json:"sku"`
-		Qty    int    `json:"qty"`
-		Reason string `json:"reason"`
-		Note   string `json:"note"`
+		SKU      string `json:"sku"`
+		Qty      int    `json:"qty"`
+		Reason   string `json:"reason"`
+		Note     string `json:"note"`
+		Channel  string `json:"channel"`
+		OrderRef string `json:"orderRef"`
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	if req.SKU == "" || req.Reason == "" || req.Qty <= 0 {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "sku, reason, and qty greater than zero are required"})
+	}
+	if req.Channel != "Manual" && req.Channel != "Shopee" && req.Channel != "TikTok" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "channel must be Manual, Shopee, or TikTok"})
+	}
+	if req.Channel != "Manual" && strings.TrimSpace(req.OrderRef) == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "order reference is required for Shopee and TikTok"})
 	}
 
 	var product models.Product
@@ -137,6 +146,8 @@ func CreateGoodsIssue(c *fiber.Ctx) error {
 			Note:      req.Note,
 			Date:      time.Now().Format("2006-01-02"),
 			IssuedBy:  username.(string),
+			Channel:   req.Channel,
+			OrderRef:  strings.TrimSpace(req.OrderRef),
 		}
 
 		if err := tx.Create(&gi).Error; err != nil {
@@ -174,7 +185,6 @@ func CreateGoodsIssue(c *fiber.Ctx) error {
 // POST /api/stock-returns
 func CreateStockReturn(c *fiber.Ctx) error {
 	var req struct {
-		SoRef     string `json:"soRef"`
 		SKU       string `json:"sku"`
 		Qty       int    `json:"qty"`
 		Condition string `json:"condition"`
@@ -185,8 +195,8 @@ func CreateStockReturn(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	if req.SoRef == "" || req.SKU == "" || req.Qty <= 0 {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "sales order, sku, and qty greater than zero are required"})
+	if req.SKU == "" || req.Qty <= 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "sku and qty greater than zero are required"})
 	}
 	if req.Condition != "ดี" && req.Condition != "เสียหาย" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "condition must be ดี or เสียหาย"})
@@ -208,53 +218,25 @@ func CreateStockReturn(c *fiber.Ctx) error {
 
 	var sr models.StockReturn
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
-		var so models.SalesOrder
-		// Serialize returns for the same order so two users cannot both consume
-		// the same remaining returnable quantity.
-		if err := ByIDOrCode(tx.Clauses(clause.Locking{Strength: "UPDATE"}), req.SoRef).
-			Preload("Lines").First(&so).Error; err != nil {
-			return fmt.Errorf("sales order not found")
-		}
-		if so.Status != "Completed" {
-			return fmt.Errorf("only completed sales orders can be returned")
-		}
-		var soldQty int
-		for _, line := range so.Lines {
-			if line.SKU == req.SKU {
-				soldQty += line.Qty
-			}
-		}
-		if soldQty == 0 {
-			return fmt.Errorf("product %s is not on sales order %s", req.SKU, so.Code)
-		}
-		var returnedQty int64
-		if err := tx.Model(&models.StockReturn{}).Where("sales_order_id = ? AND sku = ? AND status <> ?", so.ID, req.SKU, "Cancelled").Select("COALESCE(SUM(qty), 0)").Scan(&returnedQty).Error; err != nil {
-			return err
-		}
-		if int(returnedQty)+req.Qty > soldQty {
-			return fmt.Errorf("return quantity exceeds quantity sold for %s", req.SKU)
-		}
 		code, err := NextCode(tx, "RET-2026-", &models.StockReturn{}, "code")
 		if err != nil {
 			return err
 		}
 
 		sr = models.StockReturn{
-			Code:         code,
-			SalesOrderID: &so.ID,
-			SoRef:        so.Code,
-			ProductID:    product.ID,
-			SKU:          req.SKU,
-			SkuName:      product.Name,
-			Qty:          req.Qty,
-			Condition:    req.Condition,
-			Reason:       req.Reason,
-			Note:         req.Note,
-			Date:         time.Now().Format("2006-01-02"),
-			ReturnedBy:   username.(string),
-			Refunded:     false,
-			Channel:      so.Channel,
-			Status:       "Pending Approval",
+			Code:       code,
+			ProductID:  product.ID,
+			SKU:        req.SKU,
+			SkuName:    product.Name,
+			Qty:        req.Qty,
+			Condition:  req.Condition,
+			Reason:     req.Reason,
+			Note:       req.Note,
+			Date:       time.Now().Format("2006-01-02"),
+			ReturnedBy: username.(string),
+			Refunded:   false,
+			Channel:    req.Channel,
+			Status:     "Pending Approval",
 		}
 
 		if err := tx.Create(&sr).Error; err != nil {
@@ -328,8 +310,38 @@ func UpdateStockReturnStatus(c *fiber.Ctx) error {
 }
 
 func completeStockReturn(tx *gorm.DB, sr *models.StockReturn, username string) error {
+	if sr.SalesOrderID == nil {
+		if sr.Condition != "ดี" {
+			return nil
+		}
+		var product models.Product
+		if err := tx.First(&product, sr.ProductID).Error; err != nil {
+			return err
+		}
+		product.Stock += sr.Qty
+		if err := tx.Save(&product).Error; err != nil {
+			return err
+		}
+		lot := models.StockLot{
+			Code: "LOT-" + sr.Code, ProductID: product.ID, SKU: sr.SKU,
+			Lot: "RETURN-" + sr.Code, Qty: sr.Qty, RemainingQty: sr.Qty,
+			LandedUnitCost: product.Cost, QCStatus: "Passed", ReceivedDate: sr.Date,
+			GrRef: sr.Code,
+		}
+		if err := tx.Create(&lot).Error; err != nil {
+			return err
+		}
+		movement := models.StockMovement{
+			Code:      fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), sr.SKU),
+			ProductID: product.ID, SKU: sr.SKU, Type: "IN", Qty: sr.Qty,
+			RefDoc: sr.Code, RefDocType: "stock_returns", RefDocID: &sr.ID,
+			Date: sr.Date, Note: "รับคืนสินค้าเข้าสต็อก", ChangedBy: username,
+		}
+		return tx.Create(&movement).Error
+	}
+
 	var so models.SalesOrder
-	if sr.SalesOrderID == nil || tx.Preload("Lines.Allocations").First(&so, *sr.SalesOrderID).Error != nil {
+	if tx.Preload("Lines.Allocations").First(&so, *sr.SalesOrderID).Error != nil {
 		return fmt.Errorf("original sales order and lot allocations are required")
 	}
 

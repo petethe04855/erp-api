@@ -13,6 +13,7 @@ type CompanySettings struct {
 	VatRate       int    `json:"vatRate"`
 	InvoicePrefix string `json:"invoicePrefix"`
 	SoPrefix      string `json:"soPrefix"`
+	LogoURL       string `json:"logoUrl"`
 }
 
 // NotificationSettings represents warning thresholds
