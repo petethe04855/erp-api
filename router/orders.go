@@ -35,4 +35,11 @@ func RegisterOrderRoutes(api fiber.Router) {
 	api.Post("/manual-orders", handlers.CreateManualOrder)
 	api.Put("/manual-orders/:id", handlers.UpdateManualOrder)
 	api.Delete("/manual-orders/:id", handlers.DeleteManualOrder)
+
+	// Customers
+	api.Get("/customers", handlers.ListResource(func() interface{} { return &[]models.Customer{} }))
+	api.Get("/customers/:id", handlers.GetResource(func() interface{} { return &models.Customer{} }, "id", "id"))
+	api.Post("/customers", handlers.CreateCustomer)
+	api.Put("/customers/:id", handlers.UpdateCustomer)
+	api.Delete("/customers/:id", handlers.DeleteCustomer)
 }

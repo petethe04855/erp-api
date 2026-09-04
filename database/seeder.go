@@ -170,5 +170,26 @@ func SeedData() {
 	var bomCount int64
 	DB.Model(&models.BOM{}).Count(&bomCount)
 
+	var customerCount int64
+	DB.Model(&models.Customer{}).Count(&customerCount)
+	if customerCount == 0 {
+		log.Println("Seeding initial Customer Master records...")
+		defaultCustomer := models.Customer{
+			ID:            "CUST-0001",
+			Name:          "P2J MANAGEMENT CO.,LTD",
+			TaxID:         "0105562081491",
+			Branch:        "สำนักงานใหญ่",
+			Phone:         "02-123-4567",
+			Email:         "billing@p2j.co.th",
+			Website:       "www.p2j.co.th",
+			ContactPerson: "คุณกฤษฎา ชื่นอารมณ์",
+			Address:       "99/19 หมู่ที่ 4 ตำบลบึงคำพร้อย อำเภอลำลูกกา จังหวัดปทุมธานี 12150",
+			LogoURL:       "",
+			CreatedAt:     "2026-01-01T00:00",
+			UpdatedAt:     "2026-01-01T00:00",
+		}
+		DB.Create(&defaultCustomer)
+	}
+
 	log.Println("Seeding configuration/default data completed.")
 }

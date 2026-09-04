@@ -161,6 +161,7 @@ func ConnectDB() {
 		&models.ContentScheduleItem{},
 		&models.LiveSession{},
 		&models.SamplingCampaign{},
+		&models.Customer{},
 
 		// Dependent tables with foreign keys
 		&models.StockAdjustmentItem{},
