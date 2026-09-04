@@ -13,6 +13,7 @@ type CompanySettings struct {
 	VatRate       int    `json:"vatRate"`
 	InvoicePrefix string `json:"invoicePrefix"`
 	SoPrefix      string `json:"soPrefix"`
+	LogoURL       string `json:"logoUrl"`
 }
 
 // NotificationSettings represents warning thresholds
@@ -55,7 +56,8 @@ type ModuleSettings struct {
 
 // LivePayrollSettings represents live staff wage rates
 type LivePayrollSettings struct {
-	ID         uint `gorm:"primaryKey" json:"-"`
-	HourlyRate int  `json:"hourlyRate"`
-	ClipBonus  int  `json:"clipBonus"`
+	ID         uint           `gorm:"primaryKey" json:"-"`
+	HourlyRate int            `json:"hourlyRate"`
+	ClipBonus  int            `json:"clipBonus"`
+	StaffRates map[string]int `gorm:"serializer:json" json:"staffRates"`
 }

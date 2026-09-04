@@ -13,6 +13,7 @@ func RegisterOrderRoutes(api fiber.Router) {
 	api.Get("/quotations/:id", handlers.GetResource(func() interface{} { return &models.Quotation{} }, "id", "id", "Lines"))
 	api.Post("/quotations", handlers.CreateQuotation)
 	api.Put("/quotations/:id/status", handlers.UpdateQuotationStatus)
+	api.Put("/quotations/:id/lead-source", handlers.UpdateQuotationLeadSource)
 	api.Post("/quotations/:id/convert", handlers.ConvertQuotationToSalesOrder)
 
 	// Sales Orders
@@ -34,4 +35,11 @@ func RegisterOrderRoutes(api fiber.Router) {
 	api.Post("/manual-orders", handlers.CreateManualOrder)
 	api.Put("/manual-orders/:id", handlers.UpdateManualOrder)
 	api.Delete("/manual-orders/:id", handlers.DeleteManualOrder)
+
+	// Customers
+	api.Get("/customers", handlers.ListResource(func() interface{} { return &[]models.Customer{} }))
+	api.Get("/customers/:id", handlers.GetResource(func() interface{} { return &models.Customer{} }, "id", "id"))
+	api.Post("/customers", handlers.CreateCustomer)
+	api.Put("/customers/:id", handlers.UpdateCustomer)
+	api.Delete("/customers/:id", handlers.DeleteCustomer)
 }

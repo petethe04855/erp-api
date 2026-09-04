@@ -32,6 +32,8 @@ type GoodsIssue struct {
 	Note      string `json:"note"`
 	Date      string `json:"date"`
 	IssuedBy  string `json:"issuedBy"`
+	Channel   string `json:"channel"`
+	OrderRef  string `gorm:"index" json:"orderRef"`
 }
 
 // ProductionRun records the conversion of BOM materials into finished goods.

@@ -2,12 +2,27 @@ package handlers
 
 import (
 	"sort"
+	"strings"
 	"time"
 
 	"chawy-erp-api/database"
 	"chawy-erp-api/models"
 	"github.com/gofiber/fiber/v2"
 )
+
+type revenueReportRow struct {
+	Date      string  `json:"date"`
+	Reference string  `json:"reference"`
+	Customer  string  `json:"customer"`
+	Channel   string  `json:"channel"`
+	Amount    float64 `json:"amount"`
+}
+
+type revenueReport struct {
+	Rows      []revenueReportRow `json:"rows"`
+	Total     float64            `json:"total"`
+	ByChannel map[string]float64 `json:"byChannel"`
+}
 
 func reportDateRange(c *fiber.Ctx) (string, string) {
 	from, to := c.Query("from"), c.Query("to")
@@ -178,6 +193,53 @@ func FinancialSummaryReport(c *fiber.Ctx) error {
 		}
 	}
 	return c.JSON(summarizeAccountAmounts(amounts))
+}
+
+// GET /api/reports/revenue
+// Revenue is recognized from completed Sales Entries only. Sales Entry is the
+// common record for Manual, Shopee, and TikTok, so platform orders are not
+// queried separately and cannot be counted twice.
+func RevenueReport(c *fiber.Ctx) error {
+	from, to := reportDateRange(c)
+	query := database.DB.Where("status = ?", "Completed")
+	if from != "" {
+		query = query.Where("date >= ?", from)
+	}
+	if to != "" {
+		query = query.Where("date <= ?", to)
+	}
+	var orders []models.SalesOrder
+	if err := query.Order("date DESC, id DESC").Find(&orders).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(buildRevenueReport(orders))
+}
+
+func buildRevenueReport(orders []models.SalesOrder) revenueReport {
+	report := revenueReport{
+		Rows:      make([]revenueReportRow, 0, len(orders)),
+		ByChannel: map[string]float64{"Manual": 0, "Shopee": 0, "TikTok": 0},
+	}
+	for _, order := range orders {
+		channel := ""
+		switch strings.ToLower(strings.TrimSpace(order.Channel)) {
+		case "manual":
+			channel = "Manual"
+		case "shopee":
+			channel = "Shopee"
+		case "tiktok", "tik tok":
+			channel = "TikTok"
+		default:
+			continue
+		}
+		report.Rows = append(report.Rows, revenueReportRow{
+			Date: order.Date, Reference: order.Code, Customer: order.Customer,
+			Channel: channel, Amount: order.Amount,
+		})
+		report.Total += order.Amount
+		report.ByChannel[channel] += order.Amount
+	}
+	return report
 }
 
 func summarizeAccountAmounts(amounts map[string]float64) fiber.Map {

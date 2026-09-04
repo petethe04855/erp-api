@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"chawy-erp-api/database"
@@ -98,10 +99,12 @@ func CreateProductionRun(c *fiber.Ctx) error {
 // POST /api/goods-issues
 func CreateGoodsIssue(c *fiber.Ctx) error {
 	var req struct {
-		SKU    string `json:"sku"`
-		Qty    int    `json:"qty"`
-		Reason string `json:"reason"`
-		Note   string `json:"note"`
+		SKU      string `json:"sku"`
+		Qty      int    `json:"qty"`
+		Reason   string `json:"reason"`
+		Note     string `json:"note"`
+		Channel  string `json:"channel"`
+		OrderRef string `json:"orderRef"`
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
@@ -109,10 +112,30 @@ func CreateGoodsIssue(c *fiber.Ctx) error {
 	if req.SKU == "" || req.Reason == "" || req.Qty <= 0 {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "sku, reason, and qty greater than zero are required"})
 	}
+	if req.Channel != "Manual" && req.Channel != "Shopee" && req.Channel != "TikTok" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "channel must be Manual, Shopee, or TikTok"})
+	}
+	if req.Channel != "Manual" && strings.TrimSpace(req.OrderRef) == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "order reference is required for Shopee and TikTok"})
+	}
 
 	var product models.Product
 	if err := database.DB.First(&product, "sku = ?", req.SKU).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Product not found"})
+	}
+	if req.Qty > product.Stock {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": fmt.Sprintf("issue quantity cannot exceed available quantity (%d)", product.Stock)})
+	}
+	if req.Channel == "TikTok" {
+		var order models.TiktokOrder
+		if err := database.DB.First(&order, "id = ?", strings.TrimSpace(req.OrderRef)).Error; err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "TikTok order reference not found"})
+		}
+	} else if req.Channel == "Shopee" {
+		var order models.SalesOrder
+		if err := database.DB.Where("channel = ? AND (code = ? OR source_ref = ?)", "Shopee", strings.TrimSpace(req.OrderRef), strings.TrimSpace(req.OrderRef)).First(&order).Error; err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Shopee order reference not found"})
+		}
 	}
 
 	username := c.Locals("name")
@@ -137,6 +160,8 @@ func CreateGoodsIssue(c *fiber.Ctx) error {
 			Note:      req.Note,
 			Date:      time.Now().Format("2006-01-02"),
 			IssuedBy:  username.(string),
+			Channel:   req.Channel,
+			OrderRef:  strings.TrimSpace(req.OrderRef),
 		}
 
 		if err := tx.Create(&gi).Error; err != nil {
@@ -174,7 +199,6 @@ func CreateGoodsIssue(c *fiber.Ctx) error {
 // POST /api/stock-returns
 func CreateStockReturn(c *fiber.Ctx) error {
 	var req struct {
-		SoRef     string `json:"soRef"`
 		SKU       string `json:"sku"`
 		Qty       int    `json:"qty"`
 		Condition string `json:"condition"`
@@ -185,8 +209,8 @@ func CreateStockReturn(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	if req.SoRef == "" || req.SKU == "" || req.Qty <= 0 {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "sales order, sku, and qty greater than zero are required"})
+	if req.SKU == "" || req.Qty <= 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "sku and qty greater than zero are required"})
 	}
 	if req.Condition != "ดี" && req.Condition != "เสียหาย" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "condition must be ดี or เสียหาย"})
@@ -200,6 +224,9 @@ func CreateStockReturn(c *fiber.Ctx) error {
 	if err := database.DB.First(&product, "sku = ?", req.SKU).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Product not found"})
 	}
+	if req.Qty > product.Stock {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": fmt.Sprintf("return quantity cannot exceed available quantity (%d)", product.Stock)})
+	}
 
 	username := c.Locals("name")
 	if username == nil {
@@ -208,53 +235,25 @@ func CreateStockReturn(c *fiber.Ctx) error {
 
 	var sr models.StockReturn
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
-		var so models.SalesOrder
-		// Serialize returns for the same order so two users cannot both consume
-		// the same remaining returnable quantity.
-		if err := ByIDOrCode(tx.Clauses(clause.Locking{Strength: "UPDATE"}), req.SoRef).
-			Preload("Lines").First(&so).Error; err != nil {
-			return fmt.Errorf("sales order not found")
-		}
-		if so.Status != "Completed" {
-			return fmt.Errorf("only completed sales orders can be returned")
-		}
-		var soldQty int
-		for _, line := range so.Lines {
-			if line.SKU == req.SKU {
-				soldQty += line.Qty
-			}
-		}
-		if soldQty == 0 {
-			return fmt.Errorf("product %s is not on sales order %s", req.SKU, so.Code)
-		}
-		var returnedQty int64
-		if err := tx.Model(&models.StockReturn{}).Where("sales_order_id = ? AND sku = ? AND status <> ?", so.ID, req.SKU, "Cancelled").Select("COALESCE(SUM(qty), 0)").Scan(&returnedQty).Error; err != nil {
-			return err
-		}
-		if int(returnedQty)+req.Qty > soldQty {
-			return fmt.Errorf("return quantity exceeds quantity sold for %s", req.SKU)
-		}
 		code, err := NextCode(tx, "RET-2026-", &models.StockReturn{}, "code")
 		if err != nil {
 			return err
 		}
 
 		sr = models.StockReturn{
-			Code:         code,
-			SalesOrderID: &so.ID,
-			SoRef:        so.Code,
-			ProductID:    product.ID,
-			SKU:          req.SKU,
-			SkuName:      product.Name,
-			Qty:          req.Qty,
-			Condition:    req.Condition,
-			Reason:       req.Reason,
-			Note:         req.Note,
-			Date:         time.Now().Format("2006-01-02"),
-			ReturnedBy:   username.(string),
-			Refunded:     false,
-			Channel:      so.Channel,
-			Status:       "Pending Approval",
+			Code:       code,
+			ProductID:  product.ID,
+			SKU:        req.SKU,
+			SkuName:    product.Name,
+			Qty:        req.Qty,
+			Condition:  req.Condition,
+			Reason:     req.Reason,
+			Note:       req.Note,
+			Date:       time.Now().Format("2006-01-02"),
+			ReturnedBy: username.(string),
+			Refunded:   false,
+			Channel:    req.Channel,
+			Status:     "Pending Approval",
 		}
 
 		if err := tx.Create(&sr).Error; err != nil {
@@ -328,8 +327,38 @@ func UpdateStockReturnStatus(c *fiber.Ctx) error {
 }
 
 func completeStockReturn(tx *gorm.DB, sr *models.StockReturn, username string) error {
+	if sr.SalesOrderID == nil {
+		if sr.Condition != "ดี" {
+			return nil
+		}
+		var product models.Product
+		if err := tx.First(&product, sr.ProductID).Error; err != nil {
+			return err
+		}
+		product.Stock += sr.Qty
+		if err := tx.Save(&product).Error; err != nil {
+			return err
+		}
+		lot := models.StockLot{
+			Code: "LOT-" + sr.Code, ProductID: product.ID, SKU: sr.SKU,
+			Lot: "RETURN-" + sr.Code, Qty: sr.Qty, RemainingQty: sr.Qty,
+			LandedUnitCost: product.Cost, QCStatus: "Passed", ReceivedDate: sr.Date,
+			GrRef: sr.Code,
+		}
+		if err := tx.Create(&lot).Error; err != nil {
+			return err
+		}
+		movement := models.StockMovement{
+			Code:      fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), sr.SKU),
+			ProductID: product.ID, SKU: sr.SKU, Type: "IN", Qty: sr.Qty,
+			RefDoc: sr.Code, RefDocType: "stock_returns", RefDocID: &sr.ID,
+			Date: sr.Date, Note: "รับคืนสินค้าเข้าสต็อก", ChangedBy: username,
+		}
+		return tx.Create(&movement).Error
+	}
+
 	var so models.SalesOrder
-	if sr.SalesOrderID == nil || tx.Preload("Lines.Allocations").First(&so, *sr.SalesOrderID).Error != nil {
+	if tx.Preload("Lines.Allocations").First(&so, *sr.SalesOrderID).Error != nil {
 		return fmt.Errorf("original sales order and lot allocations are required")
 	}
 
@@ -527,39 +556,51 @@ func ReverseCreditNote(c *fiber.Ctx) error {
 			totalQty := 0
 			for _, allocation := range allocations {
 				totalQty += allocation.Qty
-				var lot models.StockLot
-				if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&lot, allocation.StockLotID).Error; err != nil {
-					return err
-				}
-				if lot.RemainingQty < allocation.Qty {
-					return fmt.Errorf("cannot reverse credit note: returned lot %s has already been sold or consumed", allocation.Lot)
-				}
 			}
 			if product.Stock < totalQty {
-				return fmt.Errorf("cannot reverse credit note: returned stock has already been sold or consumed")
+				return fmt.Errorf("cannot reverse credit note: available stock is %d but %d is required", product.Stock, totalQty)
+			}
+			var availableLots []models.StockLot
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+				Where("sku = ? AND remaining_qty > 0", sr.SKU).
+				Order("CASE WHEN expiry_date IS NULL OR expiry_date = '' THEN 1 ELSE 0 END, expiry_date ASC, received_date ASC, id ASC").
+				Find(&availableLots).Error; err != nil {
+				return err
+			}
+			availableQty := 0
+			for _, lot := range availableLots {
+				availableQty += lot.RemainingQty
+			}
+			if availableQty < totalQty {
+				return fmt.Errorf("cannot reverse credit note: available lot quantity is %d but %d is required", availableQty, totalQty)
 			}
 			product.Stock -= totalQty
 			if err := tx.Save(&product).Error; err != nil {
 				return err
 			}
-			for _, allocation := range allocations {
-				var lot models.StockLot
-				if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&lot, allocation.StockLotID).Error; err != nil {
-					return err
+			remaining := totalQty
+			for _, lot := range availableLots {
+				if remaining == 0 {
+					break
 				}
-				lot.RemainingQty -= allocation.Qty
+				deductQty := lot.RemainingQty
+				if deductQty > remaining {
+					deductQty = remaining
+				}
+				lot.RemainingQty -= deductQty
 				if err := tx.Save(&lot).Error; err != nil {
 					return err
 				}
 				movement := models.StockMovement{
-					Code: fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), allocation.Lot), ProductID: product.ID,
-					SKU: allocation.SKU, Type: "OUT", Qty: allocation.Qty, RefDoc: cn.Code,
+					Code: fmt.Sprintf("SM-%d-%s", time.Now().UnixNano(), lot.Lot), ProductID: product.ID,
+					SKU: sr.SKU, Type: "OUT", Qty: deductQty, RefDoc: cn.Code,
 					RefDocType: "credit_note_reversal", RefDocID: &cn.ID, Date: time.Now().Format("2006-01-02"),
-					Note: fmt.Sprintf("ยกเลิกสินค้าคืน Lot %s", allocation.Lot), ChangedBy: username.(string),
+					Note: fmt.Sprintf("ยกเลิกสินค้าคืนด้วย FEFO Lot %s", lot.Lot), ChangedBy: username.(string),
 				}
 				if err := tx.Create(&movement).Error; err != nil {
 					return err
 				}
+				remaining -= deductQty
 			}
 		}
 		var original models.JournalEntry
@@ -589,6 +630,14 @@ func ReverseCreditNote(c *fiber.Ctx) error {
 		cn.Status = "Reversed"
 		cn.ReversedAt = time.Now().UTC().Format(time.RFC3339)
 		if err := tx.Save(&cn).Error; err != nil {
+			return err
+		}
+		// Clear the return's credit-note link so the UI no longer offers a
+		// second reversal for the same return.
+		sr.Refunded = false
+		sr.CreditNoteID = nil
+		sr.CreditNoteRef = ""
+		if err := tx.Save(&sr).Error; err != nil {
 			return err
 		}
 		return writeAuditLog(tx, username.(string), "Reverse", "credit_note", fmt.Sprint(cn.ID), "Posted", "Reversed", "", cn.Code)

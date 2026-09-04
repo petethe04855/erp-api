@@ -2,15 +2,17 @@ package models
 
 // Quotation represents a sales quotation
 type Quotation struct {
-	ID         uint            `gorm:"primaryKey;autoIncrement" json:"id"`
-	Code       string          `gorm:"uniqueIndex;not null" json:"code"`
-	Customer   string          `json:"customer"`
-	Date       string          `json:"date"`
-	ValidUntil string          `json:"validUntil"`
-	LeadSource string          `json:"leadSource"`
-	Amount     float64         `json:"amount"`
-	Status     string          `json:"status"`
-	Lines      []QuotationLine `gorm:"foreignKey:QuotationID" json:"lines"`
+	ID              uint            `gorm:"primaryKey;autoIncrement" json:"id"`
+	Code            string          `gorm:"uniqueIndex;not null" json:"code"`
+	Customer        string          `json:"customer"`
+	CustomerAddress string          `json:"customerAddress"`
+	Date            string          `json:"date"`
+	ValidUntil      string          `json:"validUntil"`
+	LeadSource      string          `json:"leadSource"`
+	Amount          float64         `json:"amount"`
+	Status          string          `json:"status"`
+	SoRef           string          `json:"soRef"`
+	Lines           []QuotationLine `gorm:"foreignKey:QuotationID" json:"lines"`
 }
 
 // QuotationLine represents items inside a quotation
@@ -120,6 +122,7 @@ type Invoice struct {
 	DueDate          string        `json:"dueDate"`
 	Subtotal         float64       `gorm:"default:0" json:"subtotal"`
 	VATAmount        float64       `gorm:"default:0" json:"vatAmount"`
+	IncludeVAT       bool          `gorm:"default:true" json:"includeVat"`
 	Amount           float64       `json:"amount"`
 	Paid             float64       `json:"paid"`
 	Credited         float64       `gorm:"default:0" json:"credited"`

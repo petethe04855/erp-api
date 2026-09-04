@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -52,6 +53,16 @@ func main() {
 		AllowMethods: "GET, POST, PUT, DELETE, OPTIONS",
 	}))
 	app.Use(middleware.StandardizeJSONResponse)
+
+	// Public company assets (for example the invoice logo) are served from
+	// api/image. The directory can be overridden for deployments via
+	// ERP_IMAGE_DIR, while keeping the local default simple and predictable.
+	imageDir := os.Getenv("ERP_IMAGE_DIR")
+	if imageDir == "" {
+		imageDir = "./image"
+	}
+	imageDir = filepath.Clean(imageDir)
+	app.Static("/api/images", imageDir, fiber.Static{Browse: false, Compress: false})
 
 	// Health Check Route
 	app.Get("/health", func(c *fiber.Ctx) error {

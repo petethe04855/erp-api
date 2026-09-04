@@ -64,6 +64,7 @@ func UpdateSettings(c *fiber.Ctx) error {
 			comp.VatRate = req.Company.VatRate
 			comp.InvoicePrefix = req.Company.InvoicePrefix
 			comp.SoPrefix = req.Company.SoPrefix
+			comp.LogoURL = req.Company.LogoURL
 			if err := tx.Save(&comp).Error; err != nil {
 				return err
 			}
@@ -118,6 +119,7 @@ func UpdateSettings(c *fiber.Ctx) error {
 			tx.First(&payroll)
 			payroll.HourlyRate = req.LivePayroll.HourlyRate
 			payroll.ClipBonus = req.LivePayroll.ClipBonus
+			payroll.StaffRates = req.LivePayroll.StaffRates
 			if err := tx.Save(&payroll).Error; err != nil {
 				return err
 			}
