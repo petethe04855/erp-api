@@ -1,7 +1,0 @@
-.git
-.gocache
-.env
-.env.local
-*.exe
-Dockerfile
-.dockerignore
