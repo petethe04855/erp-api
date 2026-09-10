@@ -7,6 +7,7 @@ import (
 	"chawy-erp-api/internal/domain/invoice"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type InvoiceRepository struct {
@@ -24,6 +25,20 @@ func (r *InvoiceRepository) Create(ctx context.Context, inv *invoice.Invoice) er
 func (r *InvoiceRepository) FindByID(ctx context.Context, id uint) (*invoice.Invoice, error) {
 	var inv invoice.Invoice
 	err := r.db.WithContext(ctx).First(&inv, id).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &inv, nil
+}
+
+// FindByIDForUpdate locks the invoice row with SELECT ... FOR UPDATE so
+// concurrent payments cannot overwrite each other's PaidAmount (FULL-18).
+func (r *InvoiceRepository) FindByIDForUpdate(ctx context.Context, id uint) (*invoice.Invoice, error) {
+	var inv invoice.Invoice
+	err := r.db.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).First(&inv, id).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil

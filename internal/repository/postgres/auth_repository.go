@@ -67,6 +67,20 @@ func (r *AuthRepository) CreateWithBootstrapRole(ctx context.Context, user *auth
 	return assignedRole, err
 }
 
+// FindActiveUserRole returns the user's current persisted role and active
+// flag for per-request authorization checks (FULL-03).
+func (r *AuthRepository) FindActiveUserRole(ctx context.Context, userID uint) (string, bool, error) {
+	var user auth.User
+	err := r.db.WithContext(ctx).Select("role", "is_active").First(&user, userID).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return user.Role, user.IsActive, nil
+}
+
 func (r *AuthRepository) ExistsByEmail(ctx context.Context, email string) (bool, error) {
 	var count int64
 	err := r.db.WithContext(ctx).Model(&auth.User{}).Where("email = ?", email).Count(&count).Error
@@ -99,4 +113,3 @@ func (r *AuthRepository) UpdateStatus(ctx context.Context, id uint, isActive boo
 func (r *AuthRepository) Delete(ctx context.Context, id uint) error {
 	return r.db.WithContext(ctx).Delete(&auth.User{}, id).Error
 }
-

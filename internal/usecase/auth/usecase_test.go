@@ -100,6 +100,13 @@ func (m *mockAuthRepo) ExistsByEmail(ctx context.Context, email string) (bool, e
 	return false, nil
 }
 
+func (m *mockAuthRepo) FindActiveUserRole(ctx context.Context, userID uint) (string, bool, error) {
+	if u, ok := m.users[userID]; ok {
+		return u.Role, u.IsActive, nil
+	}
+	return "", false, nil
+}
+
 func TestRegister_FirstUserBecomesOwner(t *testing.T) {
 	repo := newMockAuthRepo()
 	uc := usecaseAuth.NewAuthUsecase(repo, "test-secret", "24")
@@ -235,4 +242,3 @@ func TestUpdateUser_PreventSelfDeactivationOrRoleChange(t *testing.T) {
 	})
 	assert.ErrorIs(t, err, appErrors.ErrCannotModifySelf)
 }
-

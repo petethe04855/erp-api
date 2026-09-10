@@ -6,15 +6,15 @@ import (
 
 // CompanySettings represents company metadata and configurations
 type CompanySettings struct {
-	ID            uint    `gorm:"primaryKey" json:"-"`
-	Name          string  `json:"name" gorm:"size:255"`
-	TaxID         string  `json:"taxId" gorm:"size:50"`
-	Address       string  `json:"address" gorm:"type:text"`
-	Phone         string  `json:"phone" gorm:"size:50"`
-	Email         string  `json:"email" gorm:"size:255"`
-	Website       string  `json:"website" gorm:"size:255"`
-	Currency      string  `json:"currency" gorm:"size:10"`
-	VatRate       float64 `json:"vatRate"`
+	ID                  uint    `gorm:"primaryKey" json:"-"`
+	Name                string  `json:"name" gorm:"size:255"`
+	TaxID               string  `json:"taxId" gorm:"size:50"`
+	Address             string  `json:"address" gorm:"type:text"`
+	Phone               string  `json:"phone" gorm:"size:50"`
+	Email               string  `json:"email" gorm:"size:255"`
+	Website             string  `json:"website" gorm:"size:255"`
+	Currency            string  `json:"currency" gorm:"size:10"`
+	VatRate             float64 `json:"vatRate"`
 	InvoicePrefix       string  `json:"invoicePrefix" gorm:"size:50"`
 	SoPrefix            string  `json:"soPrefix" gorm:"size:50"`
 	LogoURL             string  `json:"logoUrl" gorm:"size:500"`

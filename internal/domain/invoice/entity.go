@@ -15,9 +15,11 @@ const (
 )
 
 type Invoice struct {
-	ID            uint       `json:"id" gorm:"primaryKey"`
-	InvoiceNo     string     `json:"invoice_no" gorm:"uniqueIndex;not null;size:100"`
-	OrderID       *uint      `json:"order_id" gorm:"index"`
+	ID        uint   `json:"id" gorm:"primaryKey"`
+	InvoiceNo string `json:"invoice_no" gorm:"uniqueIndex;not null;size:100"`
+	// FULL-20: unique index enforces one-invoice-per-order at the DB level.
+	// Postgres allows multiple NULLs, so non-order invoices are unaffected.
+	OrderID       *uint      `json:"order_id" gorm:"uniqueIndex"`
 	OrderNo       string     `json:"order_no" gorm:"size:100"`
 	CustomerID    uint       `json:"customer_id" gorm:"index"`
 	CustomerName  string     `json:"customer_name" gorm:"size:255"`
@@ -43,6 +45,9 @@ type Query struct {
 type Repository interface {
 	Create(ctx context.Context, inv *Invoice) error
 	FindByID(ctx context.Context, id uint) (*Invoice, error)
+	// FindByIDForUpdate locks the invoice row (SELECT ... FOR UPDATE) so
+	// concurrent payments cannot read the same PaidAmount snapshot.
+	FindByIDForUpdate(ctx context.Context, id uint) (*Invoice, error)
 	FindByOrderID(ctx context.Context, orderID uint) (*Invoice, error)
 	FindByInvoiceNo(ctx context.Context, no string) (*Invoice, error)
 	FindAll(ctx context.Context, q Query) ([]Invoice, int64, error)

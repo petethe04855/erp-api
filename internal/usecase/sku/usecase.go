@@ -15,16 +15,20 @@ type CreateInput struct {
 	Price     float64
 	CostPrice float64
 	IsBundle  bool
+	Image     string
 }
 
+// UpdateInput uses pointer fields so an update only touches what the caller
+// actually sent — omitted fields keep their stored values (FULL-11).
 type UpdateInput struct {
-	Name      string
-	Barcode   string
-	Category  string
-	Price     float64
-	CostPrice float64
-	IsBundle  bool
-	Status    string
+	Name      *string
+	Barcode   *string
+	Category  *string
+	Price     *float64
+	CostPrice *float64
+	IsBundle  *bool
+	Image     *string
+	Status    *string
 }
 
 type Usecase interface {
@@ -61,6 +65,7 @@ func (u *skuUsecase) Create(ctx context.Context, input CreateInput) (*domainSKU.
 		Price:     input.Price,
 		CostPrice: input.CostPrice,
 		IsBundle:  input.IsBundle,
+		Image:     input.Image,
 		Status:    "active",
 	}
 
@@ -112,25 +117,30 @@ func (u *skuUsecase) Update(ctx context.Context, id uint, input UpdateInput) (*d
 		return nil, appErrors.ErrSKUNotFound
 	}
 
-	if input.Name != "" {
-		item.Name = input.Name
+	if input.Name != nil && *input.Name != "" {
+		item.Name = *input.Name
 	}
-	if input.Barcode != "" {
-		item.Barcode = input.Barcode
+	if input.Barcode != nil {
+		item.Barcode = *input.Barcode
 	}
-	if input.Category != "" {
-		item.Category = input.Category
+	if input.Category != nil && *input.Category != "" {
+		item.Category = *input.Category
 	}
-	if input.Price > 0 {
-		item.Price = input.Price
+	if input.Price != nil && *input.Price > 0 {
+		item.Price = *input.Price
 	}
-	if input.CostPrice >= 0 {
-		item.CostPrice = input.CostPrice
+	if input.CostPrice != nil && *input.CostPrice >= 0 {
+		item.CostPrice = *input.CostPrice
 	}
-	if input.Status != "" {
-		item.Status = input.Status
+	if input.IsBundle != nil {
+		item.IsBundle = *input.IsBundle
 	}
-	item.IsBundle = input.IsBundle
+	if input.Image != nil {
+		item.Image = *input.Image
+	}
+	if input.Status != nil && *input.Status != "" {
+		item.Status = *input.Status
+	}
 
 	if err := u.repo.Update(ctx, item); err != nil {
 		return nil, err

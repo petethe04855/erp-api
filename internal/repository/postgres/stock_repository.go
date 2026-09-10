@@ -37,6 +37,23 @@ func (r *StockRepository) GetBySKUID(ctx context.Context, skuID, warehouseID uin
 	return &item, nil
 }
 
+// GetBySKUIDForUpdate locks the stock row with SELECT ... FOR UPDATE so the
+// availability check and quantity update happen under the same lock (FULL-07).
+func (r *StockRepository) GetBySKUIDForUpdate(ctx context.Context, skuID, warehouseID uint) (*stock.Stock, error) {
+	var item stock.Stock
+	err := r.getDB(ctx).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("sku_id = ? AND warehouse_id = ?", skuID, warehouseID).
+		First(&item).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &item, nil
+}
+
 func (r *StockRepository) FindAll(ctx context.Context, q stock.Query) ([]stock.Stock, int64, error) {
 	var items []stock.Stock
 	var total int64

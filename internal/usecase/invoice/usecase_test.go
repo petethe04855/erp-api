@@ -31,6 +31,10 @@ func (m *mockInvoiceRepo) FindByID(ctx context.Context, id uint) (*domainInvoice
 	return nil, nil
 }
 
+func (m *mockInvoiceRepo) FindByIDForUpdate(ctx context.Context, id uint) (*domainInvoice.Invoice, error) {
+	return m.FindByID(ctx, id)
+}
+
 func (m *mockInvoiceRepo) FindByOrderID(ctx context.Context, orderID uint) (*domainInvoice.Invoice, error) {
 	for _, inv := range m.invoices {
 		if inv.OrderID != nil && *inv.OrderID == orderID {
@@ -84,6 +88,10 @@ func (m *mockOrderRepo) FindByID(ctx context.Context, id uint) (*domainOrder.Ord
 		}
 	}
 	return nil, nil
+}
+
+func (m *mockOrderRepo) FindByIDForUpdate(ctx context.Context, id uint) (*domainOrder.Order, error) {
+	return m.FindByID(ctx, id)
 }
 
 func (m *mockOrderRepo) FindByOrderNo(ctx context.Context, orderNo string) (*domainOrder.Order, error) {

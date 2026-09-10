@@ -52,6 +52,9 @@ type Query struct {
 type Repository interface {
 	Create(ctx context.Context, order *Order) error
 	FindByID(ctx context.Context, id uint) (*Order, error)
+	// FindByIDForUpdate locks the order row (SELECT ... FOR UPDATE) to prevent
+	// concurrent ship/cancel races.
+	FindByIDForUpdate(ctx context.Context, id uint) (*Order, error)
 	FindByOrderNo(ctx context.Context, orderNo string) (*Order, error)
 	FindAll(ctx context.Context, query Query) ([]Order, int64, error)
 	UpdateStatus(ctx context.Context, id uint, status Status) error

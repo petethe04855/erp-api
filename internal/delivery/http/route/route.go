@@ -21,7 +21,9 @@ type Config struct {
 	WorkspaceHandler  *handler.WorkspaceHandler
 	TikTokHandler     *handler.TikTokHandler
 	SettingsHandler   *handler.SettingsHandler
+	UploadHandler     *handler.UploadHandler
 	JWTSecret         string
+	UserStatusLoader  middleware.UserStatusLoader
 }
 
 func RegisterRoutes(cfg Config) {
@@ -40,10 +42,10 @@ func RegisterRoutes(cfg Config) {
 	authGroup := api.Group("/auth")
 	authGroup.Post("/register", cfg.AuthHandler.Register)
 	authGroup.Post("/login", cfg.AuthHandler.Login)
-	authGroup.Get("/me", middleware.AuthMiddleware(cfg.JWTSecret), cfg.AuthHandler.Me)
+	authGroup.Get("/me", middleware.AuthMiddleware(cfg.JWTSecret, cfg.UserStatusLoader), cfg.AuthHandler.Me)
 
 	// Protected Routes Group
-	protected := api.Group("/", middleware.AuthMiddleware(cfg.JWTSecret))
+	protected := api.Group("/", middleware.AuthMiddleware(cfg.JWTSecret, cfg.UserStatusLoader))
 
 	// RBAC Matrix (API-01)
 	protected.Get("/rbac/permission-matrix", cfg.AuthHandler.GetPermissionMatrix)
@@ -139,8 +141,10 @@ func RegisterRoutes(cfg Config) {
 	ws.Get("/goods-receives", cfg.WorkspaceHandler.GetGoodsReceives)
 	ws.Get("/goods-issues", cfg.WorkspaceHandler.GetGoodsIssues)
 
+	protected.Post("/skus/resolve", cfg.WorkspaceHandler.ResolveSKUs)
 	protected.Get("/products/:code", cfg.WorkspaceHandler.GetProductByCode)
 	protected.Post("/products", middleware.RequireRole("owner", "admin", "warehouse", "sales"), cfg.WorkspaceHandler.CreateProduct)
+	protected.Put("/products/:code", middleware.RequireRole("owner", "admin", "warehouse", "sales"), cfg.WorkspaceHandler.UpdateProduct)
 	protected.Put("/products/:code/status", middleware.RequireRole("owner", "admin", "warehouse", "sales"), cfg.WorkspaceHandler.UpdateProductStatus)
 	protected.Delete("/products/:code", middleware.RequireRole("owner", "admin", "accountant"), cfg.WorkspaceHandler.DeleteProduct)
 	protected.Post("/sales-orders", middleware.RequireRole("owner", "admin", "sales"), cfg.WorkspaceHandler.CreateSalesOrder)
@@ -152,7 +156,9 @@ func RegisterRoutes(cfg Config) {
 	protected.Get("/bundle-components/:sku", cfg.WorkspaceHandler.GetBundleComponents)
 
 	// Customer Workspace & Detail endpoints
-	protected.Get("/customers/:id", cfg.WorkspaceHandler.GetCustomerByID)
+	// FULL-30: the native /customers/:id above already serves GET detail with
+	// the compatibility DTO response; the duplicate registration that shadowed
+	// it (and returned raw domain JSON) has been removed.
 	protected.Put("/customers/:id/status", middleware.RequireRole("owner", "admin", "sales"), cfg.WorkspaceHandler.UpdateCustomerStatus)
 
 	// Quotation endpoints
@@ -171,6 +177,9 @@ func RegisterRoutes(cfg Config) {
 	protected.Get("/goods-receives", cfg.WorkspaceHandler.GetGoodsReceives)
 	protected.Post("/goods-receives", middleware.RequireRole("owner", "admin", "warehouse"), cfg.WorkspaceHandler.CreateGoodsReceive)
 	protected.Get("/goods-receives/:id", cfg.WorkspaceHandler.GetGoodsReceiveByID)
+
+	// Upload Routes (Image upload max 5MB, png/jpg/jpeg)
+	protected.Post("/upload/image", cfg.UploadHandler.UploadImage)
 
 	// Goods Issues REST endpoints
 	protected.Get("/goods-issues", cfg.WorkspaceHandler.GetGoodsIssues)

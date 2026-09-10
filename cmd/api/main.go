@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"os"
 	"strconv"
 	"time"
 
@@ -17,8 +18,8 @@ import (
 	domainOrder "chawy-erp-api/internal/domain/order"
 	domainPurchasing "chawy-erp-api/internal/domain/purchasing"
 	domainQuotation "chawy-erp-api/internal/domain/quotation"
-	domainSKU "chawy-erp-api/internal/domain/sku"
 	domainSettings "chawy-erp-api/internal/domain/settings"
+	domainSKU "chawy-erp-api/internal/domain/sku"
 	domainStock "chawy-erp-api/internal/domain/stock"
 	domainTikTok "chawy-erp-api/internal/domain/tiktok"
 	"chawy-erp-api/internal/repository/postgres"
@@ -29,8 +30,8 @@ import (
 	usecaseOrder "chawy-erp-api/internal/usecase/order"
 	usecasePurchasing "chawy-erp-api/internal/usecase/purchasing"
 	usecaseReport "chawy-erp-api/internal/usecase/report"
-	usecaseSKU "chawy-erp-api/internal/usecase/sku"
 	usecaseSettings "chawy-erp-api/internal/usecase/settings"
+	usecaseSKU "chawy-erp-api/internal/usecase/sku"
 	usecaseStock "chawy-erp-api/internal/usecase/stock"
 	usecaseTikTok "chawy-erp-api/internal/usecase/tiktok"
 	"chawy-erp-api/pkg/database"
@@ -46,6 +47,11 @@ import (
 func main() {
 	// 1. Load configuration
 	cfg := config.LoadConfig()
+
+	// FULL-02: refuse to start production without a real JWT secret
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("[FATAL] Invalid configuration: %v", err)
+	}
 
 	// 2. Database Connection
 	db, err := database.NewConnection(cfg)
@@ -106,8 +112,8 @@ func main() {
 		END $$;
 	`).Error
 
-	// 3.1 Seed initial admin user if not exists
-	seedDefaultAdmin(db)
+	// 3.1 Seed initial admin user only in development (FULL-01)
+	seedDefaultAdmin(db, cfg.Environment)
 
 	// 4. Dependency Injection - Repositories
 	authRepo := postgres.NewAuthRepository(db)
@@ -122,14 +128,16 @@ func main() {
 	settingsRepo := postgres.NewSettingsRepository(db)
 
 	// 5. Dependency Injection - Usecases
+	txManager := database.NewTxManager(db)
+
 	authUsecase := usecaseAuth.NewAuthUsecase(authRepo, cfg.JWTSecret, cfg.JWTExpHours)
 	skuUsecase := usecaseSKU.NewSKUUsecase(skuRepo)
 	bundleUsecase := usecaseBundle.NewBundleUsecase(bundleRepo, skuRepo, stockRepo)
-	stockUsecase := usecaseStock.NewStockUsecase(stockRepo)
+	stockUsecase := usecaseStock.NewStockUsecaseWithTx(stockRepo, txManager)
 	customerUsecase := usecaseCustomer.NewCustomerUsecase(customerRepo)
 	orderUsecase := usecaseOrder.NewOrderUsecase(db, orderRepo, skuRepo, bundleRepo, stockRepo)
-	purchasingUsecase := usecasePurchasing.NewPurchasingUsecase(db, purchasingRepo, skuRepo, stockRepo)
-	invoiceUsecase := usecaseInvoice.NewInvoiceUsecase(invoiceRepo, orderRepo)
+	purchasingUsecase := usecasePurchasing.NewPurchasingUsecaseWithTx(db, purchasingRepo, skuRepo, stockRepo, txManager)
+	invoiceUsecase := usecaseInvoice.NewInvoiceUsecaseWithTx(invoiceRepo, orderRepo, txManager)
 	reportUsecase := usecaseReport.NewReportUsecase(db)
 	tiktokUsecase := usecaseTikTok.NewTikTokUsecase(cfg, db, tiktokRepo, orderRepo, skuRepo, bundleRepo, stockRepo)
 	settingsUsecase := usecaseSettings.NewSettingsUsecase(settingsRepo)
@@ -147,11 +155,13 @@ func main() {
 	workspaceHdl := handler.NewWorkspaceHandler(db, orderUsecase)
 	tiktokHdl := handler.NewTikTokHandler(tiktokUsecase)
 	settingsHdl := handler.NewSettingsHandler(settingsUsecase)
+	uploadHdl := handler.NewUploadHandler()
 
 	// 7. Initialize Fiber App
 	app := fiber.New(fiber.Config{
 		AppName:      "Chawy ERP API - Clean Architecture v2",
 		ErrorHandler: middleware.GlobalErrorHandler,
+		BodyLimit:    10 * 1024 * 1024, // 10MB for image uploads
 	})
 
 	// 8. Global Middlewares
@@ -165,6 +175,9 @@ func main() {
 		AllowMethods:     "GET, POST, PUT, DELETE, OPTIONS",
 		AllowCredentials: false,
 	}))
+
+	// Serve uploaded files statically
+	app.Static("/uploads", "./uploads")
 
 	// 9. Register Routes
 	route.RegisterRoutes(route.Config{
@@ -181,7 +194,9 @@ func main() {
 		WorkspaceHandler:  workspaceHdl,
 		TikTokHandler:     tiktokHdl,
 		SettingsHandler:   settingsHdl,
+		UploadHandler:     uploadHdl,
 		JWTSecret:         cfg.JWTSecret,
+		UserStatusLoader:  authRepo,
 	})
 
 	// 9.1 Start Background TikTok Sync Scheduler
@@ -216,35 +231,51 @@ func startTiktokSyncScheduler(cfg *config.Config, tiktokUsecase usecaseTikTok.Us
 	}()
 }
 
-func seedDefaultAdmin(db *gorm.DB) {
+// seedDefaultAdmin creates development-only admin accounts when the users
+// table is empty. FULL-01: never runs in production, never logs credentials.
+func seedDefaultAdmin(db *gorm.DB, environment string) {
+	if environment == "production" {
+		log.Println("[INFO] Skipping default admin seed in production; use a bootstrap step to create the first owner account")
+		return
+	}
+
 	var count int64
 	db.Model(&domainAuth.User{}).Count(&count)
-	if count == 0 {
-		hashed, err := bcrypt.GenerateFromPassword([]byte("admin123"), bcrypt.DefaultCost)
-		if err != nil {
-			log.Printf("[WARN] Failed to hash admin password: %v", err)
-			return
-		}
-		hashedStr := string(hashed)
-		defaultUsers := []domainAuth.User{
-			{
-				Email:    "admin@example.com",
-				Name:     "Admin System",
-				Role:     "admin",
-				Password: hashedStr,
-			},
-			{
-				Email:    "admin@mail.com",
-				Name:     "Admin Mail",
-				Role:     "admin",
-				Password: hashedStr,
-			},
-		}
-		for _, u := range defaultUsers {
-			if err := db.Create(&u).Error; err != nil {
-				log.Printf("[WARN] Failed to seed user %s: %v", u.Email, err)
-			}
-		}
-		log.Println("[INFO] Successfully seeded default users: admin@example.com / admin@mail.com (password: admin123)")
+	if count > 0 {
+		return
 	}
+
+	devPassword := os.Getenv("DEV_SEED_PASSWORD")
+	if devPassword == "" {
+		devPassword = "admin123"
+	}
+
+	hashed, err := bcrypt.GenerateFromPassword([]byte(devPassword), bcrypt.DefaultCost)
+	if err != nil {
+		log.Printf("[WARN] Failed to hash admin password: %v", err)
+		return
+	}
+	hashedStr := string(hashed)
+	defaultUsers := []domainAuth.User{
+		{
+			Email:    "admin@example.com",
+			Name:     "Admin System",
+			// Must be a role accepted by isValidRole() (owner/sales/warehouse/accountant);
+			// "admin" is not a valid role and would break role-based UI filtering.
+			Role:     "owner",
+			Password: hashedStr,
+		},
+		{
+			Email:    "admin@mail.com",
+			Name:     "Admin Mail",
+			Role:     "owner",
+			Password: hashedStr,
+		},
+	}
+	for _, u := range defaultUsers {
+		if err := db.Create(&u).Error; err != nil {
+			log.Printf("[WARN] Failed to seed user %s: %v", u.Email, err)
+		}
+	}
+	log.Println("[INFO] Development seed complete: created default admin accounts (never run in production; override password via DEV_SEED_PASSWORD)")
 }

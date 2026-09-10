@@ -110,7 +110,14 @@ type Repository interface {
 	// Purchase Order
 	CreatePO(ctx context.Context, po *PurchaseOrder) error
 	FindPOByID(ctx context.Context, id uint) (*PurchaseOrder, error)
+	// FindPOByIDForUpdate locks the PO row (SELECT ... FOR UPDATE) within the
+	// caller's transaction so concurrent receives serialize (FULL-09).
+	FindPOByIDForUpdate(ctx context.Context, id uint) (*PurchaseOrder, error)
 	FindAllPOs(ctx context.Context, query POQuery) ([]PurchaseOrder, int64, error)
 	UpdatePOStatus(ctx context.Context, id uint, status POStatus) error
 	UpdatePO(ctx context.Context, po *PurchaseOrder) error
+	UpdatePOItemReceivedQty(ctx context.Context, poItemID uint, receivedQty int) error
+
+	// Goods Receive documents
+	CreateGoodsReceiveDoc(ctx context.Context, gr *GoodsReceive, items []GoodsReceiveItem) error
 }

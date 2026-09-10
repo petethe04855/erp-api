@@ -37,6 +37,7 @@ func (h *SKUHandler) Create(c *fiber.Ctx) error {
 		Price:     req.Price,
 		CostPrice: req.CostPrice,
 		IsBundle:  req.IsBundle,
+		Image:     req.Image,
 	})
 	if err != nil {
 		return err
@@ -117,6 +118,7 @@ func (h *SKUHandler) Update(c *fiber.Ctx) error {
 		Price:     req.Price,
 		CostPrice: req.CostPrice,
 		IsBundle:  req.IsBundle,
+		Image:     req.Image,
 		Status:    req.Status,
 	})
 	if err != nil {
@@ -149,6 +151,7 @@ func toSKUResponse(item *domainSKU.SKU) dto.SKUResponse {
 		Price:     item.Price,
 		CostPrice: item.CostPrice,
 		IsBundle:  item.IsBundle,
+		Image:     item.Image,
 		Status:    item.Status,
 	}
 }

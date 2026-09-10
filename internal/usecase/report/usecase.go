@@ -162,11 +162,11 @@ func (u *reportUsecase) GetFinancialSummary(ctx context.Context, month string) (
 
 func (u *reportUsecase) GetInventoryValuation(ctx context.Context) (*domainReport.InventoryValuation, error) {
 	type stockSKUJoin struct {
-		SKUCode     string
-		SKUName     string
-		Quantity    int
-		CostPrice   float64
-		Category    string
+		SKUCode   string
+		SKUName   string
+		Quantity  int
+		CostPrice float64
+		Category  string
 	}
 
 	var results []stockSKUJoin

@@ -104,12 +104,12 @@ type ProductSKU struct {
 }
 
 type ProductItem struct {
-	ID          string       `json:"id"`
-	Title       string       `json:"title"`
-	Status      string       `json:"status"`
-	SKUs        []ProductSKU `json:"skus"`
-	CreateTime  int64        `json:"create_time"`
-	UpdateTime  int64        `json:"update_time"`
+	ID         string       `json:"id"`
+	Title      string       `json:"title"`
+	Status     string       `json:"status"`
+	SKUs       []ProductSKU `json:"skus"`
+	CreateTime int64        `json:"create_time"`
+	UpdateTime int64        `json:"update_time"`
 }
 
 type ProductSearchResponse struct {

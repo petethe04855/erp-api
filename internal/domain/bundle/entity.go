@@ -16,10 +16,10 @@ type BundleItem struct {
 }
 
 type ExplodedItem struct {
-	ComponentSKU string  `json:"component_sku"`
-	Quantity     int     `json:"quantity"`
-	AvailableQty int     `json:"available_qty"`
-	HasStock     bool    `json:"has_stock"`
+	ComponentSKU string `json:"component_sku"`
+	Quantity     int    `json:"quantity"`
+	AvailableQty int    `json:"available_qty"`
+	HasStock     bool   `json:"has_stock"`
 }
 
 type Repository interface {

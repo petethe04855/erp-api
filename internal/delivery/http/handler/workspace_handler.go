@@ -53,6 +53,7 @@ type ProductRecord struct {
 	IsBundle       bool    `json:"isBundle"`
 	IsActive       bool    `json:"isActive"`
 	Available      int     `json:"available"`
+	Image          string  `json:"image"`
 }
 
 func (h *WorkspaceHandler) GetProducts(c *fiber.Ctx) error {
@@ -140,6 +141,7 @@ func (h *WorkspaceHandler) GetProducts(c *fiber.Ctx) error {
 			IsBundle:       s.IsBundle,
 			IsActive:       s.Status == "active",
 			Available:      available,
+			Image:          s.Image,
 		}
 	}
 
@@ -212,6 +214,7 @@ func (h *WorkspaceHandler) GetProductByCode(c *fiber.Ctx) error {
 		IsBundle:       s.IsBundle,
 		IsActive:       s.Status == "active",
 		Available:      available,
+		Image:          s.Image,
 	}
 	return response.OK(c, rec)
 }
@@ -225,6 +228,7 @@ func (h *WorkspaceHandler) CreateProduct(c *fiber.Ctx) error {
 		RetailPrice float64 `json:"retailPrice"`
 		Cost        float64 `json:"cost"`
 		IsBundle    bool    `json:"isBundle"`
+		Image       string  `json:"image"`
 		Components  []struct {
 			ComponentSKU string `json:"componentSku"`
 			SKU          string `json:"sku"`
@@ -277,6 +281,7 @@ func (h *WorkspaceHandler) CreateProduct(c *fiber.Ctx) error {
 			Price:     req.RetailPrice,
 			CostPrice: req.Cost,
 			IsBundle:  req.IsBundle,
+			Image:     req.Image,
 			Status:    "active",
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
@@ -349,6 +354,7 @@ func (h *WorkspaceHandler) CreateProduct(c *fiber.Ctx) error {
 		Cost:        skuEntity.CostPrice,
 		IsBundle:    skuEntity.IsBundle,
 		IsActive:    true,
+		Image:       skuEntity.Image,
 	}
 	return response.Created(c, rec, "Product created successfully")
 }
@@ -369,7 +375,9 @@ func (h *WorkspaceHandler) UpdateProductStatus(c *fiber.Ctx) error {
 	var s domainSKU.SKU
 	query := h.db.WithContext(c.Context())
 	if id, err := strconv.ParseUint(code, 10, 32); err == nil {
-		query = query.Where("id = ? OR sku = ?", id, code)
+		// FULL-12: numeric-looking codes match ID only, never a SKU string,
+		// so /products/42 can never hit a different product whose SKU is "42".
+		query = query.Where("id = ?", id)
 	} else {
 		query = query.Where("sku = ?", code)
 	}
@@ -399,6 +407,80 @@ func (h *WorkspaceHandler) UpdateProductStatus(c *fiber.Ctx) error {
 	}, "Product status updated successfully")
 }
 
+func (h *WorkspaceHandler) UpdateProduct(c *fiber.Ctx) error {
+	code := strings.TrimSpace(c.Params("code"))
+	if code == "" {
+		return response.BadRequest(c, "Product SKU is required")
+	}
+
+	var req struct {
+		Name        *string  `json:"name"`
+		Type        *string  `json:"type"`
+		RetailPrice *float64 `json:"retailPrice"`
+		Cost        *float64 `json:"cost"`
+		IsBundle    *bool    `json:"isBundle"`
+		Image       *string  `json:"image"`
+		Status      *string  `json:"status"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return response.BadRequest(c, "Invalid request body")
+	}
+
+	var s domainSKU.SKU
+	query := h.db.WithContext(c.Context())
+	if id, err := strconv.ParseUint(code, 10, 32); err == nil {
+		query = query.Where("id = ?", id)
+	} else {
+		query = query.Where("sku = ?", code)
+	}
+
+	if err := query.First(&s).Error; err != nil {
+		return response.NotFound(c, "Product not found")
+	}
+
+	// FULL-11: only fields present in the payload are applied; omitted fields
+	// keep their stored values (cost, bundle flag, image survive partial updates).
+	if req.Name != nil && *req.Name != "" {
+		s.Name = *req.Name
+	}
+	if req.Type != nil {
+		s.Category = *req.Type
+	}
+	if req.RetailPrice != nil && *req.RetailPrice > 0 {
+		s.Price = *req.RetailPrice
+	}
+	if req.Cost != nil && *req.Cost >= 0 {
+		s.CostPrice = *req.Cost
+	}
+	if req.IsBundle != nil {
+		s.IsBundle = *req.IsBundle
+	}
+	if req.Image != nil {
+		s.Image = *req.Image
+	}
+	if req.Status != nil && *req.Status != "" {
+		s.Status = strings.ToLower(strings.TrimSpace(*req.Status))
+	}
+	s.UpdatedAt = time.Now()
+
+	if err := h.db.WithContext(c.Context()).Save(&s).Error; err != nil {
+		return response.InternalServerError(c, "Failed to update product: "+err.Error())
+	}
+
+	rec := ProductRecord{
+		ID:          s.ID,
+		SKU:         s.SKU,
+		Name:        s.Name,
+		Type:        s.Category,
+		RetailPrice: s.Price,
+		Cost:        s.CostPrice,
+		IsBundle:    s.IsBundle,
+		IsActive:    s.Status == "active",
+		Image:       s.Image,
+	}
+	return response.OK(c, rec, "Product updated successfully")
+}
+
 func (h *WorkspaceHandler) DeleteProduct(c *fiber.Ctx) error {
 	code := strings.TrimSpace(c.Params("code"))
 	if code == "" {
@@ -408,7 +490,7 @@ func (h *WorkspaceHandler) DeleteProduct(c *fiber.Ctx) error {
 	var s domainSKU.SKU
 	query := h.db.WithContext(c.Context())
 	if id, err := strconv.ParseUint(code, 10, 32); err == nil {
-		query = query.Where("id = ? OR sku = ?", id, code)
+		query = query.Where("id = ?", id)
 	} else {
 		query = query.Where("sku = ?", code)
 	}
@@ -417,12 +499,53 @@ func (h *WorkspaceHandler) DeleteProduct(c *fiber.Ctx) error {
 		return response.NotFound(c, "Product not found")
 	}
 
-	// Delete associated stock records if any
-	_ = h.db.WithContext(c.Context()).Where("sku_id = ? OR sku_code = ?", s.ID, s.SKU).Delete(&domainStock.Stock{}).Error
+	// FULL-13: reference check + delete run in ONE transaction; the reference
+	// query error is no longer discarded. Concurrent reference creation after
+	// the check is still possible until FK restrictions exist, but the check
+	// itself can no longer fail-open.
+	var inUse bool
+	err := h.db.WithContext(c.Context()).Transaction(func(tx *gorm.DB) error {
+		// Re-lock the SKU row inside the tx so the product cannot be deleted
+		// twice or mutated while we inspect references.
+		var locked domainSKU.SKU
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, s.ID).Error; err != nil {
+			return err
+		}
 
-	// Delete SKU record
-	if err := h.db.WithContext(c.Context()).Delete(&s).Error; err != nil {
-		return response.InternalServerError(c, "Failed to delete product")
+		type refCount struct {
+			Stocks      int64 `gorm:"column:stocks"`
+			Movements   int64 `gorm:"column:movements"`
+			OrderItems  int64 `gorm:"column:order_items"`
+			POItems     int64 `gorm:"column:po_items"`
+			QuotationLn int64 `gorm:"column:quotation_lines"`
+			BundleComps int64 `gorm:"column:bundle_components"`
+		}
+		var refs refCount
+		if err := tx.Raw(`
+			SELECT
+				(SELECT COUNT(*) FROM stocks WHERE sku_id = ?) AS stocks,
+				(SELECT COUNT(*) FROM stock_movements WHERE sku_id = ?) AS movements,
+				(SELECT COUNT(*) FROM order_items WHERE sku = ?) AS order_items,
+				(SELECT COUNT(*) FROM po_items WHERE sku = ?) AS po_items,
+				(SELECT COUNT(*) FROM quotation_lines WHERE sku = ?) AS quotation_lines,
+				(SELECT COUNT(*) FROM bundle_items WHERE component_sku = ? OR bundle_sku = ?) AS bundle_components
+		`, s.ID, s.ID, s.SKU, s.SKU, s.SKU, s.SKU, s.SKU).Scan(&refs).Error; err != nil {
+			return fmt.Errorf("reference check failed: %w", err)
+		}
+
+		if refs.Stocks > 0 || refs.Movements > 0 || refs.OrderItems > 0 || refs.POItems > 0 || refs.QuotationLn > 0 || refs.BundleComps > 0 {
+			inUse = true
+			return nil
+		}
+
+		return tx.Delete(&domainSKU.SKU{}, s.ID).Error
+	})
+
+	if err != nil {
+		return response.InternalServerError(c, "Failed to delete product: "+err.Error())
+	}
+	if inUse {
+		return response.BadRequest(c, "Cannot delete product: it is referenced by stock, movement history, orders, POs, quotations or bundle formulas. Archive it instead.", "PRODUCT_IN_USE")
 	}
 
 	return response.OK(c, nil, "Product deleted successfully")
@@ -540,14 +663,15 @@ func (h *WorkspaceHandler) CreateSalesOrder(c *fiber.Ctx) error {
 	}
 
 	var items []usecaseOrder.CreateItemInput
-	rawTotal := 0.0
 	for _, l := range req.Lines {
+		if l.Qty <= 0 {
+			return response.BadRequest(c, fmt.Sprintf("Quantity for SKU %s must be greater than 0", l.SKU))
+		}
 		items = append(items, usecaseOrder.CreateItemInput{
 			SKU:      l.SKU,
 			Quantity: l.Qty,
 			Price:    l.UnitPrice,
 		})
-		rawTotal += float64(l.Qty) * l.UnitPrice
 	}
 
 	channel := req.Channel
@@ -555,8 +679,15 @@ func (h *WorkspaceHandler) CreateSalesOrder(c *fiber.Ctx) error {
 		channel = "Manual"
 	}
 
+	includeVat := true
+	if req.IncludeVat != nil {
+		includeVat = *req.IncludeVat
+	}
+
+	// FULL-17: VAT policy travels with the order; totals are computed once
+	// by the Usecase. The handler never overwrites amounts afterwards.
 	note := "VAT_INC:true"
-	if req.IncludeVat != nil && !*req.IncludeVat {
+	if !includeVat {
 		note = "VAT_INC:false"
 	}
 
@@ -565,15 +696,10 @@ func (h *WorkspaceHandler) CreateSalesOrder(c *fiber.Ctx) error {
 		Channel:      channel,
 		Note:         note,
 		Items:        items,
+		VATIncluded:  includeVat,
 	})
 	if err != nil {
 		return err
-	}
-
-	// If VAT is included, adjust total_amount to rawTotal * 1.07
-	if req.IncludeVat == nil || *req.IncludeVat {
-		order.TotalAmount = rawTotal * 1.07
-		_ = h.db.WithContext(c.Context()).Model(&domainOrder.Order{}).Where("id = ?", order.ID).Update("total_amount", order.TotalAmount)
 	}
 
 	rec := OrderRecord{
@@ -903,8 +1029,10 @@ func (h *WorkspaceHandler) GetInvoiceByID(c *fiber.Ctx) error {
 		dueDateStr = inv.DueDate.Format("2006-01-02")
 	}
 
-	paidAmount := 0.0
-	if inv.Status == domainInvoice.StatusPaid {
+	// FULL-19: report the real paid amount for partial payments, consistent
+	// with the invoice list endpoint.
+	paidAmount := inv.PaidAmount
+	if inv.Status == domainInvoice.StatusPaid && paidAmount <= 0 {
 		paidAmount = inv.Amount
 	}
 
@@ -1172,11 +1300,12 @@ func (h *WorkspaceHandler) GetPurchaseOrderByID(c *fiber.Ctx) error {
 
 func (h *WorkspaceHandler) CreatePurchaseOrder(c *fiber.Ctx) error {
 	var req struct {
-		Supplier   string `json:"supplier"`
-		SupplierID uint   `json:"supplierId"`
-		Note       string `json:"note"`
-		ETADate    string `json:"etaDate"`
-		Items      []struct {
+		Supplier             string `json:"supplier"`
+		SupplierID           uint   `json:"supplierId"`
+		Note                 string `json:"note"`
+		ETADate              string `json:"etaDate"`
+		ExpectedDeliveryDays int    `json:"expectedDeliveryDays"`
+		Items                []struct {
 			SKU      string  `json:"sku"`
 			Name     string  `json:"name"`
 			Quantity int     `json:"quantity"`
@@ -1255,7 +1384,13 @@ func (h *WorkspaceHandler) CreatePurchaseOrder(c *fiber.Ctx) error {
 
 	etaDate := req.ETADate
 	if etaDate == "" {
-		etaDate = time.Now().AddDate(0, 0, 7).Format("2006-01-02")
+		// ETA computation stays on the backend: clients may send an explicit
+		// etaDate or a lead-time in days, never a pre-computed date.
+		leadDays := req.ExpectedDeliveryDays
+		if leadDays <= 0 {
+			leadDays = 7
+		}
+		etaDate = time.Now().AddDate(0, 0, leadDays).Format("2006-01-02")
 	}
 
 	po := domainPurchasing.PurchaseOrder{
@@ -1352,6 +1487,67 @@ func (h *WorkspaceHandler) GetQuotations(c *fiber.Ctx) error {
 		}
 	}
 	return response.List(c, records, page, limit, total)
+}
+
+// ResolveSKUs resolves a batch of SKU codes in one round trip so clients
+// building quotations/POs don't issue one GET per line (N+1).
+func (h *WorkspaceHandler) ResolveSKUs(c *fiber.Ctx) error {
+	var req struct {
+		SKUs []string `json:"skus"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return response.BadRequest(c, "Invalid request body")
+	}
+
+	if len(req.SKUs) == 0 {
+		return response.BadRequest(c, "skus cannot be empty")
+	}
+	if len(req.SKUs) > 200 {
+		return response.BadRequest(c, "skus exceeds the maximum of 200 codes per request")
+	}
+
+	normalized := make([]string, 0, len(req.SKUs))
+	seen := make(map[string]bool, len(req.SKUs))
+	for _, raw := range req.SKUs {
+		code := strings.ToUpper(strings.TrimSpace(raw))
+		if code != "" && !seen[code] {
+			seen[code] = true
+			normalized = append(normalized, code)
+		}
+	}
+	if len(normalized) == 0 {
+		return response.BadRequest(c, "skus cannot be empty")
+	}
+
+	var skus []domainSKU.SKU
+	if err := h.db.WithContext(c.Context()).
+		Where("UPPER(TRIM(sku)) IN ?", normalized).
+		Find(&skus).Error; err != nil {
+		return response.InternalServerError(c, "Failed to resolve SKUs")
+	}
+
+	found := make(map[string]domainSKU.SKU, len(skus))
+	for _, s := range skus {
+		found[strings.ToUpper(strings.TrimSpace(s.SKU))] = s
+	}
+
+	type ResolvedSKU struct {
+		Sku    string `json:"sku"`
+		Id     uint   `json:"id"`
+		Name   string `json:"name"`
+		Found  bool   `json:"found"`
+	}
+	records := make([]ResolvedSKU, 0, len(normalized))
+	for _, code := range normalized {
+		s, ok := found[code]
+		if !ok {
+			records = append(records, ResolvedSKU{Sku: code, Found: false})
+			continue
+		}
+		records = append(records, ResolvedSKU{Sku: s.SKU, Id: s.ID, Name: s.Name, Found: true})
+	}
+
+	return response.OK(c, records)
 }
 
 func (h *WorkspaceHandler) CreateQuotation(c *fiber.Ctx) error {
@@ -1598,6 +1794,10 @@ func (h *WorkspaceHandler) GetGoodsReceives(c *fiber.Ctx) error {
 	var grs []domainPurchasing.GoodsReceive
 	var total int64
 	query := h.db.WithContext(c.Context()).Model(&domainPurchasing.GoodsReceive{})
+	if search := strings.TrimSpace(c.Query("search", "")); search != "" {
+		s := "%" + search + "%"
+		query = query.Where("code ILIKE ? OR po_ref ILIKE ? OR supplier_name ILIKE ?", s, s, s)
+	}
 	query.Count(&total)
 	query.Offset((page - 1) * limit).Limit(limit).Order("id DESC").Find(&grs)
 
@@ -1770,33 +1970,68 @@ func (h *WorkspaceHandler) CreateGoodsReceive(c *fiber.Ctx) error {
 			poIDPtr = &lockedPO.ID
 			supplierName = lockedPO.SupplierName
 
-			// Map PO lines by uppercase SKU
-			poItemMap := make(map[string]*domainPurchasing.POItem)
+			// FULL-14: map PO lines to a slice so duplicate SKUs on separate
+			// lines are honored instead of collapsing to the last line.
+			poLineIndex := make(map[string][]*domainPurchasing.POItem)
 			for i := range lockedPO.Items {
 				skuKey := strings.ToUpper(strings.TrimSpace(lockedPO.Items[i].SKU))
-				poItemMap[skuKey] = &lockedPO.Items[i]
+				poLineIndex[skuKey] = append(poLineIndex[skuKey], &lockedPO.Items[i])
 			}
 
-			// Validate all receive items: must exist in PO and must not exceed remaining quantity
+			// Validate all receive items: must exist in PO and must not exceed
+			// remaining quantity, aggregating across duplicate PO lines.
+			// FULL-10: QC-rejected units are also validated against the PO
+			// (they physically arrive against this PO) but are not counted as
+			// received for fulfillment purposes — see receivedAccepted below.
 			receivedAgg := make(map[string]int)
 			for _, recIt := range itemsToReceive {
-				poIt, exists := poItemMap[recIt.SKU]
-				if !exists {
+				lines, exists := poLineIndex[recIt.SKU]
+				if !exists || len(lines) == 0 {
 					return fmt.Errorf("SKU %s does not belong to purchase order %s", recIt.SKU, lockedPO.PONo)
 				}
+				remaining := 0
+				for _, poIt := range lines {
+					remaining += poIt.Quantity - poIt.ReceivedQty
+				}
 				receivedAgg[recIt.SKU] += recIt.Quantity
-				remaining := poIt.Quantity - poIt.ReceivedQty
 				if receivedAgg[recIt.SKU] > remaining {
 					return fmt.Errorf("quantity to receive for SKU %s (%d) exceeds remaining PO quantity (%d)", recIt.SKU, receivedAgg[recIt.SKU], remaining)
 				}
 			}
 
-			// Update PO items received quantities
-			for skuKey, qtyAdded := range receivedAgg {
-				poIt := poItemMap[skuKey]
-				poIt.ReceivedQty += qtyAdded
-				if err := tx.Save(poIt).Error; err != nil {
-					return err
+			// FULL-10: only QC-accepted units advance PO fulfillment; rejected
+			// units keep the line open so the supplier can re-deliver.
+			receivedAccepted := make(map[string]int)
+			for _, recIt := range itemsToReceive {
+				qcUpper := strings.ToUpper(strings.TrimSpace(recIt.QCStatus))
+				if qcUpper == "" || qcUpper == "ACCEPTED" || qcUpper == "PASS" || qcUpper == "PASSED" {
+					receivedAccepted[recIt.SKU] += recIt.Quantity
+				}
+			}
+
+			// FULL-14: distribute received quantities across the PO's duplicate
+			// lines in order, filling each line's remaining amount first.
+			// Only QC-accepted quantities advance fulfillment (FULL-10).
+			for skuKey, qtyAdded := range receivedAccepted {
+				left := qtyAdded
+				for _, poIt := range poLineIndex[skuKey] {
+					if left <= 0 {
+						break
+					}
+					lineRemaining := poIt.Quantity - poIt.ReceivedQty
+					if lineRemaining <= 0 {
+						continue
+					}
+					take := lineRemaining
+					if left < take {
+						take = left
+					}
+					poIt.ReceivedQty += take
+					left -= take
+					if err := tx.Model(&domainPurchasing.POItem{}).Where("id = ?", poIt.ID).
+						Update("received_qty", poIt.ReceivedQty).Error; err != nil {
+						return err
+					}
 				}
 			}
 
@@ -1857,24 +2092,32 @@ func (h *WorkspaceHandler) CreateGoodsReceive(c *fiber.Ctx) error {
 				return err
 			}
 
+			// FULL-10: only QC-Accepted units become sellable stock. Rejected
+			// units are recorded on the GR for traceability but never added to
+			// Quantity/AvailableQty.
+			qcUpper := strings.ToUpper(strings.TrimSpace(it.QCStatus))
+			qcAccepted := qcUpper == "" || qcUpper == "ACCEPTED" || qcUpper == "PASS" || qcUpper == "PASSED"
+
 			var stk domainStock.Stock
 			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("sku_id = ? AND warehouse_id = ?", s.ID, 1).First(&stk).Error; err != nil {
 				if errors.Is(err, gorm.ErrRecordNotFound) {
-					stk = domainStock.Stock{
-						SKUID:        s.ID,
-						SKUCode:      s.SKU,
-						WarehouseID:  1,
-						Quantity:     it.Quantity,
-						AvailableQty: it.Quantity,
-						UpdatedAt:    time.Now(),
-					}
-					if err := tx.Create(&stk).Error; err != nil {
-						return err
+					if qcAccepted {
+						stk = domainStock.Stock{
+							SKUID:        s.ID,
+							SKUCode:      s.SKU,
+							WarehouseID:  1,
+							Quantity:     it.Quantity,
+							AvailableQty: it.Quantity,
+							UpdatedAt:    time.Now(),
+						}
+						if err := tx.Create(&stk).Error; err != nil {
+							return err
+						}
 					}
 				} else {
 					return err
 				}
-			} else {
+			} else if qcAccepted {
 				stk.Quantity += it.Quantity
 				stk.AvailableQty += it.Quantity
 				stk.UpdatedAt = time.Now()
@@ -1887,14 +2130,29 @@ func (h *WorkspaceHandler) CreateGoodsReceive(c *fiber.Ctx) error {
 			if it.SupplierLot != "" || it.ExpiryDate != "" {
 				note = fmt.Sprintf("%s [Lot: %s, Exp: %s]", note, it.SupplierLot, it.ExpiryDate)
 			}
+			if !qcAccepted {
+				if note != "" {
+					note += " "
+				}
+				note += fmt.Sprintf("[QC %s — not added to sellable stock]", it.QCStatus)
+			}
+
+			// Rejected units still generate a movement trail, but as a
+			// QC_REJECT type with zero stock effect.
+			movementType := domainStock.MovementIn
+			movementQty := it.Quantity
+			if !qcAccepted {
+				movementType = domainStock.MovementType("QC_REJECT")
+				movementQty = 0
+			}
 
 			if err := tx.Create(&domainStock.StockMovement{
 				SKUID:         s.ID,
 				SKUCode:       s.SKU,
 				WarehouseID:   1,
-				Type:          domainStock.MovementIn,
-				Quantity:      it.Quantity,
-				BeforeQty:     stk.Quantity - it.Quantity,
+				Type:          movementType,
+				Quantity:      movementQty,
+				BeforeQty:     stk.Quantity,
 				AfterQty:      stk.Quantity,
 				ReferenceType: "GOODS_RECEIVE",
 				ReferenceID:   createdGR.Code,
@@ -1973,6 +2231,10 @@ func (h *WorkspaceHandler) GetGoodsIssues(c *fiber.Ctx) error {
 	var total int64
 	query := h.db.WithContext(c.Context()).Model(&domainStock.StockMovement{}).
 		Where("type = ?", domainStock.MovementOut)
+	if search := strings.TrimSpace(c.Query("search", "")); search != "" {
+		s := "%" + search + "%"
+		query = query.Where("sku_code ILIKE ? OR note ILIKE ? OR reference_id ILIKE ?", s, s, s)
+	}
 	query.Count(&total)
 	query.Offset((page - 1) * limit).Limit(limit).Order("id DESC").Find(&movements)
 

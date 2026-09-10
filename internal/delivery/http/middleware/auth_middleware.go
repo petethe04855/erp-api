@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"strings"
 
 	"chawy-erp-api/pkg/jwt"
@@ -9,7 +10,16 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
-func AuthMiddleware(secret string) fiber.Handler {
+// UserStatusLoader lets the middleware check the user's current persisted
+// state without depending on a concrete repository (FULL-03).
+type UserStatusLoader interface {
+	FindActiveUserRole(ctx context.Context, userID uint) (role string, active bool, err error)
+}
+
+// AuthMiddleware validates the JWT and then re-checks the user's current
+// status and role in the database, so disabled accounts or demoted users lose
+// access as soon as their row changes — not only when the token expires.
+func AuthMiddleware(secret string, users UserStatusLoader) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		path := c.Path()
 		// Public paths that do not require JWT Authorization header
@@ -36,9 +46,23 @@ func AuthMiddleware(secret string) fiber.Handler {
 			return response.Unauthorized(c, "Invalid or expired token", "INVALID_TOKEN")
 		}
 
+		if users != nil {
+			role, active, err := users.FindActiveUserRole(c.UserContext(), claims.UserID)
+			if err != nil || !active {
+				return response.Unauthorized(c, "Account is disabled or no longer exists", "ACCOUNT_DISABLED")
+			}
+			if !strings.EqualFold(role, claims.Role) {
+				// Role changed since the token was issued: enforce current role.
+				c.Locals("role", role)
+			} else {
+				c.Locals("role", claims.Role)
+			}
+		} else {
+			c.Locals("role", claims.Role)
+		}
+
 		c.Locals("userID", claims.UserID)
 		c.Locals("email", claims.Email)
-		c.Locals("role", claims.Role)
 
 		return c.Next()
 	}
@@ -92,7 +116,6 @@ var PermissionMatrix = map[string][]string{
 	"Export":  {"owner", "admin", "sales", "warehouse", "accountant"},
 }
 
-// RequirePermission verifies the user's role against the central PermissionMatrix
 func RequirePermission(permission string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		userRole, ok := c.Locals("role").(string)
@@ -118,4 +141,3 @@ func RequirePermission(permission string) fiber.Handler {
 		return response.Forbidden(c, "You do not have permission to perform this action", "FORBIDDEN")
 	}
 }
-

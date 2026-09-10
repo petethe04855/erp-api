@@ -30,4 +30,7 @@ type Repository interface {
 	UpdateStatus(ctx context.Context, id uint, isActive bool) error
 	Delete(ctx context.Context, id uint) error
 	ExistsByEmail(ctx context.Context, email string) (bool, error)
+	// FindActiveUserRole exposes current persisted role/active for per-request
+	// authorization (FULL-03 token revocation).
+	FindActiveUserRole(ctx context.Context, userID uint) (string, bool, error)
 }

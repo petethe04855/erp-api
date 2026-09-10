@@ -8,6 +8,7 @@ import (
 	"chawy-erp-api/pkg/database"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type PurchasingRepository struct {
@@ -127,4 +128,39 @@ func (r *PurchasingRepository) UpdatePOStatus(ctx context.Context, id uint, stat
 
 func (r *PurchasingRepository) UpdatePO(ctx context.Context, po *purchasing.PurchaseOrder) error {
 	return r.getDB(ctx).Save(po).Error
+}
+
+// FindPOByIDForUpdate locks the PO row with SELECT ... FOR UPDATE inside the
+// caller's transaction (FULL-09).
+func (r *PurchasingRepository) FindPOByIDForUpdate(ctx context.Context, id uint) (*purchasing.PurchaseOrder, error) {
+	var po purchasing.PurchaseOrder
+	err := r.getDB(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).Preload("Items").First(&po, id).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &po, nil
+}
+
+func (r *PurchasingRepository) UpdatePOItemReceivedQty(ctx context.Context, poItemID uint, receivedQty int) error {
+	return r.getDB(ctx).Model(&purchasing.POItem{}).Where("id = ?", poItemID).
+		Update("received_qty", receivedQty).Error
+}
+
+// CreateGoodsReceiveDoc persists the GR header and its items in one call on
+// the current connection (transaction-aware via context).
+func (r *PurchasingRepository) CreateGoodsReceiveDoc(ctx context.Context, gr *purchasing.GoodsReceive, items []purchasing.GoodsReceiveItem) error {
+	db := r.getDB(ctx)
+	if err := db.Create(gr).Error; err != nil {
+		return err
+	}
+	for i := range items {
+		items[i].GRID = gr.ID
+		if err := db.Create(&items[i]).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }

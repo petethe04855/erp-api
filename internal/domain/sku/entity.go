@@ -14,6 +14,7 @@ type SKU struct {
 	Price     float64   `json:"price" gorm:"type:numeric(12,2);default:0"`
 	CostPrice float64   `json:"cost_price" gorm:"type:numeric(12,2);default:0"`
 	IsBundle  bool      `json:"is_bundle" gorm:"default:false"`
+	Image     string    `json:"image" gorm:"size:500"`
 	Status    string    `json:"status" gorm:"size:50;default:'active'"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

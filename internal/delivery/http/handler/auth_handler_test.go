@@ -98,6 +98,13 @@ func (m *mockRepo) Delete(ctx context.Context, id uint) error {
 	return nil
 }
 
+func (m *mockRepo) FindActiveUserRole(ctx context.Context, userID uint) (string, bool, error) {
+	if u, ok := m.users[userID]; ok {
+		return u.Role, u.IsActive, nil
+	}
+	return "", false, nil
+}
+
 func (m *mockRepo) ExistsByEmail(ctx context.Context, email string) (bool, error) {
 	for _, u := range m.users {
 		if u.Email == email {
@@ -113,9 +120,10 @@ func setupTestApp(repo domainAuth.Repository, secret string) *fiber.App {
 	authH := handler.NewAuthHandler(uc)
 
 	route.RegisterRoutes(route.Config{
-		App:         app,
-		AuthHandler: authH,
-		JWTSecret:   secret,
+		App:              app,
+		AuthHandler:      authH,
+		JWTSecret:        secret,
+		UserStatusLoader: repo,
 	})
 	return app
 }

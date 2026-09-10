@@ -118,3 +118,19 @@ func GetDBFromContext(ctx context.Context, fallback *gorm.DB) *gorm.DB {
 	}
 	return fallback.WithContext(ctx)
 }
+
+// TxManager abstracts transaction coordination so usecases stay decoupled from GORM.
+type TxManager interface {
+	Transaction(ctx context.Context, fn func(txCtx context.Context) error) error
+}
+
+type gormTxManager struct{ db *gorm.DB }
+
+// NewTxManager returns a TxManager backed by the given GORM handle.
+func NewTxManager(db *gorm.DB) TxManager { return &gormTxManager{db: db} }
+
+func (m *gormTxManager) Transaction(ctx context.Context, fn func(txCtx context.Context) error) error {
+	return m.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return fn(WithTxContext(ctx, tx))
+	})
+}

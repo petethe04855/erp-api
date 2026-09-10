@@ -11,10 +11,10 @@ type BundleComponentDTO struct {
 }
 
 type ExplodeResponse struct {
-	BundleSKU  string                   `json:"bundle_sku"`
-	OrderQty   int                      `json:"order_qty"`
-	AllInStock bool                     `json:"all_in_stock"`
-	Components []ExplodedComponentDTO   `json:"components"`
+	BundleSKU  string                 `json:"bundle_sku"`
+	OrderQty   int                    `json:"order_qty"`
+	AllInStock bool                   `json:"all_in_stock"`
+	Components []ExplodedComponentDTO `json:"components"`
 }
 
 type ExplodedComponentDTO struct {

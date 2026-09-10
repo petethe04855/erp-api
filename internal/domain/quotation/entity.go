@@ -41,4 +41,3 @@ type QuotationLine struct {
 	Subtotal    float64   `json:"subtotal" gorm:"type:numeric(12,2);default:0"`
 	CreatedAt   time.Time `json:"created_at"`
 }
-

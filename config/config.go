@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"log"
 	"net/url"
 	"os"
@@ -57,7 +58,8 @@ func LoadConfig() *Config {
 		dbUser = getEnv("POSTGRES_USER", "postgres")
 	}
 
-	dbName := getEnv("DB_NAME", "chawy_erp_v2")
+	// FULL-05: check DB_NAME first (empty means unset), then POSTGRES_DB, then default
+	dbName := getEnv("DB_NAME", "")
 	if dbName == "" {
 		dbName = getEnv("POSTGRES_DB", "chawy_erp_v2")
 	}
@@ -83,7 +85,8 @@ func LoadConfig() *Config {
 		DBName:      dbName,
 		DBSSLMode:   getEnv("DB_SSLMODE", "disable"),
 		DatabaseURL: databaseURL,
-		JWTSecret:   getEnv("JWT_SECRET", "default_secret_key"),
+		// FULL-02: no hardcoded fallback secret; startup validation lives in main
+		JWTSecret:   getEnv("JWT_SECRET", ""),
 		JWTExpHours: getEnv("JWT_EXPIRATION_HOURS", "24"),
 
 		TikTokAppKey:              getEnv("TIKTOK_APP_KEY", ""),
@@ -103,4 +106,16 @@ func getEnv(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// Validate rejects configurations that are unsafe to serve traffic with.
+// FULL-02: production must supply a strong JWT secret; the old default made
+// tokens forgeable by anyone who read the source.
+func (c *Config) Validate() error {
+	if c.Environment == "production" {
+		if len(c.JWTSecret) < 32 {
+			return fmt.Errorf("JWT_SECRET must be set to at least 32 characters in production")
+		}
+	}
+	return nil
 }

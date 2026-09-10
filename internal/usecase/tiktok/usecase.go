@@ -19,8 +19,9 @@ import (
 	domainSKU "chawy-erp-api/internal/domain/sku"
 	domainStock "chawy-erp-api/internal/domain/stock"
 	domainTikTok "chawy-erp-api/internal/domain/tiktok"
-	appErrors "chawy-erp-api/pkg/errors"
 	pkgCrypto "chawy-erp-api/pkg/crypto"
+	"chawy-erp-api/pkg/database"
+	appErrors "chawy-erp-api/pkg/errors"
 	pkgTikTok "chawy-erp-api/pkg/tiktok"
 
 	"gorm.io/gorm"
@@ -34,6 +35,7 @@ type MapSKUInput struct {
 type SyncOrderItemInput struct {
 	TikTokSKU string  `json:"tiktok_sku"`
 	Quantity  int     `json:"quantity"`
+	Qty       int     `json:"qty"` // alias accepted for compatibility
 	Price     float64 `json:"price"`
 }
 
@@ -66,20 +68,20 @@ type CallbackResponse struct {
 }
 
 type SyncResultResponse struct {
-	Synced                int      `json:"synced"`
-	Days                  int      `json:"days"`
-	StockDeducted         int      `json:"stockDeducted"`
-	StockDeductionErrors  []string `json:"stockDeductionErrors,omitempty"`
+	Synced                 int      `json:"synced"`
+	Days                   int      `json:"days"`
+	StockDeducted          int      `json:"stockDeducted"`
+	StockDeductionErrors   []string `json:"stockDeductionErrors,omitempty"`
 	StockDeductionWarnings []string `json:"stockDeductionWarnings,omitempty"`
 }
 
 type StockPreviewItem struct {
-	TikTokSKU    string `json:"tiktokSku"`
-	ERPSKU       string `json:"erpSku"`
-	ProductName  string `json:"productName"`
-	TikTokStock  int    `json:"tiktokStock"`
-	ERPStock     int    `json:"erpStock"`
-	Difference   int    `json:"difference"`
+	TikTokSKU   string `json:"tiktokSku"`
+	ERPSKU      string `json:"erpSku"`
+	ProductName string `json:"productName"`
+	TikTokStock int    `json:"tiktokStock"`
+	ERPStock    int    `json:"erpStock"`
+	Difference  int    `json:"difference"`
 }
 
 type Usecase interface {
@@ -419,6 +421,10 @@ func (u *tiktokUsecase) SyncOrders(ctx context.Context, days int) (*SyncResultRe
 	}
 
 	// Process stock deduction for newly shipped/delivered orders
+	// FULL-06/25: deductStockForOrder runs everything in ONE transaction
+	// (stock, movements, processed flag) and returns an error when any line
+	// cannot be deducted. Orders are never marked StockDeducted when lines
+	// were skipped — they stay pending for retry after mapping fixes.
 	deductedCount := 0
 	var deductionErrors []string
 	var deductionWarnings []string
@@ -436,12 +442,15 @@ func (u *tiktokUsecase) SyncOrders(ctx context.Context, days int) (*SyncResultRe
 
 		didDeduct, warnings, err := u.deductStockForOrder(ctx, dbOrder)
 		if err != nil {
+			// Order stays StockDeducted=false so the next sync retries it.
 			deductionErrors = append(deductionErrors, fmt.Sprintf("%s: %s", dbOrder.ID, err.Error()))
 			continue
 		}
 		if didDeduct {
 			deductedCount++
-			_ = u.tiktokRepo.UpdateOrderStockDeducted(ctx, dbOrder.ID, true)
+			if err := u.tiktokRepo.UpdateOrderStockDeducted(ctx, dbOrder.ID, true); err != nil {
+				deductionErrors = append(deductionErrors, fmt.Sprintf("%s: flag update failed: %s", dbOrder.ID, err.Error()))
+			}
 		}
 		for _, w := range warnings {
 			deductionWarnings = append(deductionWarnings, fmt.Sprintf("%s: %s", dbOrder.ID, w))
@@ -464,44 +473,66 @@ func (u *tiktokUsecase) SyncOrders(ctx context.Context, days int) (*SyncResultRe
 	}, nil
 }
 
+// deductStockForOrder deducts every line of a TikTok order inside ONE
+// transaction covering stock, movements and the processed flag (FULL-06).
+// Any missing mapping/SKU or insufficient stock fails the whole order and
+// leaves StockDeducted=false so the next sync retries it (FULL-25).
 func (u *tiktokUsecase) deductStockForOrder(ctx context.Context, order *domainTikTok.TiktokOrder) (bool, []string, error) {
 	warehouseID := uint(1)
-	var warnings []string
 
 	err := u.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		txCtx := database.WithTxContext(ctx, tx)
+
 		for _, item := range order.Items {
 			if item.Qty <= 0 {
 				continue
 			}
 
-			// Map TikTok SKU to ERP SKU
+			// Map TikTok SKU to ERP SKU (case-insensitive, matching the
+			// uppercase write in SaveSKUMapping — FULL-28)
 			erpSKUCode := strings.ToUpper(strings.TrimSpace(item.SKU))
-			mapping, err := u.tiktokRepo.GetMapping(ctx, item.SKU)
-			if err == nil && mapping != nil && mapping.LocalSKU != "" {
+			mapping, err := u.tiktokRepo.GetMapping(txCtx, erpSKUCode)
+			if err != nil {
+				return fmt.Errorf("mapping lookup failed for %s: %w", item.SKU, err)
+			}
+			if mapping != nil && mapping.LocalSKU != "" {
 				erpSKUCode = strings.ToUpper(strings.TrimSpace(mapping.LocalSKU))
 			}
 
-			skuEntity, err := u.skuRepo.FindBySKU(ctx, erpSKUCode)
-			if err != nil || skuEntity == nil {
-				warnings = append(warnings, fmt.Sprintf("SKU %s not found in ERP, skipped deduction", item.SKU))
-				continue
+			skuEntity, err := u.skuRepo.FindBySKU(txCtx, erpSKUCode)
+			if err != nil {
+				return err
+			}
+			if skuEntity == nil {
+				// FULL-25: never skip silently — fail the order so it retries
+				// after the mapping is fixed.
+				return appErrors.NewAppError("TIKTOK_SKU_UNMAPPED",
+					fmt.Sprintf("SKU %s (mapped to %s) not found in ERP; fix the mapping and resync", item.SKU, erpSKUCode), 422)
 			}
 
 			if skuEntity.IsBundle {
 				// Bundle resolution: load bundle items
-				bundleItems, err := u.bundleRepo.GetItemsByBundleSKU(ctx, skuEntity.SKU)
+				bundleItems, err := u.bundleRepo.GetItemsByBundleSKU(txCtx, skuEntity.SKU)
 				if err != nil {
 					return err
 				}
+				if len(bundleItems) == 0 {
+					return fmt.Errorf("bundle %s has no components defined", skuEntity.SKU)
+				}
 
 				for _, bi := range bundleItems {
-					compSKU, err := u.skuRepo.FindBySKU(ctx, bi.ComponentSKU)
-					if err != nil || compSKU == nil {
+					compSKU, err := u.skuRepo.FindBySKU(txCtx, bi.ComponentSKU)
+					if err != nil {
+						return err
+					}
+					if compSKU == nil {
 						return fmt.Errorf("bundle component %s not found", bi.ComponentSKU)
 					}
 
 					qtyDeduct := bi.Quantity * item.Qty
-					stk, err := u.stockRepo.GetBySKUID(ctx, compSKU.ID, warehouseID)
+
+					// Lock the stock row so check and update share one lock.
+					stk, err := u.stockRepo.GetBySKUIDForUpdate(txCtx, compSKU.ID, warehouseID)
 					if err != nil {
 						return err
 					}
@@ -509,12 +540,12 @@ func (u *tiktokUsecase) deductStockForOrder(ctx context.Context, order *domainTi
 						return fmt.Errorf("insufficient stock for component %s: required %d", bi.ComponentSKU, qtyDeduct)
 					}
 
-					updatedStk, err := u.stockRepo.UpdateQuantity(ctx, compSKU.ID, warehouseID, -qtyDeduct)
+					updatedStk, err := u.stockRepo.UpdateQuantity(txCtx, compSKU.ID, warehouseID, -qtyDeduct)
 					if err != nil {
 						return err
 					}
 
-					_ = u.stockRepo.CreateMovement(ctx, &domainStock.StockMovement{
+					if err := u.stockRepo.CreateMovement(txCtx, &domainStock.StockMovement{
 						SKUID:         compSKU.ID,
 						SKUCode:       compSKU.SKU,
 						WarehouseID:   warehouseID,
@@ -525,11 +556,13 @@ func (u *tiktokUsecase) deductStockForOrder(ctx context.Context, order *domainTi
 						ReferenceType: "TIKTOK_BUNDLE",
 						ReferenceID:   order.ID,
 						Note:          fmt.Sprintf("TikTok order %s shipped: bundle %s component %s", order.ID, skuEntity.SKU, compSKU.SKU),
-					})
+					}); err != nil {
+						return err
+					}
 				}
 			} else {
 				// Single SKU stock deduction
-				stk, err := u.stockRepo.GetBySKUID(ctx, skuEntity.ID, warehouseID)
+				stk, err := u.stockRepo.GetBySKUIDForUpdate(txCtx, skuEntity.ID, warehouseID)
 				if err != nil {
 					return err
 				}
@@ -537,12 +570,12 @@ func (u *tiktokUsecase) deductStockForOrder(ctx context.Context, order *domainTi
 					return fmt.Errorf("insufficient stock for SKU %s: required %d", skuEntity.SKU, item.Qty)
 				}
 
-				updatedStk, err := u.stockRepo.UpdateQuantity(ctx, skuEntity.ID, warehouseID, -item.Qty)
+				updatedStk, err := u.stockRepo.UpdateQuantity(txCtx, skuEntity.ID, warehouseID, -item.Qty)
 				if err != nil {
 					return err
 				}
 
-				_ = u.stockRepo.CreateMovement(ctx, &domainStock.StockMovement{
+				if err := u.stockRepo.CreateMovement(txCtx, &domainStock.StockMovement{
 					SKUID:         skuEntity.ID,
 					SKUCode:       skuEntity.SKU,
 					WarehouseID:   warehouseID,
@@ -553,13 +586,21 @@ func (u *tiktokUsecase) deductStockForOrder(ctx context.Context, order *domainTi
 					ReferenceType: "TIKTOK_ORDER",
 					ReferenceID:   order.ID,
 					Note:          fmt.Sprintf("TikTok order %s shipped: SKU %s", order.ID, skuEntity.SKU),
-				})
+				}); err != nil {
+					return err
+				}
 			}
 		}
-		return nil
+
+		// Mark the order processed inside the same transaction so a rollback
+		// also rolls back the flag (FULL-06).
+		return u.tiktokRepo.UpdateOrderStockDeducted(txCtx, order.ID, true)
 	})
 
-	return err == nil, warnings, err
+	if err != nil {
+		return false, nil, err
+	}
+	return true, nil, nil
 }
 
 func (u *tiktokUsecase) GetSyncRuns(ctx context.Context, limit int) ([]domainTikTok.TiktokSyncRun, error) {
@@ -649,19 +690,99 @@ func (u *tiktokUsecase) ListSKUMappings(ctx context.Context) ([]domainTikTok.SKU
 	return u.tiktokRepo.ListMappings(ctx)
 }
 
+// SyncOrder ingests a manually pushed TikTok order (FULL-26): persists the
+// order and its items idempotently, then logs honestly.
 func (u *tiktokUsecase) SyncOrder(ctx context.Context, in SyncOrderInput) error {
-	// Fallback manual order sync from webhook or manual push
-	conn, _ := u.tiktokRepo.GetConnection(ctx)
-	_ = conn
+	if strings.TrimSpace(in.TikTokOrderID) == "" {
+		return appErrors.NewAppError("INVALID_INPUT", "TikTok order ID is required", 400)
+	}
+	if len(in.Items) == 0 {
+		return appErrors.NewAppError("INVALID_INPUT", "Order must contain at least one item", 400)
+	}
+	for _, it := range in.Items {
+		if strings.TrimSpace(it.TikTokSKU) == "" || (it.Qty <= 0 && it.Quantity <= 0) {
+			return appErrors.NewAppError("INVALID_INPUT", "Each item needs a SKU and a positive quantity", 400)
+		}
+	}
 
-	logStatus := "SUCCESS"
-	logMsg := fmt.Sprintf("Successfully synced manual TikTok order %s", in.TikTokOrderID)
+	// Idempotency: already-ingested orders are acknowledged without rewriting.
+	existing, err := u.tiktokRepo.GetOrderByID(ctx, in.TikTokOrderID)
+	if err != nil {
+		return err
+	}
+	if existing != nil {
+		logErr := u.tiktokRepo.CreateSyncLog(ctx, &domainTikTok.SyncLog{
+			OrderNo: in.TikTokOrderID,
+			Status:  "SKIPPED",
+			Message: "Manual sync ignored: order already ingested",
+		})
+		if logErr != nil {
+			return fmt.Errorf("order already ingested but sync log write failed: %w", logErr)
+		}
+		return nil
+	}
 
-	_ = u.tiktokRepo.CreateSyncLog(ctx, &domainTikTok.SyncLog{
+	var total float64
+	items := make([]domainTikTok.TiktokOrderItem, 0, len(in.Items))
+	for _, it := range in.Items {
+		qty := it.Qty
+		if qty <= 0 {
+			qty = it.Quantity
+		}
+		lineTotal := it.Price * float64(qty)
+		total += lineTotal
+		items = append(items, domainTikTok.TiktokOrderItem{
+			SKU:       strings.ToUpper(strings.TrimSpace(it.TikTokSKU)),
+			Qty:       qty,
+			UnitPrice: it.Price,
+			Amount:    lineTotal,
+		})
+	}
+
+	customerName := strings.TrimSpace(in.CustomerName)
+	if customerName == "" {
+		customerName = "TikTok Customer"
+	}
+
+	order := &domainTikTok.TiktokOrder{
+		ID:      in.TikTokOrderID,
+		Date:    time.Now().Format("2006-01-02 15:04:05"),
+		Product: items[0].SKU,
+		SKU:     items[0].SKU,
+		Qty: func() int {
+			q := 0
+			for _, it := range items {
+				q += it.Qty
+			}
+			return q
+		}(),
+		Amount:   total,
+		Status:   "SHIPPED",
+		Imported: true,
+		Items:    items,
+	}
+	_ = customerName // customer name is not persisted on the TikTok order header schema today
+
+	// UpsertOrders writes header + items in one repository transaction.
+	if err := u.tiktokRepo.UpsertOrders(ctx, []domainTikTok.TiktokOrder{*order}); err != nil {
+		logStatus := "FAILED"
+		_ = u.tiktokRepo.CreateSyncLog(ctx, &domainTikTok.SyncLog{
+			OrderNo: in.TikTokOrderID,
+			Status:  logStatus,
+			Message: "Manual sync ingestion failed: " + err.Error(),
+		})
+		return fmt.Errorf("failed to ingest manual TikTok order %s: %w", in.TikTokOrderID, err)
+	}
+
+	if err := u.tiktokRepo.CreateSyncLog(ctx, &domainTikTok.SyncLog{
 		OrderNo: in.TikTokOrderID,
-		Status:  logStatus,
-		Message: logMsg,
-	})
+		Status:  "SUCCESS",
+		Message: fmt.Sprintf("Manual sync ingested order %s for %s with %d item line(s)", in.TikTokOrderID, customerName, len(items)),
+	}); err != nil {
+		// Order persisted but log write failed — surface it.
+		return fmt.Errorf("order %s ingested but sync log write failed: %w", in.TikTokOrderID, err)
+	}
+
 	return nil
 }
 
@@ -711,7 +832,11 @@ func (u *tiktokUsecase) ensureAccessToken(ctx context.Context) (*domainTikTok.Ti
 		}
 
 		conn.UpdatedAt = time.Now()
-		_ = u.tiktokRepo.SaveConnection(ctx, conn)
+		// FULL-29: a refresh that is not persisted must not be reported as
+		// success — the next call would read the stale token again.
+		if err := u.tiktokRepo.SaveConnection(ctx, conn); err != nil {
+			return nil, fmt.Errorf("refreshed tiktok token but failed to persist it: %w", err)
+		}
 	}
 
 	return conn, nil

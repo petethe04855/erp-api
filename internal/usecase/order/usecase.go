@@ -27,6 +27,9 @@ type CreateOrderInput struct {
 	Channel      string            `json:"channel"`
 	Note         string            `json:"note"`
 	Items        []CreateItemInput `json:"items"`
+	// VATIncluded marks the order as VAT-inclusive; the Usecase computes the
+	// final total so no caller can overwrite amounts afterwards (FULL-17).
+	VATIncluded bool `json:"vat_included"`
 }
 
 type Usecase interface {
@@ -72,6 +75,13 @@ func (u *orderUsecase) Create(ctx context.Context, in CreateOrderInput) (*domain
 	var items []domainOrder.OrderItem
 
 	for _, itemInput := range in.Items {
+		if itemInput.Quantity <= 0 {
+			return nil, appErrors.NewAppError("INVALID_QUANTITY", fmt.Sprintf("Quantity for SKU %s must be greater than 0", itemInput.SKU), 400)
+		}
+		if itemInput.Price < 0 {
+			return nil, appErrors.NewAppError("INVALID_PRICE", fmt.Sprintf("Price for SKU %s cannot be negative", itemInput.SKU), 400)
+		}
+
 		skuItem, err := u.skuRepo.FindBySKU(ctx, itemInput.SKU)
 		if err != nil {
 			return nil, err
@@ -95,6 +105,12 @@ func (u *orderUsecase) Create(ctx context.Context, in CreateOrderInput) (*domain
 			Quantity: itemInput.Quantity,
 			Subtotal: subtotal,
 		})
+	}
+
+	// FULL-17: the VAT-inclusive total is finalized here, in the same place
+	// line subtotals are computed. Callers must not adjust it afterwards.
+	if in.VATIncluded {
+		totalAmount = totalAmount * 1.07
 	}
 
 	order := &domainOrder.Order{
@@ -136,31 +152,41 @@ func (u *orderUsecase) List(ctx context.Context, query domainOrder.Query) ([]dom
 	return u.orderRepo.FindAll(ctx, query)
 }
 
-// ShipOrder executes transaction: resolves bundle items, verifies stock, deducts stock, records movements, updates status
+// ShipOrder executes transaction: locks the order row, resolves bundle items,
+// verifies stock under the same lock, deducts stock, records movements,
+// updates status (FULL-07: no read-then-act race between concurrent ships).
 func (u *orderUsecase) ShipOrder(ctx context.Context, id uint, warehouseID uint) (*domainOrder.Order, error) {
 	if warehouseID == 0 {
 		warehouseID = 1
 	}
 
-	orderItem, err := u.orderRepo.FindByID(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	if orderItem == nil {
-		return nil, appErrors.ErrNotFound
-	}
+	var shipped *domainOrder.Order
 
-	if orderItem.Status == domainOrder.StatusShipped {
-		return nil, appErrors.NewAppError("ALREADY_SHIPPED", "Order has already been shipped", 400)
-	}
-	if orderItem.Status == domainOrder.StatusCancelled {
-		return nil, appErrors.NewAppError("ORDER_CANCELLED", "Cannot ship a cancelled order", 400)
-	}
-
-	// Run stock deduction inside DB Transaction
-	err = u.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := u.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		txCtx := database.WithTxContext(ctx, tx)
+
+		// Lock the order row first; all state checks happen against the
+		// locked snapshot so a concurrent ship/cancel must wait here.
+		orderItem, err := u.orderRepo.FindByIDForUpdate(txCtx, id)
+		if err != nil {
+			return err
+		}
+		if orderItem == nil {
+			return appErrors.ErrNotFound
+		}
+
+		if orderItem.Status == domainOrder.StatusShipped {
+			return appErrors.NewAppError("ALREADY_SHIPPED", "Order has already been shipped", 400)
+		}
+		if orderItem.Status == domainOrder.StatusCancelled {
+			return appErrors.NewAppError("ORDER_CANCELLED", "Cannot ship a cancelled order", 400)
+		}
+
 		for _, line := range orderItem.Items {
+			if line.Quantity <= 0 {
+				return appErrors.NewAppError("INVALID_QUANTITY", fmt.Sprintf("Order line %s has invalid quantity", line.SKU), 400)
+			}
+
 			skuEntity, err := u.skuRepo.FindBySKU(txCtx, line.SKU)
 			if err != nil || skuEntity == nil {
 				return appErrors.ErrSKUNotFound
@@ -184,8 +210,8 @@ func (u *orderUsecase) ShipOrder(ctx context.Context, id uint, warehouseID uint)
 
 					qtyToDeduct := bi.Quantity * line.Quantity
 
-					// Check stock
-					stk, err := u.stockRepo.GetBySKUID(txCtx, compSKU.ID, warehouseID)
+					// Check availability under the stock row lock
+					stk, err := u.stockRepo.GetBySKUIDForUpdate(txCtx, compSKU.ID, warehouseID)
 					if err != nil {
 						return err
 					}
@@ -193,13 +219,11 @@ func (u *orderUsecase) ShipOrder(ctx context.Context, id uint, warehouseID uint)
 						return fmt.Errorf("insufficient stock for component %s: required %d", bi.ComponentSKU, qtyToDeduct)
 					}
 
-					// Deduct stock
 					updatedStk, err := u.stockRepo.UpdateQuantity(txCtx, compSKU.ID, warehouseID, -qtyToDeduct)
 					if err != nil {
 						return err
 					}
 
-					// Record stock movement
 					movement := &domainStock.StockMovement{
 						SKUID:         compSKU.ID,
 						SKUCode:       compSKU.SKU,
@@ -217,8 +241,8 @@ func (u *orderUsecase) ShipOrder(ctx context.Context, id uint, warehouseID uint)
 					}
 				}
 			} else {
-				// Single SKU stock check & deduction
-				stk, err := u.stockRepo.GetBySKUID(txCtx, skuEntity.ID, warehouseID)
+				// Single SKU: check availability under the stock row lock
+				stk, err := u.stockRepo.GetBySKUIDForUpdate(txCtx, skuEntity.ID, warehouseID)
 				if err != nil {
 					return err
 				}
@@ -249,33 +273,52 @@ func (u *orderUsecase) ShipOrder(ctx context.Context, id uint, warehouseID uint)
 			}
 		}
 
-		// Update order status to SHIPPED
-		return u.orderRepo.UpdateStatus(txCtx, orderItem.ID, domainOrder.StatusShipped)
+		// Update order status to SHIPPED inside the same transaction
+		if err := u.orderRepo.UpdateStatus(txCtx, orderItem.ID, domainOrder.StatusShipped); err != nil {
+			return err
+		}
+
+		orderItem.Status = domainOrder.StatusShipped
+		shipped = orderItem
+		return nil
 	})
 
 	if err != nil {
 		return nil, err
 	}
 
-	orderItem.Status = domainOrder.StatusShipped
-	return orderItem, nil
+	return shipped, nil
 }
 
+// CancelOrder transitions to CANCELLED under the order row lock, so a cancel
+// racing a ship cannot both succeed (FULL-07).
 func (u *orderUsecase) CancelOrder(ctx context.Context, id uint) (*domainOrder.Order, error) {
-	o, err := u.orderRepo.FindByID(ctx, id)
+	var cancelled *domainOrder.Order
+
+	err := u.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		txCtx := database.WithTxContext(ctx, tx)
+
+		o, err := u.orderRepo.FindByIDForUpdate(txCtx, id)
+		if err != nil {
+			return err
+		}
+		if o == nil {
+			return appErrors.ErrNotFound
+		}
+		if o.Status == domainOrder.StatusShipped {
+			return appErrors.NewAppError("CANNOT_CANCEL", "Cannot cancel an already shipped order", 400)
+		}
+
+		if err := u.orderRepo.UpdateStatus(txCtx, id, domainOrder.StatusCancelled); err != nil {
+			return err
+		}
+		o.Status = domainOrder.StatusCancelled
+		cancelled = o
+		return nil
+	})
+
 	if err != nil {
 		return nil, err
 	}
-	if o == nil {
-		return nil, appErrors.ErrNotFound
-	}
-	if o.Status == domainOrder.StatusShipped {
-		return nil, appErrors.NewAppError("CANNOT_CANCEL", "Cannot cancel an already shipped order", 400)
-	}
-
-	if err := u.orderRepo.UpdateStatus(ctx, id, domainOrder.StatusCancelled); err != nil {
-		return nil, err
-	}
-	o.Status = domainOrder.StatusCancelled
-	return o, nil
+	return cancelled, nil
 }

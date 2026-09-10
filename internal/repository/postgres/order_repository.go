@@ -8,6 +8,7 @@ import (
 	"chawy-erp-api/pkg/database"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type OrderRepository struct {
@@ -29,6 +30,20 @@ func (r *OrderRepository) Create(ctx context.Context, o *order.Order) error {
 func (r *OrderRepository) FindByID(ctx context.Context, id uint) (*order.Order, error) {
 	var o order.Order
 	err := r.getDB(ctx).Preload("Items").First(&o, id).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &o, nil
+}
+
+// FindByIDForUpdate locks the order row with SELECT ... FOR UPDATE so status
+// transitions cannot race (FULL-07). Must be called inside a transaction.
+func (r *OrderRepository) FindByIDForUpdate(ctx context.Context, id uint) (*order.Order, error) {
+	var o order.Order
+	err := r.getDB(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).Preload("Items").First(&o, id).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil

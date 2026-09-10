@@ -19,11 +19,11 @@ type Stock struct {
 type MovementType string
 
 const (
-	MovementIn       MovementType = "IN"
-	MovementOut      MovementType = "OUT"
-	MovementAdjust   MovementType = "ADJUST"
-	MovementReserve  MovementType = "RESERVE"
-	MovementRelease  MovementType = "RELEASE"
+	MovementIn      MovementType = "IN"
+	MovementOut     MovementType = "OUT"
+	MovementAdjust  MovementType = "ADJUST"
+	MovementReserve MovementType = "RESERVE"
+	MovementRelease MovementType = "RELEASE"
 )
 
 type StockMovement struct {
@@ -50,6 +50,9 @@ type Query struct {
 
 type Repository interface {
 	GetBySKUID(ctx context.Context, skuID, warehouseID uint) (*Stock, error)
+	// GetBySKUIDForUpdate locks the stock row (SELECT ... FOR UPDATE) so
+	// availability checks and quantity updates share the same lock.
+	GetBySKUIDForUpdate(ctx context.Context, skuID, warehouseID uint) (*Stock, error)
 	FindAll(ctx context.Context, query Query) ([]Stock, int64, error)
 	UpdateQuantity(ctx context.Context, skuID, warehouseID uint, delta int) (*Stock, error)
 	CreateMovement(ctx context.Context, movement *StockMovement) error

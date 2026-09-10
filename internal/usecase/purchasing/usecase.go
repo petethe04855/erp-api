@@ -56,6 +56,7 @@ type Usecase interface {
 
 type purchasingUsecase struct {
 	db             *gorm.DB
+	txMgr          database.TxManager
 	purchasingRepo domainPurchasing.Repository
 	skuRepo        domainSKU.Repository
 	stockRepo      domainStock.Repository
@@ -69,6 +70,24 @@ func NewPurchasingUsecase(
 ) Usecase {
 	return &purchasingUsecase{
 		db:             db,
+		purchasingRepo: purchasingRepo,
+		skuRepo:        skuRepo,
+		stockRepo:      stockRepo,
+	}
+}
+
+// NewPurchasingUsecaseWithTx wires a transaction manager so receives and
+// their stock/movement/GR writes commit atomically (FULL-09).
+func NewPurchasingUsecaseWithTx(
+	db *gorm.DB,
+	purchasingRepo domainPurchasing.Repository,
+	skuRepo domainSKU.Repository,
+	stockRepo domainStock.Repository,
+	txMgr database.TxManager,
+) Usecase {
+	return &purchasingUsecase{
+		db:             db,
+		txMgr:          txMgr,
 		purchasingRepo: purchasingRepo,
 		skuRepo:        skuRepo,
 		stockRepo:      stockRepo,
@@ -223,28 +242,58 @@ func (u *purchasingUsecase) ReceiveGoods(ctx context.Context, in ReceiveGoodsInp
 		in.WarehouseID = 1
 	}
 
-	po, err := u.purchasingRepo.FindPOByID(ctx, in.POID)
-	if err != nil {
-		return nil, err
-	}
-	if po == nil {
-		return nil, appErrors.ErrNotFound
-	}
-	if po.Status == domainPurchasing.StatusReceived {
-		return nil, fmt.Errorf("PO already received")
-	}
+	var result *domainPurchasing.PurchaseOrder
 
-	// Transaction: increase inventory stock and record movements
-	err = u.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		txCtx := database.WithTxContext(ctx, tx)
-		for i, line := range po.Items {
+	run := func(txCtx context.Context) error {
+		// FULL-09: lock the PO row before any state check so concurrent
+		// receives serialize instead of both reading "not received yet".
+		po, err := u.purchasingRepo.FindPOByIDForUpdate(txCtx, in.POID)
+		if err != nil {
+			return err
+		}
+		if po == nil {
+			return appErrors.ErrNotFound
+		}
+		if po.Status == domainPurchasing.StatusReceived {
+			return appErrors.NewAppError("PO_ALREADY_RECEIVED", "PO already received", 400)
+		}
+		if po.Status == domainPurchasing.StatusCancelled {
+			return appErrors.NewAppError("PO_CANCELLED", "cannot receive goods for a cancelled purchase order", 400)
+		}
+
+		grCode := fmt.Sprintf("GR-%s", time.Now().Format("20060102150405"))
+		gr := &domainPurchasing.GoodsReceive{
+			Code:         grCode,
+			POID:         &po.ID,
+			PORef:        po.PONo,
+			SupplierName: po.SupplierName,
+			ReceiveDate:  time.Now().Format("2006-01-02"),
+			Note:         fmt.Sprintf("Received via PO receive API for %s", po.PONo),
+		}
+
+		var grItems []domainPurchasing.GoodsReceiveItem
+		pendingGR := gr
+
+		for i := range po.Items {
+			line := &po.Items[i]
+
+			// FULL-09: receive only the remaining quantity, never the full
+			// line again after a partial receipt.
+			remaining := line.Quantity - line.ReceivedQty
+			if remaining <= 0 {
+				continue
+			}
+
 			skuEntity, err := u.skuRepo.FindBySKU(txCtx, line.SKU)
-			if err != nil || skuEntity == nil {
+			if err != nil {
+				return err
+			}
+			if skuEntity == nil {
 				return fmt.Errorf("sku %s not found", line.SKU)
 			}
 
-			// Get current stock
-			stk, err := u.stockRepo.GetBySKUID(txCtx, skuEntity.ID, in.WarehouseID)
+			// Lock the stock row so reads and writes share one lock.
+			stk, err := u.stockRepo.GetBySKUIDForUpdate(txCtx, skuEntity.ID, in.WarehouseID)
 			if err != nil {
 				return err
 			}
@@ -253,39 +302,79 @@ func (u *purchasingUsecase) ReceiveGoods(ctx context.Context, in ReceiveGoodsInp
 				beforeQty = stk.Quantity
 			}
 
-			// Increase stock
-			updatedStk, err := u.stockRepo.UpdateQuantity(txCtx, skuEntity.ID, in.WarehouseID, line.Quantity)
+			updatedStk, err := u.stockRepo.UpdateQuantity(txCtx, skuEntity.ID, in.WarehouseID, remaining)
 			if err != nil {
 				return err
 			}
 
-			// Record stock IN movement
 			movement := &domainStock.StockMovement{
 				SKUID:         skuEntity.ID,
 				SKUCode:       skuEntity.SKU,
 				WarehouseID:   in.WarehouseID,
 				Type:          domainStock.MovementIn,
-				Quantity:      line.Quantity,
+				Quantity:      remaining,
 				BeforeQty:     beforeQty,
 				AfterQty:      updatedStk.Quantity,
 				ReferenceType: "PO_RECEIVE",
-				ReferenceID:   po.PONo,
+				ReferenceID:   gr.Code,
 				Note:          fmt.Sprintf("Goods receipt for PO %s", po.PONo),
 			}
 			if err := u.stockRepo.CreateMovement(txCtx, movement); err != nil {
 				return err
 			}
 
-			po.Items[i].ReceivedQty = line.Quantity
+			line.ReceivedQty = line.Quantity
+			if err := u.purchasingRepo.UpdatePOItemReceivedQty(txCtx, line.ID, line.ReceivedQty); err != nil {
+				return err
+			}
+
+			grItems = append(grItems, domainPurchasing.GoodsReceiveItem{
+				SKU:       skuEntity.SKU,
+				Name:      skuEntity.Name,
+				Quantity:  remaining,
+				QCStatus:  "Accepted",
+				CreatedAt: time.Now(),
+			})
 		}
 
-		po.Status = domainPurchasing.StatusReceived
-		return u.purchasingRepo.UpdatePO(txCtx, po)
-	})
+		// Persist the GR document inside the same transaction.
+		if err := u.purchasingRepo.CreateGoodsReceiveDoc(txCtx, pendingGR, grItems); err != nil {
+			return err
+		}
 
-	if err != nil {
-		return nil, err
+		// Mark RECEIVED only when every line is fully received (FULL-09:
+		// partial receipts keep the PO open for the remainder).
+		allDone := true
+		for i := range po.Items {
+			if po.Items[i].ReceivedQty < po.Items[i].Quantity {
+				allDone = false
+				break
+			}
+		}
+		po.Status = domainPurchasing.StatusApproved
+		if allDone {
+			po.Status = domainPurchasing.StatusReceived
+		}
+		po.UpdatedAt = time.Now()
+		if err := u.purchasingRepo.UpdatePO(txCtx, po); err != nil {
+			return err
+		}
+
+		result = po
+		return nil
 	}
 
-	return po, nil
+	if u.txMgr != nil {
+		if err := u.txMgr.Transaction(ctx, run); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := u.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			return run(database.WithTxContext(ctx, tx))
+		}); err != nil {
+			return nil, err
+		}
+	}
+
+	return result, nil
 }
