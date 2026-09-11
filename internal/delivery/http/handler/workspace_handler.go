@@ -644,6 +644,13 @@ func (h *WorkspaceHandler) UpdateProduct(c *fiber.Ctx) error {
 		IsBundle    *bool    `json:"isBundle"`
 		Image       *string  `json:"image"`
 		Status      *string  `json:"status"`
+		Components  []struct {
+			ComponentSKU string `json:"componentSku"`
+			SKU          string `json:"sku"`
+			Quantity     int    `json:"quantity"`
+			Qty          int    `json:"qty"`
+			Note         string `json:"note"`
+		} `json:"components"`
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return response.BadRequest(c, "Invalid request body")
@@ -680,7 +687,51 @@ func (h *WorkspaceHandler) UpdateProduct(c *fiber.Ctx) error {
 	}
 	s.UpdatedAt = time.Now()
 
-	if err := h.db.WithContext(c.Context()).Save(&s).Error; err != nil {
+	err := h.db.WithContext(c.Context()).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(&s).Error; err != nil {
+			return err
+		}
+
+		if s.IsBundle && req.Components != nil {
+			// Replace existing bundle components with the updated list
+			if err := tx.Where("bundle_sku = ?", s.SKU).Delete(&domainBundle.BundleItem{}).Error; err != nil {
+				return err
+			}
+			for _, comp := range req.Components {
+				compSKU := comp.ComponentSKU
+				if compSKU == "" && comp.SKU != "" {
+					compSKU = comp.SKU
+				}
+				compSKU = strings.ToUpper(strings.TrimSpace(compSKU))
+				if compSKU == "" {
+					continue
+				}
+
+				qty := comp.Quantity
+				if qty <= 0 && comp.Qty > 0 {
+					qty = comp.Qty
+				}
+				if qty <= 0 {
+					qty = 1
+				}
+
+				bundleItem := domainBundle.BundleItem{
+					BundleSKU:    s.SKU,
+					ComponentSKU: compSKU,
+					Quantity:     qty,
+					Note:         comp.Note,
+					CreatedAt:    time.Now(),
+					UpdatedAt:    time.Now(),
+				}
+				if err := tx.Create(&bundleItem).Error; err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
 		return response.InternalServerError(c, "Failed to update product: "+err.Error())
 	}
 
@@ -719,6 +770,7 @@ func (h *WorkspaceHandler) deleteProductRecord(c *fiber.Ctx, s *domainSKU.SKU) e
 	// the check is still possible until FK restrictions exist, but the check
 	// itself can no longer fail-open.
 	var inUse bool
+	var inUseMsg string
 	err := h.db.WithContext(c.Context()).Transaction(func(tx *gorm.DB) error {
 		// Re-lock the SKU row inside the tx so the product cannot be deleted
 		// twice or mutated while we inspect references.
@@ -728,29 +780,75 @@ func (h *WorkspaceHandler) deleteProductRecord(c *fiber.Ctx, s *domainSKU.SKU) e
 		}
 
 		type refCount struct {
-			Stocks      int64 `gorm:"column:stocks"`
-			Movements   int64 `gorm:"column:movements"`
-			OrderItems  int64 `gorm:"column:order_items"`
-			POItems     int64 `gorm:"column:po_items"`
-			QuotationLn int64 `gorm:"column:quotation_lines"`
-			BundleComps int64 `gorm:"column:bundle_components"`
+			PositiveStock int64 `gorm:"column:positive_stock"`
+			Movements     int64 `gorm:"column:movements"`
+			OrderItems    int64 `gorm:"column:order_items"`
+			POItems       int64 `gorm:"column:po_items"`
+			QuotationLn   int64 `gorm:"column:quotation_lines"`
+			UsedAsComp    int64 `gorm:"column:used_as_comp"`
 		}
 		var refs refCount
-		if err := tx.Raw(`
-			SELECT
-				(SELECT COUNT(*) FROM stocks WHERE sku_id = ?) AS stocks,
-				(SELECT COUNT(*) FROM stock_movements WHERE sku_id = ?) AS movements,
-				(SELECT COUNT(*) FROM order_items WHERE sku = ?) AS order_items,
-				(SELECT COUNT(*) FROM po_items WHERE sku = ?) AS po_items,
-				(SELECT COUNT(*) FROM quotation_lines WHERE sku = ?) AS quotation_lines,
-				(SELECT COUNT(*) FROM bundle_items WHERE component_sku = ? OR bundle_sku = ?) AS bundle_components
-		`, s.ID, s.ID, s.SKU, s.SKU, s.SKU, s.SKU, s.SKU).Scan(&refs).Error; err != nil {
-			return fmt.Errorf("reference check failed: %w", err)
+
+		// For bundle products, stock and movements are virtual (derived from child components),
+		// so we only check if the bundle itself was used in orders, POs, quotations, or child of another bundle.
+		if s.IsBundle {
+			if err := tx.Raw(`
+				SELECT
+					0 AS positive_stock,
+					0 AS movements,
+					(SELECT COUNT(*) FROM order_items WHERE sku = ?) AS order_items,
+					(SELECT COUNT(*) FROM po_items WHERE sku = ?) AS po_items,
+					(SELECT COUNT(*) FROM quotation_lines WHERE sku = ?) AS quotation_lines,
+					(SELECT COUNT(*) FROM bundle_items WHERE component_sku = ?) AS used_as_comp
+			`, s.SKU, s.SKU, s.SKU, s.SKU).Scan(&refs).Error; err != nil {
+				return fmt.Errorf("reference check failed: %w", err)
+			}
+		} else {
+			if err := tx.Raw(`
+				SELECT
+					(SELECT COUNT(*) FROM stocks WHERE sku_id = ? AND (quantity > 0 OR available_qty > 0)) AS positive_stock,
+					(SELECT COUNT(*) FROM stock_movements WHERE sku_id = ?) AS movements,
+					(SELECT COUNT(*) FROM order_items WHERE sku = ?) AS order_items,
+					(SELECT COUNT(*) FROM po_items WHERE sku = ?) AS po_items,
+					(SELECT COUNT(*) FROM quotation_lines WHERE sku = ?) AS quotation_lines,
+					(SELECT COUNT(*) FROM bundle_items WHERE component_sku = ?) AS used_as_comp
+			`, s.ID, s.ID, s.SKU, s.SKU, s.SKU, s.SKU).Scan(&refs).Error; err != nil {
+				return fmt.Errorf("reference check failed: %w", err)
+			}
 		}
 
-		if refs.Stocks > 0 || refs.Movements > 0 || refs.OrderItems > 0 || refs.POItems > 0 || refs.QuotationLn > 0 || refs.BundleComps > 0 {
+		var inUseReasons []string
+		if refs.PositiveStock > 0 {
+			inUseReasons = append(inUseReasons, fmt.Sprintf("มีสต็อกคงเหลือ (%d รายการ)", refs.PositiveStock))
+		}
+		if refs.Movements > 0 {
+			inUseReasons = append(inUseReasons, fmt.Sprintf("มีประวัติการเคลื่อนไหวสต็อก (%d รายการ)", refs.Movements))
+		}
+		if refs.OrderItems > 0 {
+			inUseReasons = append(inUseReasons, fmt.Sprintf("อยู่ในรายการคำสั่งซื้อ (%d รายการ)", refs.OrderItems))
+		}
+		if refs.POItems > 0 {
+			inUseReasons = append(inUseReasons, fmt.Sprintf("อยู่ในใบสั่งซื้อ PO (%d รายการ)", refs.POItems))
+		}
+		if refs.QuotationLn > 0 {
+			inUseReasons = append(inUseReasons, fmt.Sprintf("อยู่ในใบเสนอราคา (%d รายการ)", refs.QuotationLn))
+		}
+		if refs.UsedAsComp > 0 {
+			inUseReasons = append(inUseReasons, fmt.Sprintf("ถูกใช้เป็นส่วนประกอบในชุด Bundle อื่น (%d รายการ)", refs.UsedAsComp))
+		}
+
+		if len(inUseReasons) > 0 {
 			inUse = true
+			inUseMsg = strings.Join(inUseReasons, ", ")
 			return nil
+		}
+
+		// Clean up initial zero-stock records and bundle definitions owned by this SKU
+		if err := tx.Where("sku_id = ?", s.ID).Delete(&domainStock.Stock{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("bundle_sku = ?", s.SKU).Delete(&domainBundle.BundleItem{}).Error; err != nil {
+			return err
 		}
 
 		return tx.Delete(&domainSKU.SKU{}, s.ID).Error
@@ -760,7 +858,7 @@ func (h *WorkspaceHandler) deleteProductRecord(c *fiber.Ctx, s *domainSKU.SKU) e
 		return response.InternalServerError(c, "Failed to delete product: "+err.Error())
 	}
 	if inUse {
-		return response.BadRequest(c, "Cannot delete product: it is referenced by stock, movement history, orders, POs, quotations or bundle formulas. Archive it instead.", "PRODUCT_IN_USE")
+		return response.BadRequest(c, "ไม่สามารถลบสินค้านี้ได้: "+inUseMsg+" กรุณาปิดการใช้งาน (Inactive) แทน", "PRODUCT_IN_USE")
 	}
 
 	return response.OK(c, nil, "Product deleted successfully")
@@ -1781,7 +1879,7 @@ func (h *WorkspaceHandler) CreateQuotation(c *fiber.Ctx) error {
 		return response.BadRequest(c, "Invalid request body")
 	}
 
-	input := domainQuotation.CreateInput{
+	input := usecaseQuotation.CreateInput{
 		Customer:   req.Customer,
 		Date:       req.Date,
 		ValidUntil: req.ValidUntil,
@@ -1789,9 +1887,9 @@ func (h *WorkspaceHandler) CreateQuotation(c *fiber.Ctx) error {
 		LeadSource: req.LeadSource,
 		Note:       req.Note,
 	}
-	input.Lines = make([]domainQuotation.LineInput, len(req.Lines))
+	input.Lines = make([]usecaseQuotation.LineInput, len(req.Lines))
 	for i, l := range req.Lines {
-		input.Lines[i] = domainQuotation.LineInput{
+		input.Lines[i] = usecaseQuotation.LineInput{
 			ProductID: l.ProductID,
 			SKU:       l.SKU,
 			Name:      l.Name,

@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"chawy-erp-api/internal/domain/bundle"
+	pkgDatabase "chawy-erp-api/pkg/database"
 
 	"gorm.io/gorm"
 )
@@ -16,14 +17,18 @@ func NewBundleRepository(db *gorm.DB) bundle.Repository {
 	return &BundleRepository{db: db}
 }
 
+func (r *BundleRepository) handle(ctx context.Context) *gorm.DB {
+	return pkgDatabase.GetDBFromContext(ctx, r.db)
+}
+
 func (r *BundleRepository) GetItemsByBundleSKU(ctx context.Context, bundleSKU string) ([]bundle.BundleItem, error) {
 	var items []bundle.BundleItem
-	err := r.db.WithContext(ctx).Where("bundle_sku = ?", bundleSKU).Find(&items).Error
+	err := r.handle(ctx).Where("bundle_sku = ?", bundleSKU).Find(&items).Error
 	return items, err
 }
 
 func (r *BundleRepository) SaveItems(ctx context.Context, bundleSKU string, items []bundle.BundleItem) error {
-	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return r.handle(ctx).Transaction(func(tx *gorm.DB) error {
 		// Delete existing components
 		if err := tx.Where("bundle_sku = ?", bundleSKU).Delete(&bundle.BundleItem{}).Error; err != nil {
 			return err
@@ -40,5 +45,5 @@ func (r *BundleRepository) SaveItems(ctx context.Context, bundleSKU string, item
 }
 
 func (r *BundleRepository) DeleteItem(ctx context.Context, id uint) error {
-	return r.db.WithContext(ctx).Delete(&bundle.BundleItem{}, id).Error
+	return r.handle(ctx).Delete(&bundle.BundleItem{}, id).Error
 }

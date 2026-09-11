@@ -93,9 +93,9 @@ func newUsecase(repo *fakeQuotationRepo, sku *fakeSKURepo) usecaseQuotation.Usec
 func TestCreate_RejectsNonPositiveQuantity(t *testing.T) {
 	uc := newUsecase(&fakeQuotationRepo{}, &fakeSKURepo{sku: &domainSKU.SKU{ID: 1, SKU: "ABC"}})
 
-	_, err := uc.Create(context.Background(), domainQuotation.CreateInput{
+	_, err := uc.Create(context.Background(), usecaseQuotation.CreateInput{
 		Customer: "Acme",
-		Lines: []domainQuotation.LineInput{
+		Lines: []usecaseQuotation.LineInput{
 			{SKU: "ABC", Price: 100, Qty: 0},
 		},
 	})
@@ -107,9 +107,9 @@ func TestCreate_RejectsNonPositiveQuantity(t *testing.T) {
 func TestCreate_RejectsNegativePrice(t *testing.T) {
 	uc := newUsecase(&fakeQuotationRepo{}, &fakeSKURepo{sku: &domainSKU.SKU{ID: 1, SKU: "ABC"}})
 
-	_, err := uc.Create(context.Background(), domainQuotation.CreateInput{
+	_, err := uc.Create(context.Background(), usecaseQuotation.CreateInput{
 		Customer: "Acme",
-		Lines: []domainQuotation.LineInput{
+		Lines: []usecaseQuotation.LineInput{
 			{SKU: "ABC", Price: -5, Qty: 1},
 		},
 	})
@@ -121,9 +121,9 @@ func TestCreate_RejectsNegativePrice(t *testing.T) {
 func TestCreate_RejectsUnknownSKU(t *testing.T) {
 	uc := newUsecase(&fakeQuotationRepo{}, &fakeSKURepo{})
 
-	_, err := uc.Create(context.Background(), domainQuotation.CreateInput{
+	_, err := uc.Create(context.Background(), usecaseQuotation.CreateInput{
 		Customer: "Acme",
-		Lines: []domainQuotation.LineInput{
+		Lines: []usecaseQuotation.LineInput{
 			{SKU: "NOPE", Price: 10, Qty: 1},
 		},
 	})
@@ -135,9 +135,9 @@ func TestCreate_RejectsUnknownSKU(t *testing.T) {
 func TestCreate_RejectsProductSKUMismatch(t *testing.T) {
 	uc := newUsecase(&fakeQuotationRepo{}, &fakeSKURepo{sku: &domainSKU.SKU{ID: 1, SKU: "ABC"}})
 
-	_, err := uc.Create(context.Background(), domainQuotation.CreateInput{
+	_, err := uc.Create(context.Background(), usecaseQuotation.CreateInput{
 		Customer: "Acme",
-		Lines: []domainQuotation.LineInput{
+		Lines: []usecaseQuotation.LineInput{
 			{SKU: "ABC", ProductID: 42, Price: 10, Qty: 1},
 		},
 	})
@@ -150,10 +150,10 @@ func TestCreate_RejectsNonDraftStatus(t *testing.T) {
 	uc := newUsecase(&fakeQuotationRepo{}, &fakeSKURepo{sku: &domainSKU.SKU{ID: 1, SKU: "ABC"}})
 
 	// Attempting to create with an invalid status string
-	_, err := uc.Create(context.Background(), domainQuotation.CreateInput{
+	_, err := uc.Create(context.Background(), usecaseQuotation.CreateInput{
 		Customer: "Acme",
 		Status:   "Nonsense",
-		Lines: []domainQuotation.LineInput{
+		Lines: []usecaseQuotation.LineInput{
 			{SKU: "ABC", Price: 10, Qty: 1},
 		},
 	})
@@ -161,10 +161,10 @@ func TestCreate_RejectsNonDraftStatus(t *testing.T) {
 	assert.Contains(t, err.Error(), "New quotations must be created with status 'Draft'")
 
 	// Attempting to bypass state machine by creating as Approved directly
-	_, err = uc.Create(context.Background(), domainQuotation.CreateInput{
+	_, err = uc.Create(context.Background(), usecaseQuotation.CreateInput{
 		Customer: "Acme",
 		Status:   string(domainQuotation.StatusApproved),
-		Lines: []domainQuotation.LineInput{
+		Lines: []usecaseQuotation.LineInput{
 			{SKU: "ABC", Price: 10, Qty: 1},
 		},
 	})
@@ -172,10 +172,10 @@ func TestCreate_RejectsNonDraftStatus(t *testing.T) {
 	assert.Contains(t, err.Error(), "New quotations must be created with status 'Draft'")
 
 	// Attempting to create as Converted directly
-	_, err = uc.Create(context.Background(), domainQuotation.CreateInput{
+	_, err = uc.Create(context.Background(), usecaseQuotation.CreateInput{
 		Customer: "Acme",
 		Status:   string(domainQuotation.StatusConverted),
-		Lines: []domainQuotation.LineInput{
+		Lines: []usecaseQuotation.LineInput{
 			{SKU: "ABC", Price: 10, Qty: 1},
 		},
 	})
@@ -186,11 +186,11 @@ func TestCreate_RejectsNonDraftStatus(t *testing.T) {
 func TestCreate_RejectsValidUntilBeforeDate(t *testing.T) {
 	uc := newUsecase(&fakeQuotationRepo{}, &fakeSKURepo{sku: &domainSKU.SKU{ID: 1, SKU: "ABC"}})
 
-	_, err := uc.Create(context.Background(), domainQuotation.CreateInput{
+	_, err := uc.Create(context.Background(), usecaseQuotation.CreateInput{
 		Customer:   "Acme",
 		Date:       "2026-09-10",
 		ValidUntil: "2026-09-01",
-		Lines: []domainQuotation.LineInput{
+		Lines: []usecaseQuotation.LineInput{
 			{SKU: "ABC", Price: 10, Qty: 1},
 		},
 	})
@@ -203,9 +203,9 @@ func TestCreate_ComputesTotalFromValidatedLines(t *testing.T) {
 	repo := &fakeQuotationRepo{}
 	uc := newUsecase(repo, &fakeSKURepo{sku: &domainSKU.SKU{ID: 1, SKU: "ABC"}})
 
-	q, err := uc.Create(context.Background(), domainQuotation.CreateInput{
+	q, err := uc.Create(context.Background(), usecaseQuotation.CreateInput{
 		Customer: "Acme",
-		Lines: []domainQuotation.LineInput{
+		Lines: []usecaseQuotation.LineInput{
 			{SKU: "abc", Price: 100, Qty: 2}, // lowercase SKU must normalize
 			{SKU: "ABC", Price: 50, Qty: 1},
 		},

@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"chawy-erp-api/internal/domain/sku"
+	pkgDatabase "chawy-erp-api/pkg/database"
 
 	"gorm.io/gorm"
 )
@@ -17,13 +18,17 @@ func NewSKURepository(db *gorm.DB) sku.Repository {
 	return &SKURepository{db: db}
 }
 
+func (r *SKURepository) handle(ctx context.Context) *gorm.DB {
+	return pkgDatabase.GetDBFromContext(ctx, r.db)
+}
+
 func (r *SKURepository) Create(ctx context.Context, item *sku.SKU) error {
-	return r.db.WithContext(ctx).Create(item).Error
+	return r.handle(ctx).Create(item).Error
 }
 
 func (r *SKURepository) FindByID(ctx context.Context, id uint) (*sku.SKU, error) {
 	var item sku.SKU
-	err := r.db.WithContext(ctx).First(&item, id).Error
+	err := r.handle(ctx).First(&item, id).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
@@ -35,7 +40,7 @@ func (r *SKURepository) FindByID(ctx context.Context, id uint) (*sku.SKU, error)
 
 func (r *SKURepository) FindBySKU(ctx context.Context, skuCode string) (*sku.SKU, error) {
 	var item sku.SKU
-	err := r.db.WithContext(ctx).Where("sku = ?", skuCode).First(&item).Error
+	err := r.handle(ctx).Where("sku = ?", skuCode).First(&item).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
@@ -49,7 +54,7 @@ func (r *SKURepository) FindAll(ctx context.Context, q sku.Query) ([]sku.SKU, in
 	var items []sku.SKU
 	var total int64
 
-	tx := r.db.WithContext(ctx).Model(&sku.SKU{})
+	tx := r.handle(ctx).Model(&sku.SKU{})
 
 	if q.Search != "" {
 		searchPattern := "%" + q.Search + "%"
@@ -82,16 +87,16 @@ func (r *SKURepository) FindAll(ctx context.Context, q sku.Query) ([]sku.SKU, in
 }
 
 func (r *SKURepository) Update(ctx context.Context, item *sku.SKU) error {
-	return r.db.WithContext(ctx).Save(item).Error
+	return r.handle(ctx).Save(item).Error
 }
 
 func (r *SKURepository) Delete(ctx context.Context, id uint) error {
-	return r.db.WithContext(ctx).Delete(&sku.SKU{}, id).Error
+	return r.handle(ctx).Delete(&sku.SKU{}, id).Error
 }
 
 func (r *SKURepository) ExistsBySKU(ctx context.Context, skuCode string) (bool, error) {
 	var count int64
-	err := r.db.WithContext(ctx).Model(&sku.SKU{}).Where("sku = ?", skuCode).Count(&count).Error
+	err := r.handle(ctx).Model(&sku.SKU{}).Where("sku = ?", skuCode).Count(&count).Error
 	if err != nil {
 		return false, err
 	}

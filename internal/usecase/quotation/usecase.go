@@ -31,10 +31,10 @@ type TxManager interface {
 
 type Usecase interface {
 	List(ctx context.Context, page, limit int) ([]domainQuotation.Quotation, int64, error)
-	Create(ctx context.Context, input domainQuotation.CreateInput) (*domainQuotation.Quotation, error)
+	Create(ctx context.Context, input CreateInput) (*domainQuotation.Quotation, error)
 	GetByID(ctx context.Context, id uint) (*domainQuotation.Quotation, error)
 	UpdateStatus(ctx context.Context, id uint, newStatus domainQuotation.Status) (*domainQuotation.Quotation, error)
-	ConvertToSalesOrder(ctx context.Context, id uint) (*domainQuotation.ConversionResult, error)
+	ConvertToSalesOrder(ctx context.Context, id uint) (*ConversionResult, error)
 }
 
 type quotationUsecase struct {
@@ -61,7 +61,7 @@ func (u *quotationUsecase) List(ctx context.Context, page, limit int) ([]domainQ
 // Create validates client business data server-side and persists a quotation.
 // It never trusts client prices/quantities/dates/status blindly (P1 fix:
 // quotation API must not trust business data from the client).
-func (u *quotationUsecase) Create(ctx context.Context, input domainQuotation.CreateInput) (*domainQuotation.Quotation, error) {
+func (u *quotationUsecase) Create(ctx context.Context, input CreateInput) (*domainQuotation.Quotation, error) {
 	if strings.TrimSpace(input.Customer) == "" {
 		return nil, appErrors.NewAppError("QUOTATION_CUSTOMER_REQUIRED", "Customer name is required", 400)
 	}
@@ -139,35 +139,34 @@ func (u *quotationUsecase) Create(ctx context.Context, input domainQuotation.Cre
 	}
 
 	// API-TS-03: Generate collision-resistant unique code with nanosecond precision and cryptographic entropy.
-	var lastErr error
-	for attempt := 0; attempt < 5; attempt++ {
-		now := time.Now()
-		rnd, _ := rand.Int(rand.Reader, big.NewInt(100000000))
-		code := fmt.Sprintf("QT-%s-%09d-%08d", now.Format("20060102"), now.UnixNano()%1000000000, rnd.Int64())
+	now := time.Now()
+	rnd, err := rand.Int(rand.Reader, big.NewInt(100000000))
+	var rndVal int64
+	if err != nil {
+		rndVal = now.UnixNano() % 100000000
+	} else {
+		rndVal = rnd.Int64()
+	}
+	code := fmt.Sprintf("QT-%s-%09d-%08d", now.Format("20060102"), now.UnixNano()%1000000000, rndVal)
 
-		q := &domainQuotation.Quotation{
-			Code:         code,
-			CustomerName: input.Customer,
-			Date:         dateStr,
-			ValidUntil:   validUntilStr,
-			LeadSource:   input.LeadSource,
-			Status:       status,
-			TotalAmount:  total,
-			Note:         input.Note,
-			Lines:        lines,
-			CreatedAt:    now,
-			UpdatedAt:    now,
-		}
-
-		if err := u.repo.Create(ctx, q); err != nil {
-			lastErr = err
-			time.Sleep(time.Millisecond * 2)
-			continue
-		}
-		return q, nil
+	q := &domainQuotation.Quotation{
+		Code:         code,
+		CustomerName: input.Customer,
+		Date:         dateStr,
+		ValidUntil:   validUntilStr,
+		LeadSource:   input.LeadSource,
+		Status:       status,
+		TotalAmount:  total,
+		Note:         input.Note,
+		Lines:        lines,
+		CreatedAt:    now,
+		UpdatedAt:    now,
 	}
 
-	return nil, fmt.Errorf("failed to generate unique quotation code after retries: %w", lastErr)
+	if err := u.repo.Create(ctx, q); err != nil {
+		return nil, fmt.Errorf("failed to create quotation: %w", err)
+	}
+	return q, nil
 }
 
 func (u *quotationUsecase) GetByID(ctx context.Context, id uint) (*domainQuotation.Quotation, error) {
@@ -218,8 +217,8 @@ func (u *quotationUsecase) UpdateStatus(ctx context.Context, id uint, newStatus 
 // ConvertToSalesOrder converts an Approved, non-expired quotation with valid
 // lines into a pending Sales Order inside one transaction, locking the
 // quotation row so a concurrent conversion cannot double-create orders.
-func (u *quotationUsecase) ConvertToSalesOrder(ctx context.Context, id uint) (*domainQuotation.ConversionResult, error) {
-	var result *domainQuotation.ConversionResult
+func (u *quotationUsecase) ConvertToSalesOrder(ctx context.Context, id uint) (*ConversionResult, error) {
+	var result *ConversionResult
 
 	err := u.txMgr.Transaction(ctx, func(txCtx context.Context) error {
 		q, err := u.repo.FindByIDForUpdateWithLines(txCtx, id)
@@ -267,8 +266,14 @@ func (u *quotationUsecase) ConvertToSalesOrder(ctx context.Context, id uint) (*d
 		}
 
 		now := time.Now()
-		rnd, _ := rand.Int(rand.Reader, big.NewInt(100000000))
-		orderNo := fmt.Sprintf("SO-%s-%09d-%08d", now.Format("20060102"), now.UnixNano()%1000000000, rnd.Int64())
+		rnd, err := rand.Int(rand.Reader, big.NewInt(100000000))
+		var rndVal int64
+		if err != nil {
+			rndVal = now.UnixNano() % 100000000
+		} else {
+			rndVal = rnd.Int64()
+		}
+		orderNo := fmt.Sprintf("SO-%s-%09d-%08d", now.Format("20060102"), now.UnixNano()%1000000000, rndVal)
 
 		ord := &domainOrder.Order{
 			OrderNo:      orderNo,
@@ -294,7 +299,7 @@ func (u *quotationUsecase) ConvertToSalesOrder(ctx context.Context, id uint) (*d
 			return err
 		}
 
-		result = &domainQuotation.ConversionResult{
+		result = &ConversionResult{
 			QuotationID: q.ID,
 			OrderID:     ord.ID,
 			OrderNo:     orderNo,
