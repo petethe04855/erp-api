@@ -1193,28 +1193,27 @@ func (h *WorkspaceHandler) UpdateSalesOrderStatus(c *fiber.Ctx) error {
 	}
 
 	targetStatus := strings.ToUpper(strings.TrimSpace(req.Status))
-
-	// Guard: Cannot mutate already cancelled orders
-	if ord.Status == domainOrder.StatusCancelled {
-		return response.BadRequest(c, "Cannot change status of a cancelled order")
+	if targetStatus == "COMPLETED" {
+		targetStatus = "SHIPPED"
 	}
 
-	// Guard: If already shipped, cannot revert to pending/confirmed or cancel directly without return workflow
-	if ord.Status == domainOrder.StatusShipped {
-		if targetStatus == "CANCELLED" {
-			return response.BadRequest(c, "Cannot cancel an order that has already been shipped")
-		}
-		if targetStatus == "PENDING" || targetStatus == "CONFIRMED" {
-			return response.BadRequest(c, "Cannot revert an already shipped order back to pending")
-		}
-		if targetStatus == "COMPLETED" || targetStatus == "SHIPPED" {
-			// Idempotent: already shipped/completed
-			return response.OK(c, ord, "Sales order is already shipped/completed")
-		}
+	targetDomainStatus := domainOrder.Status(targetStatus)
+	if !domainOrder.IsValidStatus(targetDomainStatus) {
+		return response.BadRequest(c, fmt.Sprintf("Invalid order status: %s", req.Status))
+	}
+
+	// Idempotency: same status
+	if ord.Status == targetDomainStatus {
+		return response.OK(c, ord, fmt.Sprintf("Sales order is already %s", targetStatus))
+	}
+
+	// Guard transition map according to design doc
+	if !domainOrder.CanTransition(ord.Status, targetDomainStatus) {
+		return response.BadRequest(c, fmt.Sprintf("Cannot transition order from %s to %s", ord.Status, targetStatus))
 	}
 
 	// Target: Cancel order
-	if targetStatus == "CANCELLED" {
+	if targetDomainStatus == domainOrder.StatusCancelled {
 		cancelledOrder, err := h.orderUsecase.CancelOrder(c.Context(), ord.ID)
 		if err != nil {
 			return response.BadRequest(c, err.Error())
@@ -1223,7 +1222,7 @@ func (h *WorkspaceHandler) UpdateSalesOrderStatus(c *fiber.Ctx) error {
 	}
 
 	// Target: Ship / Complete order
-	if targetStatus == "COMPLETED" || targetStatus == "SHIPPED" {
+	if targetDomainStatus == domainOrder.StatusShipped {
 		shippedOrder, err := h.orderUsecase.ShipOrder(c.Context(), ord.ID, 1)
 		if err != nil {
 			return response.BadRequest(c, fmt.Sprintf("ไม่สามารถตัดสต็อกได้: %s", err.Error()))
@@ -1231,17 +1230,7 @@ func (h *WorkspaceHandler) UpdateSalesOrderStatus(c *fiber.Ctx) error {
 		return response.OK(c, shippedOrder, "Sales order completed and stock deducted successfully")
 	}
 
-	// Whitelist allowed remaining transitions
-	validStatuses := map[string]domainOrder.Status{
-		"PENDING":   domainOrder.StatusPending,
-		"CONFIRMED": domainOrder.StatusConfirmed,
-	}
-	newStatus, ok := validStatuses[targetStatus]
-	if !ok {
-		return response.BadRequest(c, fmt.Sprintf("Invalid order status: %s", targetStatus))
-	}
-
-	ord.Status = newStatus
+	ord.Status = targetDomainStatus
 	if req.Note != "" {
 		ord.Note = req.Note
 	}
@@ -1264,6 +1253,8 @@ type InvoiceRecord struct {
 	VATAmount float64 `json:"vatAmount"`
 	Amount    float64 `json:"amount"`
 	Paid      float64 `json:"paid"`
+	Balance   float64 `json:"balance"`
+	IsOverdue bool    `json:"isOverdue"`
 	Status    string  `json:"status"`
 }
 
@@ -1277,9 +1268,29 @@ func (h *WorkspaceHandler) GetInvoices(c *fiber.Ctx) error {
 		limit = 50
 	}
 
+	search := strings.TrimSpace(c.Query("search", ""))
+	statusQuery := strings.TrimSpace(c.Query("status", ""))
+
 	var invoices []domainInvoice.Invoice
 	var total int64
 	query := h.db.WithContext(c.Context()).Model(&domainInvoice.Invoice{})
+
+	if search != "" {
+		s := "%" + search + "%"
+		query = query.Where("invoice_no ILIKE ? OR customer_name ILIKE ? OR order_no ILIKE ?", s, s, s)
+	}
+
+	today := time.Now().Truncate(24 * time.Hour)
+
+	if statusQuery != "" && !strings.EqualFold(statusQuery, "all") {
+		if strings.EqualFold(statusQuery, "overdue") {
+			// Overdue: balance > 0 and due_date < today and not PAID/CANCELLED
+			query = query.Where("status != 'PAID' AND status != 'CANCELLED' AND due_date IS NOT NULL AND due_date < ? AND (amount - paid_amount) > 0", today)
+		} else {
+			query = query.Where("UPPER(status) = ?", strings.ToUpper(statusQuery))
+		}
+	}
+
 	query.Count(&total)
 	query.Offset((page - 1) * limit).Limit(limit).Order("id DESC").Find(&invoices)
 
@@ -1289,9 +1300,17 @@ func (h *WorkspaceHandler) GetInvoices(c *fiber.Ctx) error {
 		if inv.Status == domainInvoice.StatusPaid && paid <= 0 {
 			paid = inv.Amount
 		}
+		balance := inv.Amount - paid
+		if balance < 0 {
+			balance = 0
+		}
 		dueDateStr := ""
+		isOverdue := false
 		if inv.DueDate != nil {
 			dueDateStr = inv.DueDate.Format("2006-01-02")
+			if balance > 0 && inv.Status != domainInvoice.StatusPaid && inv.Status != domainInvoice.StatusCancelled && inv.DueDate.Before(today) {
+				isOverdue = true
+			}
 		}
 		soRef := inv.OrderNo
 		if soRef == "" && inv.OrderID != nil {
@@ -1309,6 +1328,8 @@ func (h *WorkspaceHandler) GetInvoices(c *fiber.Ctx) error {
 			VATAmount: inv.Amount - (inv.Amount / 1.07),
 			Amount:    inv.Amount,
 			Paid:      paid,
+			Balance:   balance,
+			IsOverdue: isOverdue,
 			Status:    string(inv.Status),
 		}
 	}
@@ -1440,6 +1461,15 @@ func (h *WorkspaceHandler) GetInvoiceByID(c *fiber.Ctx) error {
 	if inv.Status == domainInvoice.StatusPaid && paidAmount <= 0 {
 		paidAmount = inv.Amount
 	}
+	balance := inv.Amount - paidAmount
+	if balance < 0 {
+		balance = 0
+	}
+	isOverdue := false
+	today := time.Now().Truncate(24 * time.Hour)
+	if inv.DueDate != nil && balance > 0 && inv.Status != domainInvoice.StatusPaid && inv.Status != domainInvoice.StatusCancelled && inv.DueDate.Before(today) {
+		isOverdue = true
+	}
 
 	return response.OK(c, fiber.Map{
 		"id":              inv.ID,
@@ -1455,6 +1485,8 @@ func (h *WorkspaceHandler) GetInvoiceByID(c *fiber.Ctx) error {
 		"amount":          inv.Amount,
 		"totalAmount":     inv.Amount,
 		"paid":            paidAmount,
+		"balance":         balance,
+		"isOverdue":       isOverdue,
 		"status":          string(inv.Status),
 		"paymentMethod":   inv.PaymentMethod,
 		"issueDate":       inv.CreatedAt.Format("2006-01-02"),
@@ -1869,20 +1901,52 @@ type QuotationRecord struct {
 	ValidUntil string  `json:"validUntil"`
 	LeadSource string  `json:"leadSource"`
 	Amount     float64 `json:"amount"`
+	IsExpired  bool    `json:"isExpired"`
 	Status     string  `json:"status"`
 }
 
 func (h *WorkspaceHandler) GetQuotations(c *fiber.Ctx) error {
 	page, _ := strconv.Atoi(c.Query("page", "1"))
 	limit, _ := strconv.Atoi(c.Query("limit", "50"))
-
-	quotations, total, err := h.quotationUsecase.List(c.Context(), page, limit)
-	if err != nil {
-		return err
+	if page < 1 {
+		page = 1
 	}
+	if limit < 1 || limit > 100 {
+		limit = 50
+	}
+
+	search := strings.TrimSpace(c.Query("search", ""))
+	statusQuery := strings.TrimSpace(c.Query("status", ""))
+
+	today := time.Now().Format("2006-01-02")
+
+	var quotations []domainQuotation.Quotation
+	var total int64
+	query := h.db.WithContext(c.Context()).Model(&domainQuotation.Quotation{})
+
+	if search != "" {
+		s := "%" + search + "%"
+		query = query.Where("code ILIKE ? OR customer_name ILIKE ?", s, s)
+	}
+
+	if statusQuery != "" && !strings.EqualFold(statusQuery, "all") {
+		if strings.EqualFold(statusQuery, "expired") {
+			// Expired: valid_until < today AND status IN ('Draft', 'Sent', 'Approved')
+			query = query.Where("valid_until != '' AND valid_until < ? AND status IN ('Draft', 'Sent', 'Approved')", today)
+		} else {
+			query = query.Where("LOWER(status) = ?", strings.ToLower(statusQuery))
+		}
+	}
+
+	query.Count(&total)
+	query.Offset((page - 1) * limit).Limit(limit).Order("id DESC").Find(&quotations)
 
 	records := make([]QuotationRecord, len(quotations))
 	for i, q := range quotations {
+		isExpired := false
+		if (q.Status == domainQuotation.StatusDraft || q.Status == domainQuotation.StatusSent || q.Status == domainQuotation.StatusApproved) && q.ValidUntil != "" && q.ValidUntil < today {
+			isExpired = true
+		}
 		records[i] = QuotationRecord{
 			ID:         q.ID,
 			Code:       q.Code,
@@ -1891,6 +1955,7 @@ func (h *WorkspaceHandler) GetQuotations(c *fiber.Ctx) error {
 			ValidUntil: q.ValidUntil,
 			LeadSource: q.LeadSource,
 			Amount:     q.TotalAmount,
+			IsExpired:  isExpired,
 			Status:     string(q.Status),
 		}
 	}
@@ -2039,6 +2104,12 @@ func (h *WorkspaceHandler) GetQuotationByID(c *fiber.Ctx) error {
 		}
 	}
 
+	today := time.Now().Format("2006-01-02")
+	isExpired := false
+	if (q.Status == domainQuotation.StatusDraft || q.Status == domainQuotation.StatusSent || q.Status == domainQuotation.StatusApproved) && q.ValidUntil != "" && q.ValidUntil < today {
+		isExpired = true
+	}
+
 	return response.OK(c, fiber.Map{
 		"id":         q.ID,
 		"code":       q.Code,
@@ -2047,6 +2118,7 @@ func (h *WorkspaceHandler) GetQuotationByID(c *fiber.Ctx) error {
 		"validUntil": q.ValidUntil,
 		"amount":     q.TotalAmount,
 		"status":     string(q.Status),
+		"isExpired":  isExpired,
 		"leadSource": q.LeadSource,
 		"note":       q.Note,
 		"lines":      lines,

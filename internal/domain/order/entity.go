@@ -14,6 +14,35 @@ const (
 	StatusCancelled Status = "CANCELLED"
 )
 
+func IsValidStatus(s Status) bool {
+	switch s {
+	case StatusPending, StatusConfirmed, StatusShipped, StatusCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+func CanTransition(from, to Status) bool {
+	if from == to {
+		return true
+	}
+	switch from {
+	case StatusPending:
+		return to == StatusConfirmed || to == StatusCancelled
+	case StatusConfirmed:
+		return to == StatusShipped || to == StatusCancelled
+	case StatusShipped:
+		// Terminal for order status updates (cannot cancel or revert)
+		return false
+	case StatusCancelled:
+		// Terminal status
+		return false
+	default:
+		return false
+	}
+}
+
 type Order struct {
 	ID           uint        `json:"id" gorm:"primaryKey"`
 	OrderNo      string      `json:"order_no" gorm:"uniqueIndex;not null;size:100"`

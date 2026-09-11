@@ -55,6 +55,8 @@ type Repository interface {
 	GetBySKUIDForUpdate(ctx context.Context, skuID, warehouseID uint) (*Stock, error)
 	FindAll(ctx context.Context, query Query) ([]Stock, int64, error)
 	UpdateQuantity(ctx context.Context, skuID, warehouseID uint, delta int) (*Stock, error)
+	ReserveStock(ctx context.Context, skuID, warehouseID uint, qty int) (*Stock, error)
+	ReleaseStock(ctx context.Context, skuID, warehouseID uint, qty int) (*Stock, error)
 	CreateMovement(ctx context.Context, movement *StockMovement) error
 	GetMovements(ctx context.Context, skuID uint, page, limit int) ([]StockMovement, int64, error)
 }

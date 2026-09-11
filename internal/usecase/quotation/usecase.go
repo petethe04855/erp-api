@@ -8,9 +8,11 @@ import (
 	"strings"
 	"time"
 
+	domainBundle "chawy-erp-api/internal/domain/bundle"
 	domainOrder "chawy-erp-api/internal/domain/order"
 	domainQuotation "chawy-erp-api/internal/domain/quotation"
 	domainSKU "chawy-erp-api/internal/domain/sku"
+	domainStock "chawy-erp-api/internal/domain/stock"
 	appErrors "chawy-erp-api/pkg/errors"
 )
 
@@ -29,6 +31,18 @@ type TxManager interface {
 	Transaction(ctx context.Context, fn func(txCtx context.Context) error) error
 }
 
+// StockReserver checks and reserves stock for quotation conversion.
+type StockReserver interface {
+	GetBySKUIDForUpdate(ctx context.Context, skuID, warehouseID uint) (*domainStock.Stock, error)
+	ReserveStock(ctx context.Context, skuID, warehouseID uint, qty int) (*domainStock.Stock, error)
+	CreateMovement(ctx context.Context, movement *domainStock.StockMovement) error
+}
+
+// BundleFinder resolves bundle items when converting quotations with bundles.
+type BundleFinder interface {
+	GetItemsByBundleSKU(ctx context.Context, bundleSKU string) ([]domainBundle.BundleItem, error)
+}
+
 type Usecase interface {
 	List(ctx context.Context, page, limit int) ([]domainQuotation.Quotation, int64, error)
 	Create(ctx context.Context, input CreateInput) (*domainQuotation.Quotation, error)
@@ -38,14 +52,20 @@ type Usecase interface {
 }
 
 type quotationUsecase struct {
-	repo      domainQuotation.Repository
-	skuRepo   SKUFinder
-	orderRepo OrderCreator
-	txMgr     TxManager
+	repo       domainQuotation.Repository
+	skuRepo    SKUFinder
+	orderRepo  OrderCreator
+	txMgr      TxManager
+	stockRepo  StockReserver
+	bundleRepo BundleFinder
 }
 
 func NewQuotationUsecase(repo domainQuotation.Repository, skuRepo SKUFinder, orderRepo OrderCreator, txMgr TxManager) Usecase {
 	return &quotationUsecase{repo: repo, skuRepo: skuRepo, orderRepo: orderRepo, txMgr: txMgr}
+}
+
+func NewQuotationUsecaseWithStock(repo domainQuotation.Repository, skuRepo SKUFinder, orderRepo OrderCreator, txMgr TxManager, stockRepo StockReserver, bundleRepo BundleFinder) Usecase {
+	return &quotationUsecase{repo: repo, skuRepo: skuRepo, orderRepo: orderRepo, txMgr: txMgr, stockRepo: stockRepo, bundleRepo: bundleRepo}
 }
 
 func (u *quotationUsecase) List(ctx context.Context, page, limit int) ([]domainQuotation.Quotation, int64, error) {
@@ -285,6 +305,97 @@ func (u *quotationUsecase) ConvertToSalesOrder(ctx context.Context, id uint) (*C
 			Items:        ordItems,
 			CreatedAt:    now,
 			UpdatedAt:    now,
+		}
+
+		// If stockRepo is configured, validate stock availability and reserve stock
+		if u.stockRepo != nil {
+			warehouseID := uint(1)
+			for _, line := range q.Lines {
+				skuEntity, err := u.skuRepo.FindBySKU(txCtx, line.SKU)
+				if err != nil || skuEntity == nil {
+					return appErrors.NewAppError("QUOTATION_SKU_NOT_FOUND", fmt.Sprintf("SKU %s not found", line.SKU), 400)
+				}
+
+				if skuEntity.IsBundle && u.bundleRepo != nil {
+					bundleItems, err := u.bundleRepo.GetItemsByBundleSKU(txCtx, skuEntity.SKU)
+					if err != nil {
+						return err
+					}
+					if len(bundleItems) == 0 {
+						return fmt.Errorf("cannot convert quotation with bundle %s: no component items defined", skuEntity.SKU)
+					}
+					for _, bi := range bundleItems {
+						compSKU, err := u.skuRepo.FindBySKU(txCtx, bi.ComponentSKU)
+						if err != nil || compSKU == nil {
+							return fmt.Errorf("bundle component %s not found", bi.ComponentSKU)
+						}
+						qtyToReserve := bi.Quantity * line.Quantity
+						stk, err := u.stockRepo.GetBySKUIDForUpdate(txCtx, compSKU.ID, warehouseID)
+						if err != nil {
+							return err
+						}
+						if stk == nil || stk.AvailableQty < qtyToReserve {
+							avail := 0
+							if stk != nil {
+								avail = stk.AvailableQty
+							}
+							return appErrors.NewAppError(
+								"INSUFFICIENT_STOCK",
+								fmt.Sprintf("Stock %s ไม่พอ: ต้องการ %d, พร้อมขาย %d", bi.ComponentSKU, qtyToReserve, avail),
+								409,
+							)
+						}
+						if _, err := u.stockRepo.ReserveStock(txCtx, compSKU.ID, warehouseID, qtyToReserve); err != nil {
+							return err
+						}
+						movement := &domainStock.StockMovement{
+							SKUID:         compSKU.ID,
+							SKUCode:       compSKU.SKU,
+							WarehouseID:   warehouseID,
+							Type:          domainStock.MovementReserve,
+							Quantity:      qtyToReserve,
+							BeforeQty:     stk.Quantity,
+							AfterQty:      stk.Quantity,
+							ReferenceType: "ORDER_RESERVE",
+							ReferenceID:   orderNo,
+							Note:          fmt.Sprintf("Reserved for bundle %s from quotation %s", line.SKU, q.Code),
+						}
+						_ = u.stockRepo.CreateMovement(txCtx, movement)
+					}
+				} else {
+					stk, err := u.stockRepo.GetBySKUIDForUpdate(txCtx, skuEntity.ID, warehouseID)
+					if err != nil {
+						return err
+					}
+					if stk == nil || stk.AvailableQty < line.Quantity {
+						avail := 0
+						if stk != nil {
+							avail = stk.AvailableQty
+						}
+						return appErrors.NewAppError(
+							"INSUFFICIENT_STOCK",
+							fmt.Sprintf("Stock %s ไม่พอ: ต้องการ %d, พร้อมขาย %d", line.SKU, line.Quantity, avail),
+							409,
+						)
+					}
+					if _, err := u.stockRepo.ReserveStock(txCtx, skuEntity.ID, warehouseID, line.Quantity); err != nil {
+						return err
+					}
+					movement := &domainStock.StockMovement{
+						SKUID:         skuEntity.ID,
+						SKUCode:       skuEntity.SKU,
+						WarehouseID:   warehouseID,
+						Type:          domainStock.MovementReserve,
+						Quantity:      line.Quantity,
+						BeforeQty:     stk.Quantity,
+						AfterQty:      stk.Quantity,
+						ReferenceType: "ORDER_RESERVE",
+						ReferenceID:   orderNo,
+						Note:          fmt.Sprintf("Reserved for order from quotation %s", q.Code),
+					}
+					_ = u.stockRepo.CreateMovement(txCtx, movement)
+				}
+			}
 		}
 
 		// Create the order inside the same transaction: the order repository

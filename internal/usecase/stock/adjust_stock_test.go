@@ -55,6 +55,31 @@ func (f *fakeStockRepo) UpdateQuantity(ctx context.Context, skuID, warehouseID u
 	return s, nil
 }
 
+func (f *fakeStockRepo) ReserveStock(ctx context.Context, skuID, warehouseID uint, qty int) (*domainStock.Stock, error) {
+	s, ok := f.stocks[warehouseID]
+	if !ok {
+		s = &domainStock.Stock{SKUID: skuID, WarehouseID: warehouseID}
+		f.stocks[warehouseID] = s
+	}
+	s.ReservedQty += qty
+	s.AvailableQty = s.Quantity - s.ReservedQty
+	return s, nil
+}
+
+func (f *fakeStockRepo) ReleaseStock(ctx context.Context, skuID, warehouseID uint, qty int) (*domainStock.Stock, error) {
+	s, ok := f.stocks[warehouseID]
+	if !ok {
+		s = &domainStock.Stock{SKUID: skuID, WarehouseID: warehouseID}
+		f.stocks[warehouseID] = s
+	}
+	s.ReservedQty -= qty
+	if s.ReservedQty < 0 {
+		s.ReservedQty = 0
+	}
+	s.AvailableQty = s.Quantity - s.ReservedQty
+	return s, nil
+}
+
 func (f *fakeStockRepo) CreateMovement(ctx context.Context, m *domainStock.StockMovement) error {
 	if f.failMovement {
 		return errors.New("movement write failed")

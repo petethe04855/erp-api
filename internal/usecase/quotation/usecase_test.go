@@ -8,6 +8,7 @@ import (
 	domainOrder "chawy-erp-api/internal/domain/order"
 	domainQuotation "chawy-erp-api/internal/domain/quotation"
 	domainSKU "chawy-erp-api/internal/domain/sku"
+	domainStock "chawy-erp-api/internal/domain/stock"
 	usecaseQuotation "chawy-erp-api/internal/usecase/quotation"
 
 	"github.com/stretchr/testify/assert"
@@ -300,3 +301,95 @@ func TestConvert_RejectsExpiredQuotation(t *testing.T) {
 	assert.Contains(t, err.Error(), "expired")
 	assert.Nil(t, orderRepo.created)
 }
+
+type fakeStockRepo struct {
+	stocks    map[uint]*domainStock.Stock
+	movements []*domainStock.StockMovement
+}
+
+func (f *fakeStockRepo) GetBySKUIDForUpdate(ctx context.Context, skuID, warehouseID uint) (*domainStock.Stock, error) {
+	s, ok := f.stocks[skuID]
+	if !ok {
+		return nil, nil
+	}
+	cp := *s
+	return &cp, nil
+}
+
+func (f *fakeStockRepo) ReserveStock(ctx context.Context, skuID, warehouseID uint, qty int) (*domainStock.Stock, error) {
+	s, ok := f.stocks[skuID]
+	if !ok {
+		s = &domainStock.Stock{SKUID: skuID, WarehouseID: warehouseID}
+		f.stocks[skuID] = s
+	}
+	s.ReservedQty += qty
+	s.AvailableQty = s.Quantity - s.ReservedQty
+	cp := *s
+	return &cp, nil
+}
+
+func (f *fakeStockRepo) CreateMovement(ctx context.Context, movement *domainStock.StockMovement) error {
+	f.movements = append(f.movements, movement)
+	return nil
+}
+
+func TestConvert_ValidatesAndReservesStock(t *testing.T) {
+	orderRepo := &fakeOrderRepo{}
+	repo := &fakeQuotationRepo{
+		quotation: &domainQuotation.Quotation{
+			ID:           1,
+			Code:         "QT-2026-0002",
+			CustomerName: "Beta Corp",
+			Status:       domainQuotation.StatusApproved,
+			ValidUntil:   "2099-01-01",
+			TotalAmount:  200,
+			Lines: []domainQuotation.QuotationLine{
+				{SKU: "XYZ", Price: 100, Quantity: 2, Subtotal: 200},
+			},
+		},
+	}
+	skuRepo := &fakeSKURepo{sku: &domainSKU.SKU{ID: 55, SKU: "XYZ", Name: "Widget XYZ"}}
+	stockRepo := &fakeStockRepo{stocks: map[uint]*domainStock.Stock{
+		55: {ID: 1, SKUID: 55, Quantity: 10, ReservedQty: 0, AvailableQty: 10},
+	}}
+
+	uc := usecaseQuotation.NewQuotationUsecaseWithStock(repo, skuRepo, orderRepo, repo, stockRepo, nil)
+
+	res, err := uc.ConvertToSalesOrder(context.Background(), 1)
+	require.NoError(t, err)
+	assert.Equal(t, uint(99), res.OrderID)
+
+	stk := stockRepo.stocks[55]
+	assert.Equal(t, 2, stk.ReservedQty)
+	assert.Equal(t, 8, stk.AvailableQty)
+	assert.Len(t, stockRepo.movements, 1)
+}
+
+func TestConvert_RejectsWhenInsufficientStock(t *testing.T) {
+	orderRepo := &fakeOrderRepo{}
+	repo := &fakeQuotationRepo{
+		quotation: &domainQuotation.Quotation{
+			ID:           1,
+			Code:         "QT-2026-0003",
+			CustomerName: "Gamma Corp",
+			Status:       domainQuotation.StatusApproved,
+			ValidUntil:   "2099-01-01",
+			TotalAmount:  500,
+			Lines: []domainQuotation.QuotationLine{
+				{SKU: "XYZ", Price: 100, Quantity: 5, Subtotal: 500},
+			},
+		},
+	}
+	skuRepo := &fakeSKURepo{sku: &domainSKU.SKU{ID: 55, SKU: "XYZ", Name: "Widget XYZ"}}
+	stockRepo := &fakeStockRepo{stocks: map[uint]*domainStock.Stock{
+		55: {ID: 1, SKUID: 55, Quantity: 2, ReservedQty: 0, AvailableQty: 2},
+	}}
+
+	uc := usecaseQuotation.NewQuotationUsecaseWithStock(repo, skuRepo, orderRepo, repo, stockRepo, nil)
+
+	_, err := uc.ConvertToSalesOrder(context.Background(), 1)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Stock XYZ ไม่พอ")
+	assert.Nil(t, orderRepo.created)
+}
+

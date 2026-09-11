@@ -157,7 +157,7 @@ func main() {
 	financeRepo := postgres.NewFinanceRepository(db)
 	financeUsecase := usecaseFinance.NewFinanceUsecase(financeRepo, txManager)
 	quotationRepo := postgres.NewQuotationRepository(db)
-	quotationUsecase := usecaseQuotation.NewQuotationUsecase(quotationRepo, skuRepo, orderRepo, txManager)
+	quotationUsecase := usecaseQuotation.NewQuotationUsecaseWithStock(quotationRepo, skuRepo, orderRepo, txManager, stockRepo, bundleRepo)
 
 	// 6. Dependency Injection - Handlers
 	authHdl := handler.NewAuthHandler(authUsecase)

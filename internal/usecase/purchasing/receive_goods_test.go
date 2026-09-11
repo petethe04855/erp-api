@@ -142,6 +142,29 @@ func (f *fakeStockRepoP) UpdateQuantity(ctx context.Context, skuID, whID uint, d
 	s.AvailableQty = s.Quantity - s.ReservedQty
 	return s, nil
 }
+func (f *fakeStockRepoP) ReserveStock(ctx context.Context, skuID, whID uint, qty int) (*domainStock.Stock, error) {
+	s, ok := f.stocks[skuID]
+	if !ok {
+		s = &domainStock.Stock{SKUID: skuID, WarehouseID: whID}
+		f.stocks[skuID] = s
+	}
+	s.ReservedQty += qty
+	s.AvailableQty = s.Quantity - s.ReservedQty
+	return s, nil
+}
+func (f *fakeStockRepoP) ReleaseStock(ctx context.Context, skuID, whID uint, qty int) (*domainStock.Stock, error) {
+	s, ok := f.stocks[skuID]
+	if !ok {
+		s = &domainStock.Stock{SKUID: skuID, WarehouseID: whID}
+		f.stocks[skuID] = s
+	}
+	s.ReservedQty -= qty
+	if s.ReservedQty < 0 {
+		s.ReservedQty = 0
+	}
+	s.AvailableQty = s.Quantity - s.ReservedQty
+	return s, nil
+}
 func (f *fakeStockRepoP) CreateMovement(ctx context.Context, m *domainStock.StockMovement) error {
 	f.movements = append(f.movements, *m)
 	return nil

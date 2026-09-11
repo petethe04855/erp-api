@@ -39,7 +39,7 @@ func GlobalErrorHandler(c *fiber.Ctx, err error) error {
 	case errors.Is(err, appErrors.ErrConflict), errors.Is(err, appErrors.ErrSKUAlreadyExists), errors.Is(err, appErrors.ErrUserAlreadyExists):
 		return response.Error(c, fiber.StatusConflict, "CONFLICT", err.Error())
 	case errors.Is(err, appErrors.ErrInsufficientStock):
-		return response.BadRequest(c, err.Error(), "INSUFFICIENT_STOCK")
+		return response.Error(c, fiber.StatusConflict, "INSUFFICIENT_STOCK", err.Error())
 	case errors.Is(err, appErrors.ErrInvalidOrderStatus):
 		return response.BadRequest(c, err.Error(), "INVALID_ORDER_STATUS")
 	default:

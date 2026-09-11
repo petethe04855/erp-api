@@ -125,6 +125,49 @@ func (r *StockRepository) UpdateQuantity(ctx context.Context, skuID, warehouseID
 	return &item, nil
 }
 
+func (r *StockRepository) ReserveStock(ctx context.Context, skuID, warehouseID uint, qty int) (*stock.Stock, error) {
+	var item stock.Stock
+	db := r.getDB(ctx)
+	reserveFn := func(tx *gorm.DB) error {
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("sku_id = ? AND warehouse_id = ?", skuID, warehouseID).
+			First(&item).Error
+		if err != nil {
+			return err
+		}
+		item.ReservedQty += qty
+		item.AvailableQty = item.Quantity - item.ReservedQty
+		return tx.Save(&item).Error
+	}
+	if err := db.Transaction(reserveFn); err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
+func (r *StockRepository) ReleaseStock(ctx context.Context, skuID, warehouseID uint, qty int) (*stock.Stock, error) {
+	var item stock.Stock
+	db := r.getDB(ctx)
+	releaseFn := func(tx *gorm.DB) error {
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("sku_id = ? AND warehouse_id = ?", skuID, warehouseID).
+			First(&item).Error
+		if err != nil {
+			return err
+		}
+		item.ReservedQty -= qty
+		if item.ReservedQty < 0 {
+			item.ReservedQty = 0
+		}
+		item.AvailableQty = item.Quantity - item.ReservedQty
+		return tx.Save(&item).Error
+	}
+	if err := db.Transaction(releaseFn); err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
 func (r *StockRepository) CreateMovement(ctx context.Context, movement *stock.StockMovement) error {
 	return r.getDB(ctx).Create(movement).Error
 }
