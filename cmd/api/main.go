@@ -14,6 +14,7 @@ import (
 	domainAuth "chawy-erp-api/internal/domain/auth"
 	domainBundle "chawy-erp-api/internal/domain/bundle"
 	domainCustomer "chawy-erp-api/internal/domain/customer"
+	domainFinance "chawy-erp-api/internal/domain/finance"
 	domainInvoice "chawy-erp-api/internal/domain/invoice"
 	domainOrder "chawy-erp-api/internal/domain/order"
 	domainPurchasing "chawy-erp-api/internal/domain/purchasing"
@@ -26,6 +27,7 @@ import (
 	usecaseAuth "chawy-erp-api/internal/usecase/auth"
 	usecaseBundle "chawy-erp-api/internal/usecase/bundle"
 	usecaseCustomer "chawy-erp-api/internal/usecase/customer"
+	usecaseFinance "chawy-erp-api/internal/usecase/finance"
 	usecaseInvoice "chawy-erp-api/internal/usecase/invoice"
 	usecaseOrder "chawy-erp-api/internal/usecase/order"
 	usecasePurchasing "chawy-erp-api/internal/usecase/purchasing"
@@ -90,6 +92,11 @@ func main() {
 		&domainSettings.NotificationSettings{},
 		&domainSettings.ModuleSettings{},
 		&domainSettings.LivePayrollSettings{},
+		&domainFinance.Account{},
+		&domainFinance.AccountMapping{},
+		&domainFinance.JournalEntry{},
+		&domainFinance.JournalLine{},
+		&domainFinance.Expense{},
 	); err != nil {
 		// Fail-closed: running on an incompatible schema causes partial data
 		// failures at runtime; it is safer to refuse to start.
@@ -119,6 +126,7 @@ func main() {
 
 	// 3.1 Seed initial admin user only in development (FULL-01)
 	seedDefaultAdmin(db, cfg.Environment)
+	seedDefaultAccounts(db)
 
 	// 4. Dependency Injection - Repositories
 	authRepo := postgres.NewAuthRepository(db)
@@ -146,6 +154,8 @@ func main() {
 	reportUsecase := usecaseReport.NewReportUsecase(db)
 	tiktokUsecase := usecaseTikTok.NewTikTokUsecase(cfg, db, tiktokRepo, orderRepo, skuRepo, bundleRepo, stockRepo)
 	settingsUsecase := usecaseSettings.NewSettingsUsecase(settingsRepo)
+	financeRepo := postgres.NewFinanceRepository(db)
+	financeUsecase := usecaseFinance.NewFinanceUsecase(financeRepo, txManager)
 	quotationRepo := postgres.NewQuotationRepository(db)
 	quotationUsecase := usecaseQuotation.NewQuotationUsecase(quotationRepo, skuRepo, orderRepo, txManager)
 
@@ -159,6 +169,7 @@ func main() {
 	purchasingHdl := handler.NewPurchasingHandler(purchasingUsecase)
 	invoiceHdl := handler.NewInvoiceHandler(invoiceUsecase)
 	reportHdl := handler.NewReportHandler(reportUsecase)
+	financeHdl := handler.NewFinanceHandler(financeUsecase)
 	workspaceHdl := handler.NewWorkspaceHandler(db, orderUsecase, quotationUsecase, stockUsecase, skuRepo)
 	tiktokHdl := handler.NewTikTokHandler(tiktokUsecase)
 	settingsHdl := handler.NewSettingsHandler(settingsUsecase)
@@ -198,6 +209,7 @@ func main() {
 		PurchasingHandler: purchasingHdl,
 		InvoiceHandler:    invoiceHdl,
 		ReportHandler:     reportHdl,
+		FinanceHandler:    financeHdl,
 		WorkspaceHandler:  workspaceHdl,
 		TikTokHandler:     tiktokHdl,
 		SettingsHandler:   settingsHdl,
@@ -285,4 +297,34 @@ func seedDefaultAdmin(db *gorm.DB, environment string) {
 		}
 	}
 	log.Println("[INFO] Development seed complete: created default admin accounts (never run in production; override password via DEV_SEED_PASSWORD)")
+}
+
+// seedDefaultAccounts initializes standard Chart of Accounts if empty.
+func seedDefaultAccounts(db *gorm.DB) {
+	var count int64
+	db.Model(&domainFinance.Account{}).Count(&count)
+	if count > 0 {
+		return
+	}
+
+	accounts := []domainFinance.Account{
+		{Code: "1100", Name: "เงินสด (Cash)", Type: domainFinance.AccountTypeAsset, IsActive: true},
+		{Code: "1110", Name: "เงินฝากธนาคาร (Bank)", Type: domainFinance.AccountTypeAsset, IsActive: true},
+		{Code: "1200", Name: "ลูกหนี้การค้า (Accounts Receivable)", Type: domainFinance.AccountTypeAsset, IsActive: true},
+		{Code: "1300", Name: "สินค้าคงเหลือ (Inventory)", Type: domainFinance.AccountTypeAsset, IsActive: true},
+		{Code: "2000", Name: "เจ้าหนี้การค้า/GRNI (Accounts Payable / GRNI)", Type: domainFinance.AccountTypeLiability, IsActive: true},
+		{Code: "2100", Name: "ภาษีขาย (VAT Output)", Type: domainFinance.AccountTypeLiability, IsActive: true},
+		{Code: "3000", Name: "ทุน / ส่วนของเจ้าของ (Owner's Equity)", Type: domainFinance.AccountTypeEquity, IsActive: true},
+		{Code: "4000", Name: "รายได้จากการขาย (Sales Revenue)", Type: domainFinance.AccountTypeRevenue, IsActive: true},
+		{Code: "5000", Name: "ต้นทุนขาย (Cost of Goods Sold)", Type: domainFinance.AccountTypeExpense, IsActive: true},
+		{Code: "5100", Name: "รับคืนและส่วนลดจ่าย (Sales Return)", Type: domainFinance.AccountTypeExpense, IsActive: true},
+		{Code: "6000", Name: "ค่าใช้จ่ายในการดำเนินงาน (Operating Expense)", Type: domainFinance.AccountTypeExpense, IsActive: true},
+	}
+
+	for _, acc := range accounts {
+		if err := db.Create(&acc).Error; err != nil {
+			log.Printf("[WARN] Failed to seed account %s: %v", acc.Code, err)
+		}
+	}
+	log.Println("[INFO] Chart of Accounts seed complete")
 }

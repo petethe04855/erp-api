@@ -47,6 +47,7 @@ func (h *CustomerHandler) Create(c *fiber.Ctx) error {
 		Email:         req.Email,
 		Address:       req.Address,
 		TaxID:         taxID,
+		Logo:          req.Logo,
 		Channel:       req.Channel,
 	})
 	if err != nil {
@@ -119,6 +120,7 @@ func (h *CustomerHandler) Update(c *fiber.Ctx) error {
 		Email:         req.Email,
 		Address:       req.Address,
 		TaxID:         taxID,
+		Logo:          req.Logo,
 		Channel:       req.Channel,
 		Status:        req.Status,
 	})

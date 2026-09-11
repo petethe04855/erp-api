@@ -507,6 +507,7 @@ func (h *WorkspaceHandler) GetProductByID(c *fiber.Ctx) error {
 // UpdateProductByID updates a product by numeric record ID.
 func (h *WorkspaceHandler) UpdateProductByID(c *fiber.Ctx) error {
 	var req struct {
+		SKU         *string  `json:"sku"`
 		Name        *string  `json:"name"`
 		Type        *string  `json:"type"`
 		RetailPrice *float64 `json:"retailPrice"`
@@ -522,6 +523,23 @@ func (h *WorkspaceHandler) UpdateProductByID(c *fiber.Ctx) error {
 	if err != nil {
 		return response.NotFound(c, "Product not found")
 	}
+
+	oldSKU := s.SKU
+	skuChanged := false
+
+	if req.SKU != nil {
+		newSKU := strings.ToUpper(strings.TrimSpace(*req.SKU))
+		if newSKU != "" && newSKU != strings.ToUpper(oldSKU) {
+			// Check uniqueness
+			var dup domainSKU.SKU
+			if err := h.db.WithContext(c.Context()).Where("UPPER(sku) = ? AND id != ?", newSKU, s.ID).First(&dup).Error; err == nil {
+				return response.BadRequest(c, "รหัส SKU '"+newSKU+"' ถูกใช้งานแล้ว กรุณาใช้รหัสอื่น", "SKU_ALREADY_EXISTS")
+			}
+			s.SKU = newSKU
+			skuChanged = true
+		}
+	}
+
 	if req.Name != nil && *req.Name != "" {
 		s.Name = *req.Name
 	}
@@ -544,9 +562,22 @@ func (h *WorkspaceHandler) UpdateProductByID(c *fiber.Ctx) error {
 		s.Status = strings.ToLower(strings.TrimSpace(*req.Status))
 	}
 	s.UpdatedAt = time.Now()
-	if err := h.db.WithContext(c.Context()).Save(s).Error; err != nil {
-		return response.InternalServerError(c, "Failed to update product")
+
+	err = h.db.WithContext(c.Context()).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(s).Error; err != nil {
+			return err
+		}
+		if skuChanged {
+			if err := h.cascadeSKURename(tx, oldSKU, s.SKU); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return response.InternalServerError(c, "Failed to update product: "+err.Error())
 	}
+
 	return response.OK(c, fiber.Map{"id": s.ID, "sku": s.SKU, "name": s.Name, "isActive": s.Status == "active"}, "Product updated successfully")
 }
 
@@ -637,6 +668,7 @@ func (h *WorkspaceHandler) UpdateProduct(c *fiber.Ctx) error {
 	}
 
 	var req struct {
+		SKU         *string  `json:"sku"`
 		Name        *string  `json:"name"`
 		Type        *string  `json:"type"`
 		RetailPrice *float64 `json:"retailPrice"`
@@ -660,6 +692,22 @@ func (h *WorkspaceHandler) UpdateProduct(c *fiber.Ctx) error {
 	// FULL-12 v2: :code is always a SKU string (see UpdateProductStatus).
 	if err := h.db.WithContext(c.Context()).Where("UPPER(sku) = ?", strings.ToUpper(code)).First(&s).Error; err != nil {
 		return response.NotFound(c, "Product not found")
+	}
+
+	oldSKU := s.SKU
+	skuChanged := false
+
+	if req.SKU != nil {
+		newSKU := strings.ToUpper(strings.TrimSpace(*req.SKU))
+		if newSKU != "" && newSKU != strings.ToUpper(oldSKU) {
+			// Check uniqueness
+			var dup domainSKU.SKU
+			if err := h.db.WithContext(c.Context()).Where("UPPER(sku) = ? AND id != ?", newSKU, s.ID).First(&dup).Error; err == nil {
+				return response.BadRequest(c, "รหัส SKU '"+newSKU+"' ถูกใช้งานแล้ว กรุณาใช้รหัสอื่น", "SKU_ALREADY_EXISTS")
+			}
+			s.SKU = newSKU
+			skuChanged = true
+		}
 	}
 
 	// FULL-11: only fields present in the payload are applied; omitted fields
@@ -687,14 +735,26 @@ func (h *WorkspaceHandler) UpdateProduct(c *fiber.Ctx) error {
 	}
 	s.UpdatedAt = time.Now()
 
+	// Use the OLD sku for the bundle_items cleanup when SKU was renamed,
+	// because cascade hasn't run yet at that point.
+	bundleCleanupSKU := oldSKU
+
 	err := h.db.WithContext(c.Context()).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Save(&s).Error; err != nil {
 			return err
 		}
 
+		// Cascade SKU rename to all referencing tables
+		if skuChanged {
+			if err := h.cascadeSKURename(tx, oldSKU, s.SKU); err != nil {
+				return err
+			}
+			bundleCleanupSKU = s.SKU
+		}
+
 		if s.IsBundle && req.Components != nil {
 			// Replace existing bundle components with the updated list
-			if err := tx.Where("bundle_sku = ?", s.SKU).Delete(&domainBundle.BundleItem{}).Error; err != nil {
+			if err := tx.Where("bundle_sku = ?", bundleCleanupSKU).Delete(&domainBundle.BundleItem{}).Error; err != nil {
 				return err
 			}
 			for _, comp := range req.Components {
@@ -747,6 +807,36 @@ func (h *WorkspaceHandler) UpdateProduct(c *fiber.Ctx) error {
 		Image:       s.Image,
 	}
 	return response.OK(c, rec, "Product updated successfully")
+}
+
+// cascadeSKURename updates all tables that reference the old SKU string to use
+// the new SKU string. Must be called inside a transaction. Tables that reference
+// by sku_id (numeric FK) don't need updating because the record ID stays the same.
+func (h *WorkspaceHandler) cascadeSKURename(tx *gorm.DB, oldSKU, newSKU string) error {
+	// bundle_items: both bundle_sku and component_sku columns
+	if err := tx.Exec("UPDATE bundle_items SET bundle_sku = ? WHERE bundle_sku = ?", newSKU, oldSKU).Error; err != nil {
+		return fmt.Errorf("cascade bundle_items.bundle_sku: %w", err)
+	}
+	if err := tx.Exec("UPDATE bundle_items SET component_sku = ? WHERE component_sku = ?", newSKU, oldSKU).Error; err != nil {
+		return fmt.Errorf("cascade bundle_items.component_sku: %w", err)
+	}
+
+	// order_items
+	if err := tx.Exec("UPDATE order_items SET sku = ? WHERE sku = ?", newSKU, oldSKU).Error; err != nil {
+		return fmt.Errorf("cascade order_items.sku: %w", err)
+	}
+
+	// po_items
+	if err := tx.Exec("UPDATE po_items SET sku = ? WHERE sku = ?", newSKU, oldSKU).Error; err != nil {
+		return fmt.Errorf("cascade po_items.sku: %w", err)
+	}
+
+	// quotation_lines
+	if err := tx.Exec("UPDATE quotation_lines SET sku = ? WHERE sku = ?", newSKU, oldSKU).Error; err != nil {
+		return fmt.Errorf("cascade quotation_lines.sku: %w", err)
+	}
+
+	return nil
 }
 
 func (h *WorkspaceHandler) DeleteProduct(c *fiber.Ctx) error {
@@ -1315,6 +1405,7 @@ func (h *WorkspaceHandler) GetInvoiceByID(c *fiber.Ctx) error {
 	var order domainOrder.Order
 	var lines []fiber.Map
 	var customerAddress string
+	var customerLogo string
 
 	if inv.OrderID != nil && *inv.OrderID > 0 {
 		if err := h.db.WithContext(c.Context()).Preload("Items").First(&order, *inv.OrderID).Error; err == nil {
@@ -1332,6 +1423,7 @@ func (h *WorkspaceHandler) GetInvoiceByID(c *fiber.Ctx) error {
 				var cust domainCustomer.Customer
 				if err := h.db.WithContext(c.Context()).First(&cust, order.CustomerID).Error; err == nil {
 					customerAddress = cust.Address
+					customerLogo = cust.Logo
 				}
 			}
 		}
@@ -1359,6 +1451,7 @@ func (h *WorkspaceHandler) GetInvoiceByID(c *fiber.Ctx) error {
 		"customer":        inv.CustomerName,
 		"customerName":    inv.CustomerName,
 		"customerAddress": customerAddress,
+		"customerLogo":    customerLogo,
 		"amount":          inv.Amount,
 		"totalAmount":     inv.Amount,
 		"paid":            paidAmount,
@@ -1381,6 +1474,7 @@ type CustomerRecord struct {
 	Phone         string `json:"phone"`
 	TaxID         string `json:"taxId"`
 	Address       string `json:"address"`
+	Logo          string `json:"logo"`
 }
 
 func (h *WorkspaceHandler) GetCustomers(c *fiber.Ctx) error {
@@ -1413,6 +1507,7 @@ func (h *WorkspaceHandler) GetCustomers(c *fiber.Ctx) error {
 			Phone:         cust.Phone,
 			TaxID:         cust.TaxID,
 			Address:       cust.Address,
+			Logo:          cust.Logo,
 		}
 	}
 
@@ -1427,6 +1522,7 @@ func (h *WorkspaceHandler) CreateCustomer(c *fiber.Ctx) error {
 		Phone         string `json:"phone"`
 		TaxID         string `json:"taxId"`
 		Address       string `json:"address"`
+		Logo          string `json:"logo"`
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return response.BadRequest(c, "Invalid request body")
@@ -1440,6 +1536,7 @@ func (h *WorkspaceHandler) CreateCustomer(c *fiber.Ctx) error {
 		Phone:         req.Phone,
 		TaxID:         req.TaxID,
 		Address:       req.Address,
+		Logo:          req.Logo,
 		Status:        "active",
 		CreatedAt:     time.Now(),
 		UpdatedAt:     time.Now(),
@@ -1457,6 +1554,7 @@ func (h *WorkspaceHandler) CreateCustomer(c *fiber.Ctx) error {
 		Phone:         cust.Phone,
 		TaxID:         cust.TaxID,
 		Address:       cust.Address,
+		Logo:          cust.Logo,
 	}
 	return response.Created(c, rec, "Customer created successfully")
 }
@@ -1486,6 +1584,7 @@ func (h *WorkspaceHandler) GetCustomerByID(c *fiber.Ctx) error {
 		"email":         cust.Email,
 		"address":       cust.Address,
 		"taxId":         cust.TaxID,
+		"logo":          cust.Logo,
 		"channel":       cust.Channel,
 		"status":        cust.Status,
 		"createdAt":     cust.CreatedAt.Format("2006-01-02 15:04"),

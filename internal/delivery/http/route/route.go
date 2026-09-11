@@ -18,6 +18,7 @@ type Config struct {
 	PurchasingHandler *handler.PurchasingHandler
 	InvoiceHandler    *handler.InvoiceHandler
 	ReportHandler     *handler.ReportHandler
+	FinanceHandler    *handler.FinanceHandler
 	WorkspaceHandler  *handler.WorkspaceHandler
 	TikTokHandler     *handler.TikTokHandler
 	SettingsHandler   *handler.SettingsHandler
@@ -124,6 +125,40 @@ func RegisterRoutes(cfg Config) {
 	reports.Get("/revenue", cfg.ReportHandler.GetRevenue)
 	reports.Get("/financial-summary", cfg.ReportHandler.GetFinancialSummary)
 	reports.Get("/inventory-valuation", cfg.ReportHandler.GetInventoryValuation)
+
+	// Finance Routes (Restricted to owner and accountant)
+	financeGroup := protected.Group("/finance", middleware.RequireRole("owner", "accountant"))
+	
+	// Journal Entries
+	financeGroup.Get("/journal-entries", cfg.FinanceHandler.ListJournalEntries)
+	financeGroup.Get("/journal-entries/:id", cfg.FinanceHandler.GetJournalEntryByID)
+	
+	// Expenses
+	financeGroup.Get("/expenses", cfg.FinanceHandler.ListExpenses)
+	financeGroup.Post("/expenses", cfg.FinanceHandler.CreateExpense)
+	financeGroup.Put("/expenses/:id", cfg.FinanceHandler.UpdateExpense)
+	financeGroup.Delete("/expenses/:id", cfg.FinanceHandler.DeleteExpense)
+
+	// Financial Reports
+	financeGroup.Get("/reports/general-ledger", cfg.FinanceHandler.GetGeneralLedger)
+	financeGroup.Get("/reports/trial-balance", cfg.FinanceHandler.GetTrialBalance)
+	financeGroup.Get("/reports/pnl", cfg.FinanceHandler.GetProfitAndLoss)
+	financeGroup.Get("/reports/revenue-by-channel", cfg.FinanceHandler.GetRevenueByChannel)
+
+	// Exports (.xlsx)
+	financeGroup.Get("/export/journal", cfg.FinanceHandler.ExportJournal)
+	financeGroup.Get("/export/expenses", cfg.FinanceHandler.ExportExpenses)
+	financeGroup.Get("/export/pnl", cfg.FinanceHandler.ExportPnL)
+
+	// Also register direct root aliases as planned in plan/FINANCE_MODULE.md
+	protected.Get("/journal-entries", middleware.RequireRole("owner", "accountant"), cfg.FinanceHandler.ListJournalEntries)
+	protected.Get("/journal-entries/:id", middleware.RequireRole("owner", "accountant"), cfg.FinanceHandler.GetJournalEntryByID)
+	protected.Get("/expenses", middleware.RequireRole("owner", "accountant"), cfg.FinanceHandler.ListExpenses)
+	protected.Post("/expenses", middleware.RequireRole("owner", "accountant"), cfg.FinanceHandler.CreateExpense)
+	protected.Put("/expenses/:id", middleware.RequireRole("owner", "accountant"), cfg.FinanceHandler.UpdateExpense)
+	protected.Delete("/expenses/:id", middleware.RequireRole("owner", "accountant"), cfg.FinanceHandler.DeleteExpense)
+	protected.Get("/export/journal", middleware.RequireRole("owner", "accountant"), cfg.FinanceHandler.ExportJournal)
+	protected.Get("/export/expenses", middleware.RequireRole("owner", "accountant"), cfg.FinanceHandler.ExportExpenses)
 
 	// Settings Routes
 	settings := protected.Group("/settings")

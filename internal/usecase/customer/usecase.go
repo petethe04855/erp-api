@@ -17,6 +17,7 @@ type CreateInput struct {
 	Email         string
 	Address       string
 	TaxID         string
+	Logo          string
 	Channel       string
 }
 
@@ -27,6 +28,7 @@ type UpdateInput struct {
 	Email         string
 	Address       string
 	TaxID         string
+	Logo          string
 	Channel       string
 	Status        string
 }
@@ -61,6 +63,7 @@ func (u *customerUsecase) Create(ctx context.Context, in CreateInput) (*domainCu
 		Email:         in.Email,
 		Address:       in.Address,
 		TaxID:         in.TaxID,
+		Logo:          in.Logo,
 		Channel:       in.Channel,
 		Status:        "active",
 	}
@@ -118,6 +121,9 @@ func (u *customerUsecase) Update(ctx context.Context, id uint, in UpdateInput) (
 	}
 	if in.TaxID != "" {
 		c.TaxID = in.TaxID
+	}
+	if in.Logo != "" {
+		c.Logo = in.Logo
 	}
 	if in.Channel != "" {
 		c.Channel = in.Channel

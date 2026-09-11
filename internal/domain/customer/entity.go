@@ -14,6 +14,7 @@ type Customer struct {
 	Email         string    `json:"email" gorm:"size:255"`
 	Address       string    `json:"address" gorm:"type:text"`
 	TaxID         string    `json:"tax_id" gorm:"size:50"`
+	Logo          string    `json:"logo" gorm:"size:500"`
 	Channel       string    `json:"channel" gorm:"size:50;default:'direct'"` // tiktok, shopee, direct, etc.
 	Status        string    `json:"status" gorm:"size:50;default:'active'"`
 	CreatedAt     time.Time `json:"created_at"`
