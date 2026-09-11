@@ -53,7 +53,7 @@ func (h *CustomerHandler) Create(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.Created(c, result, "Customer created successfully")
+	return response.Created(c, dto.NewCustomerResponse(result), "Customer created successfully")
 }
 
 func (h *CustomerHandler) GetByID(c *fiber.Ctx) error {
@@ -67,7 +67,7 @@ func (h *CustomerHandler) GetByID(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.OK(c, result)
+	return response.OK(c, dto.NewCustomerResponse(result))
 }
 
 func (h *CustomerHandler) List(c *fiber.Ctx) error {
@@ -88,7 +88,7 @@ func (h *CustomerHandler) List(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.List(c, items, page, limit, total)
+	return response.List(c, dto.NewCustomerResponses(items), page, limit, total)
 }
 
 func (h *CustomerHandler) Update(c *fiber.Ctx) error {
@@ -126,7 +126,7 @@ func (h *CustomerHandler) Update(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.OK(c, result, "Customer updated successfully")
+	return response.OK(c, dto.NewCustomerResponse(result), "Customer updated successfully")
 }
 
 func (h *CustomerHandler) Delete(c *fiber.Ctx) error {

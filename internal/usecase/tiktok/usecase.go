@@ -434,26 +434,17 @@ func (u *tiktokUsecase) SyncOrders(ctx context.Context, days int) (*SyncResultRe
 			continue
 		}
 
-		// Re-fetch from db to verify stock_deducted state
-		dbOrder, err := u.tiktokRepo.GetOrderByID(ctx, order.ID)
-		if err != nil || dbOrder == nil || dbOrder.StockDeducted {
-			continue
-		}
-
-		didDeduct, warnings, err := u.deductStockForOrder(ctx, dbOrder)
+		didDeduct, warnings, err := u.deductStockForOrder(ctx, order.ID)
 		if err != nil {
 			// Order stays StockDeducted=false so the next sync retries it.
-			deductionErrors = append(deductionErrors, fmt.Sprintf("%s: %s", dbOrder.ID, err.Error()))
+			deductionErrors = append(deductionErrors, fmt.Sprintf("%s: %s", order.ID, err.Error()))
 			continue
 		}
 		if didDeduct {
 			deductedCount++
-			if err := u.tiktokRepo.UpdateOrderStockDeducted(ctx, dbOrder.ID, true); err != nil {
-				deductionErrors = append(deductionErrors, fmt.Sprintf("%s: flag update failed: %s", dbOrder.ID, err.Error()))
-			}
 		}
 		for _, w := range warnings {
-			deductionWarnings = append(deductionWarnings, fmt.Sprintf("%s: %s", dbOrder.ID, w))
+			deductionWarnings = append(deductionWarnings, fmt.Sprintf("%s: %s", order.ID, w))
 		}
 	}
 
@@ -474,14 +465,30 @@ func (u *tiktokUsecase) SyncOrders(ctx context.Context, days int) (*SyncResultRe
 }
 
 // deductStockForOrder deducts every line of a TikTok order inside ONE
-// transaction covering stock, movements and the processed flag (FULL-06).
-// Any missing mapping/SKU or insufficient stock fails the whole order and
-// leaves StockDeducted=false so the next sync retries it (FULL-25).
-func (u *tiktokUsecase) deductStockForOrder(ctx context.Context, order *domainTikTok.TiktokOrder) (bool, []string, error) {
+// transaction covering the order-row lock, the stock_deducted re-check, stock,
+// movements and the processed flag (FULL-06). The order row is locked with
+// SELECT ... FOR UPDATE and the flag is re-checked inside the transaction so
+// two concurrent sync workers cannot both read StockDeducted=false and
+// double-deduct stock. Any missing mapping/SKU or insufficient stock fails the
+// whole order and leaves StockDeducted=false so the next sync retries it
+// (FULL-25).
+func (u *tiktokUsecase) deductStockForOrder(ctx context.Context, orderID string) (bool, []string, error) {
 	warehouseID := uint(1)
+	didDeduct := false
+	var warnings []string
 
 	err := u.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		txCtx := database.WithTxContext(ctx, tx)
+
+		// Lock the order row and re-check the flag inside the same transaction
+		// that deducts stock — closes the concurrent-sync race.
+		order, err := u.tiktokRepo.GetOrderByIDForUpdate(txCtx, orderID)
+		if err != nil {
+			return err
+		}
+		if order == nil || order.StockDeducted {
+			return nil // already processed (or gone) — nothing to do
+		}
 
 		for _, item := range order.Items {
 			if item.Qty <= 0 {
@@ -594,13 +601,17 @@ func (u *tiktokUsecase) deductStockForOrder(ctx context.Context, order *domainTi
 
 		// Mark the order processed inside the same transaction so a rollback
 		// also rolls back the flag (FULL-06).
-		return u.tiktokRepo.UpdateOrderStockDeducted(txCtx, order.ID, true)
+		if err := u.tiktokRepo.UpdateOrderStockDeducted(txCtx, order.ID, true); err != nil {
+			return err
+		}
+		didDeduct = true
+		return nil
 	})
 
 	if err != nil {
-		return false, nil, err
+		return false, warnings, err
 	}
-	return true, nil, nil
+	return didDeduct, warnings, nil
 }
 
 func (u *tiktokUsecase) GetSyncRuns(ctx context.Context, limit int) ([]domainTikTok.TiktokSyncRun, error) {

@@ -17,6 +17,8 @@ import (
 	domainStock "chawy-erp-api/internal/domain/stock"
 	domainTikTok "chawy-erp-api/internal/domain/tiktok"
 	usecaseOrder "chawy-erp-api/internal/usecase/order"
+	usecaseQuotation "chawy-erp-api/internal/usecase/quotation"
+	usecaseStock "chawy-erp-api/internal/usecase/stock"
 	"chawy-erp-api/pkg/response"
 
 	"github.com/gofiber/fiber/v2"
@@ -25,14 +27,26 @@ import (
 )
 
 type WorkspaceHandler struct {
-	db           *gorm.DB
-	orderUsecase usecaseOrder.Usecase
+	db               *gorm.DB
+	orderUsecase     usecaseOrder.Usecase
+	quotationUsecase usecaseQuotation.Usecase
+	stockUsecase     usecaseStock.Usecase
+	skuRepo          domainSKU.Repository
 }
 
-func NewWorkspaceHandler(db *gorm.DB, orderUsecase usecaseOrder.Usecase) *WorkspaceHandler {
+func NewWorkspaceHandler(
+	db *gorm.DB,
+	orderUsecase usecaseOrder.Usecase,
+	quotationUsecase usecaseQuotation.Usecase,
+	stockUsecase usecaseStock.Usecase,
+	skuRepo domainSKU.Repository,
+) *WorkspaceHandler {
 	return &WorkspaceHandler{
-		db:           db,
-		orderUsecase: orderUsecase,
+		db:               db,
+		orderUsecase:     orderUsecase,
+		quotationUsecase: quotationUsecase,
+		stockUsecase:     stockUsecase,
+		skuRepo:          skuRepo,
 	}
 }
 
@@ -66,6 +80,14 @@ func (h *WorkspaceHandler) GetProducts(c *fiber.Ctx) error {
 		limit = 50
 	}
 	search := strings.TrimSpace(c.Query("search", ""))
+	prodType := strings.TrimSpace(c.Query("type", ""))
+	if prodType == "" {
+		prodType = strings.TrimSpace(c.Query("category", ""))
+	}
+	isActiveQuery := strings.TrimSpace(c.Query("isActive", ""))
+	if isActiveQuery == "" {
+		isActiveQuery = strings.TrimSpace(c.Query("status", ""))
+	}
 
 	var skus []domainSKU.SKU
 	var total int64
@@ -74,49 +96,140 @@ func (h *WorkspaceHandler) GetProducts(c *fiber.Ctx) error {
 		s := "%" + search + "%"
 		query = query.Where("sku ILIKE ? OR name ILIKE ? OR barcode ILIKE ?", s, s, s)
 	}
-	query.Count(&total)
-	query.Offset((page - 1) * limit).Limit(limit).Order("id DESC").Find(&skus)
 
-	// Fetch stocks for these SKUs
+	// Filter by type / category (e.g. 'Finished Product', 'Raw Material', 'Bundle')
+	if prodType != "" && !strings.EqualFold(prodType, "all") {
+		if strings.EqualFold(prodType, "bundle") {
+			query = query.Where("is_bundle = true")
+		} else {
+			query = query.Where("(category ILIKE ? OR (? = 'Finished Product' AND (category IS NULL OR category = '')))", prodType, prodType)
+		}
+	}
+
+	// Filter by isActive / status
+	if isActiveQuery != "" && !strings.EqualFold(isActiveQuery, "all") {
+		if strings.EqualFold(isActiveQuery, "true") || strings.EqualFold(isActiveQuery, "active") {
+			query = query.Where("status = 'active'")
+		} else if strings.EqualFold(isActiveQuery, "false") || strings.EqualFold(isActiveQuery, "inactive") {
+			query = query.Where("status != 'active'")
+		}
+	}
+
+	if err := query.Count(&total).Error; err != nil {
+		return response.InternalServerError(c, "Failed to count products: "+err.Error())
+	}
+
+	if err := query.Offset((page - 1) * limit).Limit(limit).Order("id DESC").Find(&skus).Error; err != nil {
+		return response.InternalServerError(c, "Failed to fetch products: "+err.Error())
+	}
+
+	if len(skus) == 0 {
+		return response.List(c, []ProductRecord{}, page, limit, total)
+	}
+
+	skuIDs := make([]uint, len(skus))
+	skuCodes := make([]string, len(skus))
+	for i, s := range skus {
+		skuIDs[i] = s.ID
+		skuCodes[i] = strings.ToUpper(strings.TrimSpace(s.SKU))
+	}
+
+	// 1. Batch fetch stocks aggregated across all warehouses for all retrieved SKUs
+	type StockSum struct {
+		SKUID        uint `gorm:"column:sku_id"`
+		Quantity     int  `gorm:"column:quantity"`
+		AvailableQty int  `gorm:"column:available_qty"`
+		ReservedQty  int  `gorm:"column:reserved_qty"`
+	}
+	var stockSums []StockSum
+	if err := h.db.WithContext(c.Context()).Model(&domainStock.Stock{}).
+		Select("sku_id, COALESCE(SUM(quantity), 0) AS quantity, COALESCE(SUM(available_qty), 0) AS available_qty, COALESCE(SUM(reserved_qty), 0) AS reserved_qty").
+		Where("sku_id IN ?", skuIDs).
+		Group("sku_id").
+		Scan(&stockSums).Error; err != nil {
+		return response.InternalServerError(c, "Failed to fetch stock sums: "+err.Error())
+	}
+	stockMap := make(map[uint]StockSum, len(stockSums))
+	for _, ss := range stockSums {
+		stockMap[ss.SKUID] = ss
+	}
+
+	// 2. Batch fetch TikTok SKU mappings for candidate SKU sets
+	var mappings []domainTikTok.SKUMapping
+	if err := h.db.WithContext(c.Context()).
+		Where("UPPER(TRIM(erp_sku)) IN ?", skuCodes).
+		Find(&mappings).Error; err != nil {
+		return response.InternalServerError(c, "Failed to fetch TikTok mappings: "+err.Error())
+	}
+
+	// Build map of erp_sku -> candidate TikTok SKUs
+	skuToCandidates := make(map[string]map[string]bool, len(skus))
+	var allCandidates []string
+	seenCandidate := make(map[string]bool)
+	for _, sCode := range skuCodes {
+		if sCode == "" {
+			continue
+		}
+		if _, ok := skuToCandidates[sCode]; !ok {
+			skuToCandidates[sCode] = make(map[string]bool)
+		}
+		skuToCandidates[sCode][sCode] = true
+		if !seenCandidate[sCode] {
+			seenCandidate[sCode] = true
+			allCandidates = append(allCandidates, sCode)
+		}
+	}
+	for _, m := range mappings {
+		erpUpper := strings.ToUpper(strings.TrimSpace(m.LocalSKU))
+		ttUpper := strings.ToUpper(strings.TrimSpace(m.TikTokSKU))
+		if erpUpper != "" && ttUpper != "" {
+			if _, ok := skuToCandidates[erpUpper]; !ok {
+				skuToCandidates[erpUpper] = make(map[string]bool)
+			}
+			skuToCandidates[erpUpper][ttUpper] = true
+			if !seenCandidate[ttUpper] {
+				seenCandidate[ttUpper] = true
+				allCandidates = append(allCandidates, ttUpper)
+			}
+		}
+	}
+
+	// 3. Batch fetch TikTok pending reserved quantities grouped by SKU
+	type TikTokPending struct {
+		SKU string `gorm:"column:sku"`
+		Qty int64  `gorm:"column:qty"`
+	}
+	tiktokPendingMap := make(map[string]int64)
+	if len(allCandidates) > 0 {
+		var pendingItems []TikTokPending
+		if err := h.db.WithContext(c.Context()).Model(&domainTikTok.TiktokOrderItem{}).
+			Select("UPPER(TRIM(tiktok_order_items.sku)) AS sku, COALESCE(SUM(tiktok_order_items.qty), 0) AS qty").
+			Joins("JOIN tiktok_orders ON tiktok_orders.id = tiktok_order_items.order_id").
+			Where("UPPER(TRIM(tiktok_order_items.sku)) IN ? AND tiktok_orders.stock_deducted = false AND UPPER(tiktok_orders.status) NOT IN ('CANCELLED', 'CANCELED', 'COMPLETED', 'DELIVERED', 'SHIPPED')", allCandidates).
+			Group("UPPER(TRIM(tiktok_order_items.sku))").
+			Scan(&pendingItems).Error; err != nil {
+			return response.InternalServerError(c, "Failed to calculate TikTok pending reserves: "+err.Error())
+		}
+		for _, pi := range pendingItems {
+			tiktokPendingMap[pi.SKU] = pi.Qty
+		}
+	}
+
 	records := make([]ProductRecord, len(skus))
 	for i, s := range skus {
-		var stk domainStock.Stock
-		_ = h.db.WithContext(c.Context()).Where("sku_id = ?", s.ID).First(&stk).Error
+		stk := stockMap[s.ID]
 
 		pType := "Finished Product"
 		if s.Category != "" {
 			pType = s.Category
 		}
 
-		// Calculate TikTok Shop pending reserved quantity for this SKU
-		// Deduplicate candidate SKUs to avoid counting reserved qty twice when TikTok SKU equals ERP SKU
-		skuSet := make(map[string]bool)
-		skuUpper := strings.ToUpper(strings.TrimSpace(s.SKU))
-		if skuUpper != "" {
-			skuSet[skuUpper] = true
-		}
-
-		var mappings []domainTikTok.SKUMapping
-		_ = h.db.WithContext(c.Context()).Where("UPPER(TRIM(erp_sku)) = ?", skuUpper).Find(&mappings).Error
-		for _, m := range mappings {
-			ttUpper := strings.ToUpper(strings.TrimSpace(m.TikTokSKU))
-			if ttUpper != "" {
-				skuSet[ttUpper] = true
-			}
-		}
-
-		var candidateSKUs []string
-		for k := range skuSet {
-			candidateSKUs = append(candidateSKUs, k)
-		}
-
+		sCode := strings.ToUpper(strings.TrimSpace(s.SKU))
 		var tiktokReserved int64
-		if len(candidateSKUs) > 0 {
-			_ = h.db.WithContext(c.Context()).Model(&domainTikTok.TiktokOrderItem{}).
-				Joins("JOIN tiktok_orders ON tiktok_orders.id = tiktok_order_items.order_id").
-				Where("UPPER(TRIM(tiktok_order_items.sku)) IN ? AND tiktok_orders.stock_deducted = false AND UPPER(tiktok_orders.status) NOT IN ('CANCELLED', 'CANCELED', 'COMPLETED', 'DELIVERED', 'SHIPPED')", candidateSKUs).
-				Select("COALESCE(SUM(tiktok_order_items.qty), 0)").
-				Scan(&tiktokReserved).Error
+		if cands, ok := skuToCandidates[sCode]; ok {
+			for cand := range cands {
+				tiktokReserved += tiktokPendingMap[cand]
+			}
 		}
 
 		totalReserved := stk.ReservedQty + int(tiktokReserved)
@@ -359,6 +472,121 @@ func (h *WorkspaceHandler) CreateProduct(c *fiber.Ctx) error {
 	return response.Created(c, rec, "Product created successfully")
 }
 
+// resolveProductByCode finds a product strictly by SKU string (case-insensitive).
+// Numeric-looking SKUs are matched as SKU, never as record ID (FULL-12 v2).
+func (h *WorkspaceHandler) resolveProductByCode(c *fiber.Ctx, code string) (*domainSKU.SKU, error) {
+	var s domainSKU.SKU
+	if err := h.db.WithContext(c.Context()).Where("UPPER(sku) = ?", strings.ToUpper(strings.TrimSpace(code))).First(&s).Error; err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
+// resolveProductByID finds a product by record ID.
+func (h *WorkspaceHandler) resolveProductByID(c *fiber.Ctx, id string) (*domainSKU.SKU, error) {
+	uid, err := strconv.ParseUint(id, 10, 32)
+	if err != nil {
+		return nil, errors.New("invalid product ID")
+	}
+	var s domainSKU.SKU
+	if err := h.db.WithContext(c.Context()).First(&s, uid).Error; err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
+// GetProductByID returns a product by numeric record ID.
+func (h *WorkspaceHandler) GetProductByID(c *fiber.Ctx) error {
+	s, err := h.resolveProductByID(c, c.Params("id"))
+	if err != nil {
+		return response.NotFound(c, "Product not found")
+	}
+	return response.OK(c, fiber.Map{"id": s.ID, "sku": s.SKU, "name": s.Name, "type": s.Category, "retailPrice": s.Price, "cost": s.CostPrice, "isBundle": s.IsBundle, "isActive": s.Status == "active", "image": s.Image})
+}
+
+// UpdateProductByID updates a product by numeric record ID.
+func (h *WorkspaceHandler) UpdateProductByID(c *fiber.Ctx) error {
+	var req struct {
+		Name        *string  `json:"name"`
+		Type        *string  `json:"type"`
+		RetailPrice *float64 `json:"retailPrice"`
+		Cost        *float64 `json:"cost"`
+		IsBundle    *bool    `json:"isBundle"`
+		Image       *string  `json:"image"`
+		Status      *string  `json:"status"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return response.BadRequest(c, "Invalid request body")
+	}
+	s, err := h.resolveProductByID(c, c.Params("id"))
+	if err != nil {
+		return response.NotFound(c, "Product not found")
+	}
+	if req.Name != nil && *req.Name != "" {
+		s.Name = *req.Name
+	}
+	if req.Type != nil {
+		s.Category = *req.Type
+	}
+	if req.RetailPrice != nil && *req.RetailPrice > 0 {
+		s.Price = *req.RetailPrice
+	}
+	if req.Cost != nil && *req.Cost >= 0 {
+		s.CostPrice = *req.Cost
+	}
+	if req.IsBundle != nil {
+		s.IsBundle = *req.IsBundle
+	}
+	if req.Image != nil {
+		s.Image = *req.Image
+	}
+	if req.Status != nil && *req.Status != "" {
+		s.Status = strings.ToLower(strings.TrimSpace(*req.Status))
+	}
+	s.UpdatedAt = time.Now()
+	if err := h.db.WithContext(c.Context()).Save(s).Error; err != nil {
+		return response.InternalServerError(c, "Failed to update product")
+	}
+	return response.OK(c, fiber.Map{"id": s.ID, "sku": s.SKU, "name": s.Name, "isActive": s.Status == "active"}, "Product updated successfully")
+}
+
+// UpdateProductStatusByID toggles a product's status by numeric record ID.
+func (h *WorkspaceHandler) UpdateProductStatusByID(c *fiber.Ctx) error {
+	var req struct {
+		Status string `json:"status"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return response.BadRequest(c, "Invalid request body")
+	}
+	s, err := h.resolveProductByID(c, c.Params("id"))
+	if err != nil {
+		return response.NotFound(c, "Product not found")
+	}
+	newStatus := strings.ToLower(strings.TrimSpace(req.Status))
+	if newStatus != "active" && newStatus != "inactive" {
+		if newStatus == "archived" {
+			newStatus = "inactive"
+		} else {
+			newStatus = "active"
+		}
+	}
+	s.Status = newStatus
+	s.UpdatedAt = time.Now()
+	if err := h.db.WithContext(c.Context()).Save(s).Error; err != nil {
+		return response.InternalServerError(c, "Failed to update product status")
+	}
+	return response.OK(c, fiber.Map{"sku": s.SKU, "status": s.Status}, "Product status updated successfully")
+}
+
+// DeleteProductByID deletes a product by numeric record ID (reference-safe).
+func (h *WorkspaceHandler) DeleteProductByID(c *fiber.Ctx) error {
+	s, err := h.resolveProductByID(c, c.Params("id"))
+	if err != nil {
+		return response.NotFound(c, "Product not found")
+	}
+	return h.deleteProductRecord(c, s)
+}
+
 func (h *WorkspaceHandler) UpdateProductStatus(c *fiber.Ctx) error {
 	code := strings.TrimSpace(c.Params("code"))
 	if code == "" {
@@ -373,16 +601,11 @@ func (h *WorkspaceHandler) UpdateProductStatus(c *fiber.Ctx) error {
 	}
 
 	var s domainSKU.SKU
-	query := h.db.WithContext(c.Context())
-	if id, err := strconv.ParseUint(code, 10, 32); err == nil {
-		// FULL-12: numeric-looking codes match ID only, never a SKU string,
-		// so /products/42 can never hit a different product whose SKU is "42".
-		query = query.Where("id = ?", id)
-	} else {
-		query = query.Where("sku = ?", code)
-	}
-
-	if err := query.First(&s).Error; err != nil {
+	// FULL-12 v2: the :code param is always a SKU string. Numeric-looking SKUs
+	// are matched as SKU, never as record ID — the frontend sends SKU values in
+	// the path, so interpreting "42" as an ID mutated/deleted the wrong target.
+	// Callers that need ID-based access use /products/id/:id routes.
+	if err := h.db.WithContext(c.Context()).Where("UPPER(sku) = ?", strings.ToUpper(code)).First(&s).Error; err != nil {
 		return response.NotFound(c, "Product not found")
 	}
 
@@ -427,14 +650,8 @@ func (h *WorkspaceHandler) UpdateProduct(c *fiber.Ctx) error {
 	}
 
 	var s domainSKU.SKU
-	query := h.db.WithContext(c.Context())
-	if id, err := strconv.ParseUint(code, 10, 32); err == nil {
-		query = query.Where("id = ?", id)
-	} else {
-		query = query.Where("sku = ?", code)
-	}
-
-	if err := query.First(&s).Error; err != nil {
+	// FULL-12 v2: :code is always a SKU string (see UpdateProductStatus).
+	if err := h.db.WithContext(c.Context()).Where("UPPER(sku) = ?", strings.ToUpper(code)).First(&s).Error; err != nil {
 		return response.NotFound(c, "Product not found")
 	}
 
@@ -487,18 +704,16 @@ func (h *WorkspaceHandler) DeleteProduct(c *fiber.Ctx) error {
 		return response.BadRequest(c, "Product SKU is required")
 	}
 
-	var s domainSKU.SKU
-	query := h.db.WithContext(c.Context())
-	if id, err := strconv.ParseUint(code, 10, 32); err == nil {
-		query = query.Where("id = ?", id)
-	} else {
-		query = query.Where("sku = ?", code)
-	}
-
-	if err := query.First(&s).Error; err != nil {
+	s, err := h.resolveProductByCode(c, code)
+	if err != nil {
 		return response.NotFound(c, "Product not found")
 	}
+	return h.deleteProductRecord(c, s)
+}
 
+// deleteProductRecord deletes a resolved SKU with the FULL-13 reference check
+// running in ONE transaction.
+func (h *WorkspaceHandler) deleteProductRecord(c *fiber.Ctx, s *domainSKU.SKU) error {
 	// FULL-13: reference check + delete run in ONE transaction; the reference
 	// query error is no longer discarded. Concurrent reference creation after
 	// the check is still possible until FK restrictions exist, but the check
@@ -1463,15 +1678,11 @@ type QuotationRecord struct {
 func (h *WorkspaceHandler) GetQuotations(c *fiber.Ctx) error {
 	page, _ := strconv.Atoi(c.Query("page", "1"))
 	limit, _ := strconv.Atoi(c.Query("limit", "50"))
-	if page < 1 {
-		page = 1
-	}
 
-	var quotations []domainQuotation.Quotation
-	var total int64
-	query := h.db.WithContext(c.Context()).Model(&domainQuotation.Quotation{})
-	query.Count(&total)
-	query.Offset((page - 1) * limit).Limit(limit).Order("id DESC").Find(&quotations)
+	quotations, total, err := h.quotationUsecase.List(c.Context(), page, limit)
+	if err != nil {
+		return err
+	}
 
 	records := make([]QuotationRecord, len(quotations))
 	for i, q := range quotations {
@@ -1532,10 +1743,10 @@ func (h *WorkspaceHandler) ResolveSKUs(c *fiber.Ctx) error {
 	}
 
 	type ResolvedSKU struct {
-		Sku    string `json:"sku"`
-		Id     uint   `json:"id"`
-		Name   string `json:"name"`
-		Found  bool   `json:"found"`
+		Sku   string `json:"sku"`
+		Id    uint   `json:"id"`
+		Name  string `json:"name"`
+		Found bool   `json:"found"`
 	}
 	records := make([]ResolvedSKU, 0, len(normalized))
 	for _, code := range normalized {
@@ -1570,60 +1781,28 @@ func (h *WorkspaceHandler) CreateQuotation(c *fiber.Ctx) error {
 		return response.BadRequest(c, "Invalid request body")
 	}
 
-	if req.Customer == "" {
-		return response.BadRequest(c, "Customer name is required")
+	input := domainQuotation.CreateInput{
+		Customer:   req.Customer,
+		Date:       req.Date,
+		ValidUntil: req.ValidUntil,
+		Status:     req.Status,
+		LeadSource: req.LeadSource,
+		Note:       req.Note,
 	}
-	if len(req.Lines) == 0 {
-		return response.BadRequest(c, "At least one item line is required")
-	}
-
-	code := fmt.Sprintf("QT-%s-%04d", time.Now().Format("2006"), time.Now().Unix()%10000)
-	var total float64
-	lines := make([]domainQuotation.QuotationLine, len(req.Lines))
+	input.Lines = make([]domainQuotation.LineInput, len(req.Lines))
 	for i, l := range req.Lines {
-		sub := l.Price * float64(l.Qty)
-		total += sub
-		lines[i] = domainQuotation.QuotationLine{
+		input.Lines[i] = domainQuotation.LineInput{
 			ProductID: l.ProductID,
 			SKU:       l.SKU,
 			Name:      l.Name,
 			Price:     l.Price,
-			Quantity:  l.Qty,
-			Subtotal:  sub,
-			CreatedAt: time.Now(),
+			Qty:       l.Qty,
 		}
 	}
 
-	status := domainQuotation.StatusDraft
-	if req.Status != "" {
-		status = domainQuotation.Status(req.Status)
-	}
-
-	dateStr := req.Date
-	if dateStr == "" {
-		dateStr = time.Now().Format("2006-01-02")
-	}
-	validUntilStr := req.ValidUntil
-	if validUntilStr == "" {
-		validUntilStr = time.Now().AddDate(0, 0, 15).Format("2006-01-02")
-	}
-
-	q := domainQuotation.Quotation{
-		Code:         code,
-		CustomerName: req.Customer,
-		Date:         dateStr,
-		ValidUntil:   validUntilStr,
-		LeadSource:   req.LeadSource,
-		Status:       status,
-		TotalAmount:  total,
-		Note:         req.Note,
-		Lines:        lines,
-		CreatedAt:    time.Now(),
-		UpdatedAt:    time.Now(),
-	}
-
-	if err := h.db.WithContext(c.Context()).Create(&q).Error; err != nil {
-		return response.InternalServerError(c, "Failed to create quotation: "+err.Error())
+	q, err := h.quotationUsecase.Create(c.Context(), input)
+	if err != nil {
+		return err
 	}
 
 	rec := QuotationRecord{
@@ -1645,9 +1824,9 @@ func (h *WorkspaceHandler) GetQuotationByID(c *fiber.Ctx) error {
 		return response.BadRequest(c, "Invalid quotation ID")
 	}
 
-	var q domainQuotation.Quotation
-	if err := h.db.WithContext(c.Context()).Preload("Lines").First(&q, id).Error; err != nil {
-		return response.NotFound(c, "Quotation not found")
+	q, err := h.quotationUsecase.GetByID(c.Context(), uint(id))
+	if err != nil {
+		return err
 	}
 
 	lines := make([]fiber.Map, len(q.Lines))
@@ -1691,15 +1870,9 @@ func (h *WorkspaceHandler) UpdateQuotationStatus(c *fiber.Ctx) error {
 		return response.BadRequest(c, "Invalid request body")
 	}
 
-	var q domainQuotation.Quotation
-	if err := h.db.WithContext(c.Context()).First(&q, id).Error; err != nil {
-		return response.NotFound(c, "Quotation not found")
-	}
-
-	q.Status = domainQuotation.Status(req.Status)
-	q.UpdatedAt = time.Now()
-	if err := h.db.WithContext(c.Context()).Save(&q).Error; err != nil {
-		return response.InternalServerError(c, "Failed to update quotation status")
+	q, err := h.quotationUsecase.UpdateStatus(c.Context(), uint(id), domainQuotation.Status(req.Status))
+	if err != nil {
+		return err
 	}
 
 	return response.OK(c, q, "Quotation status updated")
@@ -1711,67 +1884,15 @@ func (h *WorkspaceHandler) ConvertQuotationToSO(c *fiber.Ctx) error {
 		return response.BadRequest(c, "Invalid quotation ID")
 	}
 
-	var q domainQuotation.Quotation
-	if err := h.db.WithContext(c.Context()).Preload("Lines").First(&q, id).Error; err != nil {
-		return response.NotFound(c, "Quotation not found")
-	}
-
-	if q.Status == domainQuotation.StatusConverted {
-		return response.BadRequest(c, "Quotation is already converted")
-	}
-
-	var orderID uint
-	var orderNo string
-
-	err = h.db.WithContext(c.Context()).Transaction(func(tx *gorm.DB) error {
-		orderNo = fmt.Sprintf("SO-%s-%04d", time.Now().Format("2006"), time.Now().Unix()%10000)
-		ordItems := make([]domainOrder.OrderItem, len(q.Lines))
-		for i, l := range q.Lines {
-			ordItems[i] = domainOrder.OrderItem{
-				SKU:       l.SKU,
-				Name:      l.Name,
-				Price:     l.Price,
-				Quantity:  l.Quantity,
-				Subtotal:  l.Subtotal,
-				CreatedAt: time.Now(),
-			}
-		}
-
-		channel := "direct"
-		if q.LeadSource != "" {
-			channel = strings.ToLower(q.LeadSource)
-		}
-
-		ord := domainOrder.Order{
-			OrderNo:      orderNo,
-			CustomerName: q.CustomerName,
-			Channel:      channel,
-			Status:       domainOrder.StatusPending,
-			TotalAmount:  q.TotalAmount,
-			Note:         fmt.Sprintf("Converted from Quotation %s", q.Code),
-			Items:        ordItems,
-			CreatedAt:    time.Now(),
-			UpdatedAt:    time.Now(),
-		}
-
-		if err := tx.Create(&ord).Error; err != nil {
-			return err
-		}
-		orderID = ord.ID
-
-		q.Status = domainQuotation.StatusConverted
-		q.UpdatedAt = time.Now()
-		return tx.Save(&q).Error
-	})
-
+	result, err := h.quotationUsecase.ConvertToSalesOrder(c.Context(), uint(id))
 	if err != nil {
-		return response.InternalServerError(c, "Failed to convert quotation: "+err.Error())
+		return err
 	}
 
 	return response.OK(c, fiber.Map{
-		"quotationId": q.ID,
-		"orderId":     orderID,
-		"orderNo":     orderNo,
+		"quotationId": result.QuotationID,
+		"orderId":     result.OrderID,
+		"orderNo":     result.OrderNo,
 	}, "Quotation converted to Sales Order successfully")
 }
 
@@ -2374,75 +2495,16 @@ func (h *WorkspaceHandler) AdjustStock(c *fiber.Ctx) error {
 		return response.BadRequest(c, "Invalid request body")
 	}
 
-	if len(req.Items) == 0 {
-		return response.BadRequest(c, "Items cannot be empty")
+	input := usecaseStock.AdjustBySKUInput{Note: req.Note}
+	input.Items = make([]usecaseStock.AdjustBySKULine, len(req.Items))
+	for i, it := range req.Items {
+		input.Items[i] = usecaseStock.AdjustBySKULine{SKU: it.SKU, ActualQty: it.ActualQty}
 	}
 
-	err := h.db.WithContext(c.Context()).Transaction(func(tx *gorm.DB) error {
-		for _, it := range req.Items {
-			if it.ActualQty < 0 {
-				return fmt.Errorf("actual quantity for SKU %s cannot be negative (%d)", it.SKU, it.ActualQty)
-			}
-
-			var s domainSKU.SKU
-			if err := tx.Where("UPPER(TRIM(sku)) = ?", strings.ToUpper(strings.TrimSpace(it.SKU))).First(&s).Error; err != nil {
-				return fmt.Errorf("SKU %s not found", it.SKU)
-			}
-
-			var stk domainStock.Stock
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("sku_id = ? AND warehouse_id = ?", s.ID, 1).First(&stk).Error; err != nil {
-				if errors.Is(err, gorm.ErrRecordNotFound) {
-					// Initialize stock record if not yet created
-					stk = domainStock.Stock{
-						SKUID:        s.ID,
-						SKUCode:      s.SKU,
-						WarehouseID:  1,
-						Quantity:     0,
-						ReservedQty:  0,
-						AvailableQty: 0,
-						UpdatedAt:    time.Now(),
-					}
-					if err := tx.Create(&stk).Error; err != nil {
-						return err
-					}
-				} else {
-					return fmt.Errorf("failed to query stock for SKU %s: %w", it.SKU, err)
-				}
-			}
-
-			if it.ActualQty < stk.ReservedQty {
-				return fmt.Errorf("cannot adjust quantity to %d for SKU %s because it is lower than reserved quantity %d", it.ActualQty, it.SKU, stk.ReservedQty)
-			}
-
-			delta := it.ActualQty - stk.Quantity
-			stk.Quantity = it.ActualQty
-			stk.AvailableQty = it.ActualQty - stk.ReservedQty
-			stk.UpdatedAt = time.Now()
-			if err := tx.Save(&stk).Error; err != nil {
-				return err
-			}
-
-			movement := domainStock.StockMovement{
-				SKUID:         s.ID,
-				SKUCode:       s.SKU,
-				WarehouseID:   1,
-				Type:          domainStock.MovementAdjust,
-				Quantity:      delta,
-				BeforeQty:     stk.Quantity - delta,
-				AfterQty:      stk.Quantity,
-				ReferenceType: "MANUAL_ADJUSTMENT",
-				Note:          req.Note,
-				CreatedAt:     time.Now(),
-			}
-			if err := tx.Create(&movement).Error; err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-
-	if err != nil {
-		return response.BadRequest(c, "Failed to adjust stock: "+err.Error())
+	// Business rules (validation, stock-row lock, movement write, transaction)
+	// live in the stock usecase — the handler only parses and delegates.
+	if err := h.stockUsecase.AdjustBySKU(c.Context(), h.skuRepo, input); err != nil {
+		return err
 	}
 
 	return response.OK(c, nil, "Stock adjusted successfully")

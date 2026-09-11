@@ -4,6 +4,42 @@ import (
 	"time"
 )
 
+// IsValidStatus reports whether s is one of the allowed quotation statuses.
+func IsValidStatus(s Status) bool {
+	switch s {
+	case StatusDraft, StatusSent, StatusApproved, StatusRejected, StatusConverted:
+		return true
+	}
+	return false
+}
+
+// allowedTransitions defines the state machine for quotation status changes.
+var allowedTransitions = map[Status][]Status{
+	StatusDraft:     {StatusSent, StatusRejected},
+	StatusSent:      {StatusApproved, StatusRejected},
+	StatusApproved:  {StatusConverted},
+	StatusRejected:  {},
+	StatusConverted: {},
+}
+
+// CanTransition reports whether moving a quotation from current to next is a
+// permitted business transition. Converted is terminal and only Approved
+// quotations may be converted.
+func CanTransition(current, next Status) bool {
+	for _, s := range allowedTransitions[current] {
+		if s == next {
+			return true
+		}
+	}
+	return false
+}
+
+// IsValidDate reports whether the value is a YYYY-MM-DD date string.
+func IsValidDate(value string) bool {
+	_, err := time.Parse("2006-01-02", value)
+	return err == nil
+}
+
 type Status string
 
 const (

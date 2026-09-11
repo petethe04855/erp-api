@@ -81,39 +81,28 @@ func RequireRole(allowedRoles ...string) fiber.Handler {
 			}
 		}
 
-		// Admin is granted access to any endpoint permitted for owner
-		if strings.EqualFold(userRole, "admin") {
-			for _, role := range allowedRoles {
-				if strings.EqualFold(role, "owner") {
-					return c.Next()
-				}
-			}
-		}
-
-		// Owner is granted access to any endpoint permitted for admin
-		if strings.EqualFold(userRole, "owner") {
-			for _, role := range allowedRoles {
-				if strings.EqualFold(role, "admin") {
-					return c.Next()
-				}
-			}
-		}
+		// Role "admin" was removed from the system: usecase/auth.isValidRole
+		// and the frontend UserRole type both define only owner, sales,
+		// warehouse, accountant. Owner already grants full access, so no
+		// admin↔owner fallback is needed.
 
 		return response.Forbidden(c, "You do not have permission to perform this action", "FORBIDDEN")
 	}
 }
 
 // PermissionMatrix is the central RBAC policy for API actions.
+// Valid roles: owner, sales, warehouse, accountant (see usecase/auth.isValidRole
+// and features/users/types/user.ts on the frontend — there is no "admin" role).
 var PermissionMatrix = map[string][]string{
-	"View":    {"owner", "admin", "sales", "warehouse", "accountant"},
-	"Create":  {"owner", "admin", "sales", "warehouse", "accountant"},
-	"Edit":    {"owner", "admin", "sales", "warehouse", "accountant"},
-	"Delete":  {"owner", "admin", "accountant"},
-	"Approve": {"owner", "admin", "accountant", "warehouse"},
-	"Post":    {"owner", "admin", "accountant"},
-	"Cancel":  {"owner", "admin", "accountant", "warehouse"},
-	"Reverse": {"owner", "admin", "accountant"},
-	"Export":  {"owner", "admin", "sales", "warehouse", "accountant"},
+	"View":    {"owner", "sales", "warehouse", "accountant"},
+	"Create":  {"owner", "sales", "warehouse", "accountant"},
+	"Edit":    {"owner", "sales", "warehouse", "accountant"},
+	"Delete":  {"owner", "accountant"},
+	"Approve": {"owner", "accountant", "warehouse"},
+	"Post":    {"owner", "accountant"},
+	"Cancel":  {"owner", "accountant", "warehouse"},
+	"Reverse": {"owner", "accountant"},
+	"Export":  {"owner", "sales", "warehouse", "accountant"},
 }
 
 func RequirePermission(permission string) fiber.Handler {
@@ -123,7 +112,7 @@ func RequirePermission(permission string) fiber.Handler {
 			return response.Forbidden(c, "Role information missing", "FORBIDDEN")
 		}
 
-		if strings.EqualFold(userRole, "owner") || strings.EqualFold(userRole, "admin") {
+		if strings.EqualFold(userRole, "owner") {
 			return c.Next()
 		}
 

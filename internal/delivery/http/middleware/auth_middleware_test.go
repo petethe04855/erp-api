@@ -27,12 +27,13 @@ func TestRequireRole(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp1.StatusCode)
 
-	// Test authorized role (admin should be granted access when owner is required)
+	// Role "admin" no longer exists in the system: an unknown role must be
+	// rejected even when owner is required.
 	reqAdmin := httptest.NewRequest(http.MethodGet, "/owner-only", nil)
 	reqAdmin.Header.Set("X-Test-Role", "admin")
 	respAdmin, err := app.Test(reqAdmin)
 	assert.NoError(t, err)
-	assert.Equal(t, http.StatusOK, respAdmin.StatusCode)
+	assert.Equal(t, http.StatusForbidden, respAdmin.StatusCode)
 
 	// Test unauthorized role
 	req2 := httptest.NewRequest(http.MethodGet, "/owner-only", nil)

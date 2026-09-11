@@ -2,6 +2,8 @@ package handler
 
 import (
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +19,14 @@ type UploadHandler struct{}
 
 func NewUploadHandler() *UploadHandler {
 	return &UploadHandler{}
+}
+
+// allowedImageMimes lists the content types accepted for image uploads.
+// Sniffing is done with http.DetectContentType on the first 512 bytes so a
+// text file renamed to .png/.jpg is rejected.
+var allowedImageMimes = map[string]string{
+	"image/png":  ".png",
+	"image/jpeg": ".jpg",
 }
 
 // UploadImage handles image uploads (png, jpg, jpeg) under 5MB
@@ -41,22 +51,54 @@ func (h *UploadHandler) UploadImage(c *fiber.Ctx) error {
 		return response.BadRequest(c, "รองรับเฉพาะไฟล์รูปภาพนามสกุล .png, .jpg หรือ .jpeg เท่านั้น")
 	}
 
-	// 3. Ensure uploads/images directory exists
+	// 3. Sniff real content type from the file header — extension alone is not
+	// trusted (a text file renamed to .png must be rejected).
+	f, err := file.Open()
+	if err != nil {
+		return response.BadRequest(c, "ไม่สามารถอ่านไฟล์รูปภาพได้")
+	}
+	defer f.Close()
+
+	head := make([]byte, 512)
+	n, err := f.Read(head)
+	if err != nil && err != io.EOF {
+		return response.BadRequest(c, "ไม่สามารถอ่านไฟล์รูปภาพได้")
+	}
+	contentType := http.DetectContentType(head[:n])
+	normalized := strings.Split(contentType, ";")[0]
+	if normalized == "image/jpg" {
+		normalized = "image/jpeg"
+	}
+	expectedExt, ok := allowedImageMimes[normalized]
+	if !ok {
+		return response.BadRequest(c, "เนื้อหาไฟล์ไม่ใช่รูปภาพ PNG หรือ JPEG ที่ถูกต้อง")
+	}
+	// Extension must agree with actual content (.jpeg aliases to .jpg).
+	if ext != ".png" && ext != ".jpeg" && ext != expectedExt {
+		return response.BadRequest(c, "นามสกุลไฟล์ไม่ตรงกับเนื้อหารูปภาพจริง")
+	}
+
+	// Rewind so the saved file is complete.
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return response.InternalServerError(c, "ไม่สามารถอ่านไฟล์รูปภาพได้")
+	}
+
+	// 4. Ensure uploads/images directory exists
 	uploadDir := "./uploads/images"
 	if err := os.MkdirAll(uploadDir, 0755); err != nil {
 		return response.InternalServerError(c, "ไม่สามารถสร้างโฟลเดอร์สำหรับเก็บรูปภาพได้: "+err.Error())
 	}
 
-	// 4. Generate unique filename
+	// 5. Generate unique filename
 	filename := fmt.Sprintf("%d-%s%s", time.Now().Unix(), uuid.New().String()[:8], ext)
 	dst := filepath.Join(uploadDir, filename)
 
-	// 5. Save file to disk
+	// 6. Save file to disk
 	if err := c.SaveFile(file, dst); err != nil {
 		return response.InternalServerError(c, "บันทึกไฟล์รูปภาพไม่สำเร็จ: "+err.Error())
 	}
 
-	// 6. Return relative URL path
+	// 7. Return relative URL path
 	imageURL := "/uploads/images/" + filename
 	return response.Created(c, fiber.Map{
 		"url":      imageURL,

@@ -3,7 +3,9 @@ package stock
 import (
 	"context"
 	"fmt"
+	"strings"
 
+	domainSKU "chawy-erp-api/internal/domain/sku"
 	domainStock "chawy-erp-api/internal/domain/stock"
 	"chawy-erp-api/pkg/database"
 	appErrors "chawy-erp-api/pkg/errors"
@@ -24,6 +26,9 @@ type Usecase interface {
 	GetStock(ctx context.Context, skuID, warehouseID uint) (*domainStock.Stock, error)
 	ListStock(ctx context.Context, query domainStock.Query) ([]domainStock.Stock, int64, error)
 	AdjustStock(ctx context.Context, input AdjustInput) (*domainStock.Stock, error)
+	// AdjustBySKU applies multi-line physical-count adjustments keyed by SKU
+	// code (skuRepo resolves codes; wired separately to avoid an import cycle).
+	AdjustBySKU(ctx context.Context, skuRepo SKUResolver, input AdjustBySKUInput) error
 	GetMovements(ctx context.Context, skuID uint, page, limit int) ([]domainStock.StockMovement, int64, error)
 }
 
@@ -174,4 +179,67 @@ func (u *stockUsecase) GetMovements(ctx context.Context, skuID uint, page, limit
 		limit = 20
 	}
 	return u.repo.GetMovements(ctx, skuID, page, limit)
+}
+
+// SKUResolver looks up SKUs by their code (case-insensitive caller side).
+type SKUResolver interface {
+	FindBySKU(ctx context.Context, skuCode string) (*domainSKU.SKU, error)
+}
+
+// AdjustBySKULine is one line of a physical-count style adjustment submitted
+// by SKU code with the counted (actual) quantity.
+type AdjustBySKULine struct {
+	SKU       string
+	ActualQty int
+}
+
+// AdjustBySKUInput is a multi-line manual stock adjustment keyed by SKU code.
+type AdjustBySKUInput struct {
+	Note  string
+	Items []AdjustBySKULine
+}
+
+// AdjustBySKU applies a physical-count adjustment per SKU line inside one
+// transaction. Semantics match the previous workspace-handler workflow: the
+// counted quantity becomes the new on-hand quantity (never below reserved),
+// an ADJUST movement records the delta, and missing stock rows are
+// initialized. All lines commit together or not at all.
+func (u *stockUsecase) AdjustBySKU(ctx context.Context, skuRepo SKUResolver, input AdjustBySKUInput) error {
+	if len(input.Items) == 0 {
+		return appErrors.NewAppError("EMPTY_ADJUSTMENT", "Items cannot be empty", 400)
+	}
+
+	run := func(ctx context.Context) error {
+		for _, line := range input.Items {
+			if line.ActualQty < 0 {
+				return appErrors.NewAppError("INVALID_QUANTITY",
+					fmt.Sprintf("actual quantity for SKU %s cannot be negative (%d)", line.SKU, line.ActualQty), 400)
+			}
+			skuCode := strings.ToUpper(strings.TrimSpace(line.SKU))
+			s, err := skuRepo.FindBySKU(ctx, skuCode)
+			if err != nil {
+				return fmt.Errorf("failed to resolve SKU %s: %w", line.SKU, err)
+			}
+			if s == nil {
+				return appErrors.NewAppError("SKU_NOT_FOUND", fmt.Sprintf("SKU %s not found", line.SKU), 400)
+			}
+			if _, err := u.adjustInTx(ctx, AdjustInput{
+				SKUID:         s.ID,
+				SKUCode:       s.SKU,
+				WarehouseID:   1,
+				Type:          domainStock.MovementAdjust,
+				Quantity:      line.ActualQty,
+				ReferenceType: "MANUAL_ADJUSTMENT",
+				Note:          input.Note,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	if u.txMgr != nil {
+		return u.txMgr.Transaction(ctx, run)
+	}
+	return run(ctx)
 }

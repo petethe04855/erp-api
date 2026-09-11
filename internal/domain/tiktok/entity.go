@@ -131,6 +131,10 @@ type Repository interface {
 	// Orders & Line items
 	UpsertOrders(ctx context.Context, orders []TiktokOrder) error
 	GetOrderByID(ctx context.Context, id string) (*TiktokOrder, error)
+	// GetOrderByIDForUpdate locks the order row (SELECT ... FOR UPDATE) so
+	// concurrent syncs serialize on the same TikTok order and the
+	// stock_deducted check happens inside the deduction transaction.
+	GetOrderByIDForUpdate(ctx context.Context, id string) (*TiktokOrder, error)
 	UpdateOrderStockDeducted(ctx context.Context, orderID string, deducted bool) error
 	ListRecentOrders(ctx context.Context, limit int) ([]TiktokOrder, error)
 

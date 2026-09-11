@@ -29,6 +29,7 @@ import (
 	usecaseInvoice "chawy-erp-api/internal/usecase/invoice"
 	usecaseOrder "chawy-erp-api/internal/usecase/order"
 	usecasePurchasing "chawy-erp-api/internal/usecase/purchasing"
+	usecaseQuotation "chawy-erp-api/internal/usecase/quotation"
 	usecaseReport "chawy-erp-api/internal/usecase/report"
 	usecaseSettings "chawy-erp-api/internal/usecase/settings"
 	usecaseSKU "chawy-erp-api/internal/usecase/sku"
@@ -90,11 +91,13 @@ func main() {
 		&domainSettings.ModuleSettings{},
 		&domainSettings.LivePayrollSettings{},
 	); err != nil {
-		log.Printf("[WARN] AutoMigrate warning: %v", err)
+		// Fail-closed: running on an incompatible schema causes partial data
+		// failures at runtime; it is safer to refuse to start.
+		log.Fatalf("[FATAL] AutoMigrate failed: %v", err)
 	}
 
 	// 3.0 Column compatibility migration for stocks and stock_movements
-	_ = db.Exec(`
+	if err := db.Exec(`
 		DO $$ 
 		BEGIN 
 			IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='stocks' AND column_name='sk_uid') THEN
@@ -110,7 +113,9 @@ func main() {
 				UPDATE stock_movements SET sk_uid = sku_id WHERE sk_uid IS NULL AND sku_id IS NOT NULL;
 			END IF;
 		END $$;
-	`).Error
+	`).Error; err != nil {
+		log.Fatalf("[FATAL] Compatibility migration failed: %v", err)
+	}
 
 	// 3.1 Seed initial admin user only in development (FULL-01)
 	seedDefaultAdmin(db, cfg.Environment)
@@ -141,6 +146,8 @@ func main() {
 	reportUsecase := usecaseReport.NewReportUsecase(db)
 	tiktokUsecase := usecaseTikTok.NewTikTokUsecase(cfg, db, tiktokRepo, orderRepo, skuRepo, bundleRepo, stockRepo)
 	settingsUsecase := usecaseSettings.NewSettingsUsecase(settingsRepo)
+	quotationRepo := postgres.NewQuotationRepository(db)
+	quotationUsecase := usecaseQuotation.NewQuotationUsecase(quotationRepo, skuRepo, orderRepo, txManager)
 
 	// 6. Dependency Injection - Handlers
 	authHdl := handler.NewAuthHandler(authUsecase)
@@ -152,7 +159,7 @@ func main() {
 	purchasingHdl := handler.NewPurchasingHandler(purchasingUsecase)
 	invoiceHdl := handler.NewInvoiceHandler(invoiceUsecase)
 	reportHdl := handler.NewReportHandler(reportUsecase)
-	workspaceHdl := handler.NewWorkspaceHandler(db, orderUsecase)
+	workspaceHdl := handler.NewWorkspaceHandler(db, orderUsecase, quotationUsecase, stockUsecase, skuRepo)
 	tiktokHdl := handler.NewTikTokHandler(tiktokUsecase)
 	settingsHdl := handler.NewSettingsHandler(settingsUsecase)
 	uploadHdl := handler.NewUploadHandler()
@@ -258,8 +265,8 @@ func seedDefaultAdmin(db *gorm.DB, environment string) {
 	hashedStr := string(hashed)
 	defaultUsers := []domainAuth.User{
 		{
-			Email:    "admin@example.com",
-			Name:     "Admin System",
+			Email: "admin@example.com",
+			Name:  "Admin System",
 			// Must be a role accepted by isValidRole() (owner/sales/warehouse/accountant);
 			// "admin" is not a valid role and would break role-based UI filtering.
 			Role:     "owner",
