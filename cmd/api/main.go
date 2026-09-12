@@ -16,6 +16,7 @@ import (
 	domainCustomer "chawy-erp-api/internal/domain/customer"
 	domainFinance "chawy-erp-api/internal/domain/finance"
 	domainInvoice "chawy-erp-api/internal/domain/invoice"
+	domainLive "chawy-erp-api/internal/domain/live"
 	domainOrder "chawy-erp-api/internal/domain/order"
 	domainPurchasing "chawy-erp-api/internal/domain/purchasing"
 	domainQuotation "chawy-erp-api/internal/domain/quotation"
@@ -29,6 +30,7 @@ import (
 	usecaseCustomer "chawy-erp-api/internal/usecase/customer"
 	usecaseFinance "chawy-erp-api/internal/usecase/finance"
 	usecaseInvoice "chawy-erp-api/internal/usecase/invoice"
+	usecaseLive "chawy-erp-api/internal/usecase/live"
 	usecaseOrder "chawy-erp-api/internal/usecase/order"
 	usecasePurchasing "chawy-erp-api/internal/usecase/purchasing"
 	usecaseQuotation "chawy-erp-api/internal/usecase/quotation"
@@ -66,6 +68,7 @@ func main() {
 	if err := db.AutoMigrate(
 		&domainAuth.User{},
 		&domainSKU.SKU{},
+		&domainSKU.SKUAccessory{},
 		&domainBundle.BundleItem{},
 		&domainStock.Stock{},
 		&domainStock.StockMovement{},
@@ -97,6 +100,8 @@ func main() {
 		&domainFinance.JournalEntry{},
 		&domainFinance.JournalLine{},
 		&domainFinance.Expense{},
+		&domainLive.LiveSession{},
+		&domainLive.ContentItem{},
 	); err != nil {
 		// Fail-closed: running on an incompatible schema causes partial data
 		// failures at runtime; it is safer to refuse to start.
@@ -158,6 +163,8 @@ func main() {
 	financeUsecase := usecaseFinance.NewFinanceUsecase(financeRepo, txManager)
 	quotationRepo := postgres.NewQuotationRepository(db)
 	quotationUsecase := usecaseQuotation.NewQuotationUsecaseWithStock(quotationRepo, skuRepo, orderRepo, txManager, stockRepo, bundleRepo)
+	liveRepo := postgres.NewLiveRepository(db)
+	liveUsecase := usecaseLive.NewLiveUsecase(db, liveRepo, settingsRepo, authRepo)
 
 	// 6. Dependency Injection - Handlers
 	authHdl := handler.NewAuthHandler(authUsecase)
@@ -174,6 +181,7 @@ func main() {
 	tiktokHdl := handler.NewTikTokHandler(tiktokUsecase)
 	settingsHdl := handler.NewSettingsHandler(settingsUsecase)
 	uploadHdl := handler.NewUploadHandler()
+	liveHdl := handler.NewLiveHandler(liveUsecase)
 
 	// 7. Initialize Fiber App
 	app := fiber.New(fiber.Config{
@@ -214,6 +222,7 @@ func main() {
 		TikTokHandler:     tiktokHdl,
 		SettingsHandler:   settingsHdl,
 		UploadHandler:     uploadHdl,
+		LiveHandler:       liveHdl,
 		JWTSecret:         cfg.JWTSecret,
 		UserStatusLoader:  authRepo,
 	})

@@ -51,23 +51,34 @@ func NewWorkspaceHandler(
 }
 
 // ProductRecord matching erp-web-v2 features/erp/types/records.ts
+type SKUAccessoryRecord struct {
+	ID           uint    `json:"id"`
+	SKU          string  `json:"sku"`
+	AccessorySKU string  `json:"accessorySku"`
+	Quantity     int     `json:"quantity"`
+	Note         string  `json:"note"`
+	Name         string  `json:"name,omitempty"`
+}
+
 type ProductRecord struct {
-	ID             uint    `json:"id"`
-	SKU            string  `json:"sku"`
-	Name           string  `json:"name"`
-	Type           string  `json:"type"`
-	Barcode        string  `json:"barcode"`
-	BaseUnit       string  `json:"baseUnit"`
-	RetailPrice    float64 `json:"retailPrice"`
-	WholesalePrice float64 `json:"wholesalePrice"`
-	Cost           float64 `json:"cost"`
-	Stock          int     `json:"stock"`
-	ReservedQty    int     `json:"reservedQty"`
-	Reorder        int     `json:"reorder"`
-	IsBundle       bool    `json:"isBundle"`
-	IsActive       bool    `json:"isActive"`
-	Available      int     `json:"available"`
-	Image          string  `json:"image"`
+	ID              uint                 `json:"id"`
+	SKU             string               `json:"sku"`
+	Name            string               `json:"name"`
+	Type            string               `json:"type"`
+	Barcode         string               `json:"barcode"`
+	BaseUnit        string               `json:"baseUnit"`
+	RetailPrice     float64              `json:"retailPrice"`
+	WholesalePrice  float64              `json:"wholesalePrice"`
+	Cost            float64              `json:"cost"`
+	Stock           int                  `json:"stock"`
+	ReservedQty     int                  `json:"reservedQty"`
+	Reorder         int                  `json:"reorder"`
+	IsBundle        bool                 `json:"isBundle"`
+	IsActive        bool                 `json:"isActive"`
+	Available       int                  `json:"available"`
+	BundleAvailable *int                 `json:"bundleAvailable,omitempty"`
+	Image           string               `json:"image"`
+	Accessories     []SKUAccessoryRecord `json:"accessories,omitempty"`
 }
 
 func (h *WorkspaceHandler) GetProducts(c *fiber.Ctx) error {
@@ -103,6 +114,16 @@ func (h *WorkspaceHandler) GetProducts(c *fiber.Ctx) error {
 			query = query.Where("is_bundle = true")
 		} else {
 			query = query.Where("(category ILIKE ? OR (? = 'Finished Product' AND (category IS NULL OR category = '')))", prodType, prodType)
+		}
+	}
+
+	// Filter by isBundle explicitly (F2)
+	isBundleQuery := strings.TrimSpace(c.Query("isBundle", ""))
+	if isBundleQuery != "" && !strings.EqualFold(isBundleQuery, "all") {
+		if strings.EqualFold(isBundleQuery, "true") {
+			query = query.Where("is_bundle = true")
+		} else if strings.EqualFold(isBundleQuery, "false") {
+			query = query.Where("is_bundle = false")
 		}
 	}
 
@@ -215,6 +236,72 @@ func (h *WorkspaceHandler) GetProducts(c *fiber.Ctx) error {
 		}
 	}
 
+	// 4. Batch fetch bundle items and accessories for candidate SKUs
+	var bundleSKUs []string
+	var nonBundleSKUs []string
+	for _, s := range skus {
+		if s.IsBundle {
+			bundleSKUs = append(bundleSKUs, s.SKU)
+		} else {
+			nonBundleSKUs = append(nonBundleSKUs, s.SKU)
+		}
+	}
+
+	bundleItemsMap := make(map[string][]domainBundle.BundleItem)
+	if len(bundleSKUs) > 0 {
+		var bItems []domainBundle.BundleItem
+		_ = h.db.WithContext(c.Context()).Where("bundle_sku IN ?", bundleSKUs).Find(&bItems).Error
+		for _, bi := range bItems {
+			bundleItemsMap[bi.BundleSKU] = append(bundleItemsMap[bi.BundleSKU], bi)
+		}
+	}
+
+	// Fetch components stock availability for virtual bundles
+	var compSKUList []string
+	seenComp := make(map[string]bool)
+	for _, items := range bundleItemsMap {
+		for _, bi := range items {
+			cUpper := strings.ToUpper(strings.TrimSpace(bi.ComponentSKU))
+			if cUpper != "" && !seenComp[cUpper] {
+				seenComp[cUpper] = true
+				compSKUList = append(compSKUList, cUpper)
+			}
+		}
+	}
+
+	compAvailableMap := make(map[string]int)
+	if len(compSKUList) > 0 {
+		type CompStock struct {
+			SKUCode      string `gorm:"column:sku_code"`
+			AvailableQty int    `gorm:"column:available_qty"`
+		}
+		var compStocks []CompStock
+		_ = h.db.WithContext(c.Context()).Model(&domainStock.Stock{}).
+			Select("UPPER(TRIM(sku_code)) AS sku_code, COALESCE(SUM(available_qty), 0) AS available_qty").
+			Where("UPPER(TRIM(sku_code)) IN ?", compSKUList).
+			Group("UPPER(TRIM(sku_code))").
+			Scan(&compStocks).Error
+		for _, cs := range compStocks {
+			compAvailableMap[cs.SKUCode] = cs.AvailableQty
+		}
+	}
+
+	// Batch fetch accessories for non-bundle SKUs
+	accessoriesMap := make(map[string][]SKUAccessoryRecord)
+	if len(nonBundleSKUs) > 0 {
+		var accItems []domainSKU.SKUAccessory
+		_ = h.db.WithContext(c.Context()).Where("sku IN ?", nonBundleSKUs).Find(&accItems).Error
+		for _, ai := range accItems {
+			accessoriesMap[ai.SKU] = append(accessoriesMap[ai.SKU], SKUAccessoryRecord{
+				ID:           ai.ID,
+				SKU:          ai.SKU,
+				AccessorySKU: ai.AccessorySKU,
+				Quantity:     ai.Quantity,
+				Note:         ai.Note,
+			})
+		}
+	}
+
 	records := make([]ProductRecord, len(skus))
 	for i, s := range skus {
 		stk := stockMap[s.ID]
@@ -238,23 +325,51 @@ func (h *WorkspaceHandler) GetProducts(c *fiber.Ctx) error {
 			available = 0
 		}
 
+		var bundleAvail *int
+		if s.IsBundle {
+			items := bundleItemsMap[s.SKU]
+			if len(items) == 0 {
+				zero := 0
+				bundleAvail = &zero
+			} else {
+				minSets := -1
+				for _, bi := range items {
+					reqQty := bi.Quantity
+					if reqQty <= 0 {
+						reqQty = 1
+					}
+					cStock := compAvailableMap[strings.ToUpper(strings.TrimSpace(bi.ComponentSKU))]
+					sets := cStock / reqQty
+					if minSets == -1 || sets < minSets {
+						minSets = sets
+					}
+				}
+				if minSets < 0 {
+					minSets = 0
+				}
+				bundleAvail = &minSets
+			}
+		}
+
 		records[i] = ProductRecord{
-			ID:             s.ID,
-			SKU:            s.SKU,
-			Name:           s.Name,
-			Type:           pType,
-			Barcode:        s.Barcode,
-			BaseUnit:       "ชิ้น",
-			RetailPrice:    s.Price,
-			WholesalePrice: s.Price,
-			Cost:           s.CostPrice,
-			Stock:          stk.Quantity,
-			ReservedQty:    totalReserved,
-			Reorder:        10,
-			IsBundle:       s.IsBundle,
-			IsActive:       s.Status == "active",
-			Available:      available,
-			Image:          s.Image,
+			ID:              s.ID,
+			SKU:             s.SKU,
+			Name:            s.Name,
+			Type:            pType,
+			Barcode:         s.Barcode,
+			BaseUnit:        "ชิ้น",
+			RetailPrice:     s.Price,
+			WholesalePrice:  s.Price,
+			Cost:            s.CostPrice,
+			Stock:           stk.Quantity,
+			ReservedQty:     totalReserved,
+			Reorder:         10,
+			IsBundle:        s.IsBundle,
+			IsActive:        s.Status == "active",
+			Available:       available,
+			BundleAvailable: bundleAvail,
+			Image:           s.Image,
+			Accessories:     accessoriesMap[s.SKU],
 		}
 	}
 
@@ -311,23 +426,73 @@ func (h *WorkspaceHandler) GetProductByCode(c *fiber.Ctx) error {
 		available = 0
 	}
 
+	var bundleAvail *int
+	if s.IsBundle {
+		var items []domainBundle.BundleItem
+		_ = h.db.WithContext(c.Context()).Where("bundle_sku = ?", s.SKU).Find(&items).Error
+		if len(items) == 0 {
+			zero := 0
+			bundleAvail = &zero
+		} else {
+			minSets := -1
+			for _, bi := range items {
+				reqQty := bi.Quantity
+				if reqQty <= 0 {
+					reqQty = 1
+				}
+				var cStock struct {
+					AvailableQty int `gorm:"column:available_qty"`
+				}
+				_ = h.db.WithContext(c.Context()).Model(&domainStock.Stock{}).
+					Select("COALESCE(SUM(available_qty), 0) AS available_qty").
+					Where("UPPER(TRIM(sku_code)) = ?", strings.ToUpper(strings.TrimSpace(bi.ComponentSKU))).
+					Scan(&cStock).Error
+				sets := cStock.AvailableQty / reqQty
+				if minSets == -1 || sets < minSets {
+					minSets = sets
+				}
+			}
+			if minSets < 0 {
+				minSets = 0
+			}
+			bundleAvail = &minSets
+		}
+	}
+
+	var accessories []SKUAccessoryRecord
+	if !s.IsBundle {
+		var accItems []domainSKU.SKUAccessory
+		_ = h.db.WithContext(c.Context()).Where("sku = ?", s.SKU).Find(&accItems).Error
+		for _, ai := range accItems {
+			accessories = append(accessories, SKUAccessoryRecord{
+				ID:           ai.ID,
+				SKU:          ai.SKU,
+				AccessorySKU: ai.AccessorySKU,
+				Quantity:     ai.Quantity,
+				Note:         ai.Note,
+			})
+		}
+	}
+
 	rec := ProductRecord{
-		ID:             s.ID,
-		SKU:            s.SKU,
-		Name:           s.Name,
-		Type:           pType,
-		Barcode:        s.Barcode,
-		BaseUnit:       "ชิ้น",
-		RetailPrice:    s.Price,
-		WholesalePrice: s.Price,
-		Cost:           s.CostPrice,
-		Stock:          stk.Quantity,
-		ReservedQty:    totalReserved,
-		Reorder:        10,
-		IsBundle:       s.IsBundle,
-		IsActive:       s.Status == "active",
-		Available:      available,
-		Image:          s.Image,
+		ID:              s.ID,
+		SKU:             s.SKU,
+		Name:            s.Name,
+		Type:            pType,
+		Barcode:         s.Barcode,
+		BaseUnit:        "ชิ้น",
+		RetailPrice:     s.Price,
+		WholesalePrice:  s.Price,
+		Cost:            s.CostPrice,
+		Stock:           stk.Quantity,
+		ReservedQty:     totalReserved,
+		Reorder:         10,
+		IsBundle:        s.IsBundle,
+		IsActive:        s.Status == "active",
+		Available:       available,
+		BundleAvailable: bundleAvail,
+		Image:           s.Image,
+		Accessories:     accessories,
 	}
 	return response.OK(c, rec)
 }
@@ -349,6 +514,13 @@ func (h *WorkspaceHandler) CreateProduct(c *fiber.Ctx) error {
 			Qty          int    `json:"qty"`
 			Note         string `json:"note"`
 		} `json:"components"`
+		Accessories []struct {
+			AccessorySKU string `json:"accessorySku"`
+			SKU          string `json:"sku"`
+			Quantity     int    `json:"quantity"`
+			Qty          int    `json:"qty"`
+			Note         string `json:"note"`
+		} `json:"accessories"`
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return response.BadRequest(c, "Invalid request body")
@@ -383,8 +555,44 @@ func (h *WorkspaceHandler) CreateProduct(c *fiber.Ctx) error {
 				return response.BadRequest(c, fmt.Sprintf("Component quantity for SKU %s must be greater than 0", cSKU))
 			}
 		}
+	} else if len(req.Accessories) > 0 {
+		for _, acc := range req.Accessories {
+			aSKU := acc.AccessorySKU
+			if aSKU == "" && acc.SKU != "" {
+				aSKU = acc.SKU
+			}
+			aSKU = strings.ToUpper(strings.TrimSpace(aSKU))
+			if aSKU == "" {
+				return response.BadRequest(c, "Accessory SKU cannot be empty")
+			}
+			if aSKU == skuCode {
+				return response.BadRequest(c, "สินค้าไม่สามารถผูกตนเองเป็น Accessory ได้")
+			}
+			qty := acc.Quantity
+			if qty <= 0 && acc.Qty > 0 {
+				qty = acc.Qty
+			}
+			if qty <= 0 {
+				return response.BadRequest(c, fmt.Sprintf("จำนวน Accessory สำหรับ SKU %s ต้องมากกว่า 0", aSKU))
+			}
+
+			// Validate accessory SKU exists
+			var accExists domainSKU.SKU
+			if err := h.db.WithContext(c.Context()).Where("UPPER(sku) = ?", aSKU).First(&accExists).Error; err != nil {
+				return response.BadRequest(c, fmt.Sprintf("ไม่พบ SKU Accessory '%s' ในระบบ", aSKU), "ACCESSORY_NOT_FOUND")
+			}
+			// Cycle check: accessory cannot have this SKU as its accessory
+			var cycleCount int64
+			_ = h.db.WithContext(c.Context()).Model(&domainSKU.SKUAccessory{}).
+				Where("UPPER(sku) = ? AND UPPER(accessory_sku) = ?", aSKU, skuCode).
+				Count(&cycleCount).Error
+			if cycleCount > 0 {
+				return response.BadRequest(c, fmt.Sprintf("เกิด Cycle: SKU %s ผูกกับ %s อยู่แล้ว", aSKU, skuCode), "ACCESSORY_CYCLE")
+			}
+		}
 	}
 
+	var createdAccessories []SKUAccessoryRecord
 	var skuEntity domainSKU.SKU
 	err := h.db.WithContext(c.Context()).Transaction(func(tx *gorm.DB) error {
 		skuEntity = domainSKU.SKU{
@@ -448,6 +656,44 @@ func (h *WorkspaceHandler) CreateProduct(c *fiber.Ctx) error {
 					return err
 				}
 			}
+		} else if len(req.Accessories) > 0 {
+			for _, acc := range req.Accessories {
+				aSKU := acc.AccessorySKU
+				if aSKU == "" && acc.SKU != "" {
+					aSKU = acc.SKU
+				}
+				aSKU = strings.ToUpper(strings.TrimSpace(aSKU))
+				if aSKU == "" {
+					continue
+				}
+
+				qty := acc.Quantity
+				if qty <= 0 && acc.Qty > 0 {
+					qty = acc.Qty
+				}
+				if qty <= 0 {
+					qty = 1
+				}
+
+				accItem := domainSKU.SKUAccessory{
+					SKU:          skuEntity.SKU,
+					AccessorySKU: aSKU,
+					Quantity:     qty,
+					Note:         acc.Note,
+					CreatedAt:    time.Now(),
+					UpdatedAt:    time.Now(),
+				}
+				if err := tx.Create(&accItem).Error; err != nil {
+					return err
+				}
+				createdAccessories = append(createdAccessories, SKUAccessoryRecord{
+					ID:           accItem.ID,
+					SKU:          accItem.SKU,
+					AccessorySKU: accItem.AccessorySKU,
+					Quantity:     accItem.Quantity,
+					Note:         accItem.Note,
+				})
+			}
 		}
 
 		return nil
@@ -468,6 +714,7 @@ func (h *WorkspaceHandler) CreateProduct(c *fiber.Ctx) error {
 		IsBundle:    skuEntity.IsBundle,
 		IsActive:    true,
 		Image:       skuEntity.Image,
+		Accessories: createdAccessories,
 	}
 	return response.Created(c, rec, "Product created successfully")
 }
@@ -683,6 +930,13 @@ func (h *WorkspaceHandler) UpdateProduct(c *fiber.Ctx) error {
 			Qty          int    `json:"qty"`
 			Note         string `json:"note"`
 		} `json:"components"`
+		Accessories []struct {
+			AccessorySKU string `json:"accessorySku"`
+			SKU          string `json:"sku"`
+			Quantity     int    `json:"quantity"`
+			Qty          int    `json:"qty"`
+			Note         string `json:"note"`
+		} `json:"accessories"`
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return response.BadRequest(c, "Invalid request body")
@@ -735,10 +989,49 @@ func (h *WorkspaceHandler) UpdateProduct(c *fiber.Ctx) error {
 	}
 	s.UpdatedAt = time.Now()
 
-	// Use the OLD sku for the bundle_items cleanup when SKU was renamed,
-	// because cascade hasn't run yet at that point.
-	bundleCleanupSKU := oldSKU
+	// Validate accessories if provided for non-bundle product
+	if !s.IsBundle && req.Accessories != nil {
+		for _, acc := range req.Accessories {
+			aSKU := acc.AccessorySKU
+			if aSKU == "" && acc.SKU != "" {
+				aSKU = acc.SKU
+			}
+			aSKU = strings.ToUpper(strings.TrimSpace(aSKU))
+			if aSKU == "" {
+				return response.BadRequest(c, "Accessory SKU cannot be empty")
+			}
+			if aSKU == strings.ToUpper(s.SKU) {
+				return response.BadRequest(c, "สินค้าไม่สามารถผูกตนเองเป็น Accessory ได้")
+			}
+			qty := acc.Quantity
+			if qty <= 0 && acc.Qty > 0 {
+				qty = acc.Qty
+			}
+			if qty <= 0 {
+				return response.BadRequest(c, fmt.Sprintf("จำนวน Accessory สำหรับ SKU %s ต้องมากกว่า 0", aSKU))
+			}
 
+			// Validate accessory SKU exists
+			var accExists domainSKU.SKU
+			if err := h.db.WithContext(c.Context()).Where("UPPER(sku) = ?", aSKU).First(&accExists).Error; err != nil {
+				return response.BadRequest(c, fmt.Sprintf("ไม่พบ SKU Accessory '%s' ในระบบ", aSKU), "ACCESSORY_NOT_FOUND")
+			}
+			// Cycle check: accessory cannot have this SKU as its accessory
+			var cycleCount int64
+			_ = h.db.WithContext(c.Context()).Model(&domainSKU.SKUAccessory{}).
+				Where("UPPER(sku) = ? AND UPPER(accessory_sku) = ?", aSKU, strings.ToUpper(s.SKU)).
+				Count(&cycleCount).Error
+			if cycleCount > 0 {
+				return response.BadRequest(c, fmt.Sprintf("เกิด Cycle: SKU %s ผูกกับ %s อยู่แล้ว", aSKU, s.SKU), "ACCESSORY_CYCLE")
+			}
+		}
+	}
+
+	// Use the OLD sku for cleanup when SKU was renamed,
+	// because cascade hasn't run yet at that point.
+	cleanupSKU := oldSKU
+
+	var updatedAccessories []SKUAccessoryRecord
 	err := h.db.WithContext(c.Context()).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Save(&s).Error; err != nil {
 			return err
@@ -749,42 +1042,94 @@ func (h *WorkspaceHandler) UpdateProduct(c *fiber.Ctx) error {
 			if err := h.cascadeSKURename(tx, oldSKU, s.SKU); err != nil {
 				return err
 			}
-			bundleCleanupSKU = s.SKU
+			cleanupSKU = s.SKU
 		}
 
-		if s.IsBundle && req.Components != nil {
-			// Replace existing bundle components with the updated list
-			if err := tx.Where("bundle_sku = ?", bundleCleanupSKU).Delete(&domainBundle.BundleItem{}).Error; err != nil {
-				return err
-			}
-			for _, comp := range req.Components {
-				compSKU := comp.ComponentSKU
-				if compSKU == "" && comp.SKU != "" {
-					compSKU = comp.SKU
-				}
-				compSKU = strings.ToUpper(strings.TrimSpace(compSKU))
-				if compSKU == "" {
-					continue
-				}
+		if s.IsBundle {
+			// If product is bundle, remove any accessories it might have previously had
+			_ = tx.Where("sku = ?", cleanupSKU).Delete(&domainSKU.SKUAccessory{}).Error
 
-				qty := comp.Quantity
-				if qty <= 0 && comp.Qty > 0 {
-					qty = comp.Qty
-				}
-				if qty <= 0 {
-					qty = 1
-				}
-
-				bundleItem := domainBundle.BundleItem{
-					BundleSKU:    s.SKU,
-					ComponentSKU: compSKU,
-					Quantity:     qty,
-					Note:         comp.Note,
-					CreatedAt:    time.Now(),
-					UpdatedAt:    time.Now(),
-				}
-				if err := tx.Create(&bundleItem).Error; err != nil {
+			if req.Components != nil {
+				// Replace existing bundle components with the updated list
+				if err := tx.Where("bundle_sku = ?", cleanupSKU).Delete(&domainBundle.BundleItem{}).Error; err != nil {
 					return err
+				}
+				for _, comp := range req.Components {
+					compSKU := comp.ComponentSKU
+					if compSKU == "" && comp.SKU != "" {
+						compSKU = comp.SKU
+					}
+					compSKU = strings.ToUpper(strings.TrimSpace(compSKU))
+					if compSKU == "" {
+						continue
+					}
+
+					qty := comp.Quantity
+					if qty <= 0 && comp.Qty > 0 {
+						qty = comp.Qty
+					}
+					if qty <= 0 {
+						qty = 1
+					}
+
+					bundleItem := domainBundle.BundleItem{
+						BundleSKU:    s.SKU,
+						ComponentSKU: compSKU,
+						Quantity:     qty,
+						Note:         comp.Note,
+						CreatedAt:    time.Now(),
+						UpdatedAt:    time.Now(),
+					}
+					if err := tx.Create(&bundleItem).Error; err != nil {
+						return err
+					}
+				}
+			}
+		} else {
+			// If product is non-bundle, remove any bundle_items it might have had
+			_ = tx.Where("bundle_sku = ?", cleanupSKU).Delete(&domainBundle.BundleItem{}).Error
+
+			if req.Accessories != nil {
+				// Replace existing accessories
+				if err := tx.Where("sku = ?", cleanupSKU).Delete(&domainSKU.SKUAccessory{}).Error; err != nil {
+					return err
+				}
+				for _, acc := range req.Accessories {
+					aSKU := acc.AccessorySKU
+					if aSKU == "" && acc.SKU != "" {
+						aSKU = acc.SKU
+					}
+					aSKU = strings.ToUpper(strings.TrimSpace(aSKU))
+					if aSKU == "" {
+						continue
+					}
+
+					qty := acc.Quantity
+					if qty <= 0 && acc.Qty > 0 {
+						qty = acc.Qty
+					}
+					if qty <= 0 {
+						qty = 1
+					}
+
+					accItem := domainSKU.SKUAccessory{
+						SKU:          s.SKU,
+						AccessorySKU: aSKU,
+						Quantity:     qty,
+						Note:         acc.Note,
+						CreatedAt:    time.Now(),
+						UpdatedAt:    time.Now(),
+					}
+					if err := tx.Create(&accItem).Error; err != nil {
+						return err
+					}
+					updatedAccessories = append(updatedAccessories, SKUAccessoryRecord{
+						ID:           accItem.ID,
+						SKU:          accItem.SKU,
+						AccessorySKU: accItem.AccessorySKU,
+						Quantity:     accItem.Quantity,
+						Note:         accItem.Note,
+					})
 				}
 			}
 		}
@@ -793,6 +1138,21 @@ func (h *WorkspaceHandler) UpdateProduct(c *fiber.Ctx) error {
 
 	if err != nil {
 		return response.InternalServerError(c, "Failed to update product: "+err.Error())
+	}
+
+	// If accessories weren't passed in update, fetch existing
+	if !s.IsBundle && req.Accessories == nil {
+		var accItems []domainSKU.SKUAccessory
+		_ = h.db.WithContext(c.Context()).Where("sku = ?", s.SKU).Find(&accItems).Error
+		for _, ai := range accItems {
+			updatedAccessories = append(updatedAccessories, SKUAccessoryRecord{
+				ID:           ai.ID,
+				SKU:          ai.SKU,
+				AccessorySKU: ai.AccessorySKU,
+				Quantity:     ai.Quantity,
+				Note:         ai.Note,
+			})
+		}
 	}
 
 	rec := ProductRecord{
@@ -805,6 +1165,7 @@ func (h *WorkspaceHandler) UpdateProduct(c *fiber.Ctx) error {
 		IsBundle:    s.IsBundle,
 		IsActive:    s.Status == "active",
 		Image:       s.Image,
+		Accessories: updatedAccessories,
 	}
 	return response.OK(c, rec, "Product updated successfully")
 }
@@ -819,6 +1180,14 @@ func (h *WorkspaceHandler) cascadeSKURename(tx *gorm.DB, oldSKU, newSKU string) 
 	}
 	if err := tx.Exec("UPDATE bundle_items SET component_sku = ? WHERE component_sku = ?", newSKU, oldSKU).Error; err != nil {
 		return fmt.Errorf("cascade bundle_items.component_sku: %w", err)
+	}
+
+	// sku_accessories: both sku and accessory_sku columns
+	if err := tx.Exec("UPDATE sku_accessories SET sku = ? WHERE sku = ?", newSKU, oldSKU).Error; err != nil {
+		return fmt.Errorf("cascade sku_accessories.sku: %w", err)
+	}
+	if err := tx.Exec("UPDATE sku_accessories SET accessory_sku = ? WHERE accessory_sku = ?", newSKU, oldSKU).Error; err != nil {
+		return fmt.Errorf("cascade sku_accessories.accessory_sku: %w", err)
 	}
 
 	// order_items
@@ -876,11 +1245,12 @@ func (h *WorkspaceHandler) deleteProductRecord(c *fiber.Ctx, s *domainSKU.SKU) e
 			POItems       int64 `gorm:"column:po_items"`
 			QuotationLn   int64 `gorm:"column:quotation_lines"`
 			UsedAsComp    int64 `gorm:"column:used_as_comp"`
+			UsedAsAcc     int64 `gorm:"column:used_as_acc"`
 		}
 		var refs refCount
 
 		// For bundle products, stock and movements are virtual (derived from child components),
-		// so we only check if the bundle itself was used in orders, POs, quotations, or child of another bundle.
+		// so we only check if the bundle itself was used in orders, POs, quotations, or child of another bundle/accessory.
 		if s.IsBundle {
 			if err := tx.Raw(`
 				SELECT
@@ -889,8 +1259,9 @@ func (h *WorkspaceHandler) deleteProductRecord(c *fiber.Ctx, s *domainSKU.SKU) e
 					(SELECT COUNT(*) FROM order_items WHERE sku = ?) AS order_items,
 					(SELECT COUNT(*) FROM po_items WHERE sku = ?) AS po_items,
 					(SELECT COUNT(*) FROM quotation_lines WHERE sku = ?) AS quotation_lines,
-					(SELECT COUNT(*) FROM bundle_items WHERE component_sku = ?) AS used_as_comp
-			`, s.SKU, s.SKU, s.SKU, s.SKU).Scan(&refs).Error; err != nil {
+					(SELECT COUNT(*) FROM bundle_items WHERE component_sku = ?) AS used_as_comp,
+					(SELECT COUNT(*) FROM sku_accessories WHERE accessory_sku = ?) AS used_as_acc
+			`, s.SKU, s.SKU, s.SKU, s.SKU, s.SKU).Scan(&refs).Error; err != nil {
 				return fmt.Errorf("reference check failed: %w", err)
 			}
 		} else {
@@ -901,8 +1272,9 @@ func (h *WorkspaceHandler) deleteProductRecord(c *fiber.Ctx, s *domainSKU.SKU) e
 					(SELECT COUNT(*) FROM order_items WHERE sku = ?) AS order_items,
 					(SELECT COUNT(*) FROM po_items WHERE sku = ?) AS po_items,
 					(SELECT COUNT(*) FROM quotation_lines WHERE sku = ?) AS quotation_lines,
-					(SELECT COUNT(*) FROM bundle_items WHERE component_sku = ?) AS used_as_comp
-			`, s.ID, s.ID, s.SKU, s.SKU, s.SKU, s.SKU).Scan(&refs).Error; err != nil {
+					(SELECT COUNT(*) FROM bundle_items WHERE component_sku = ?) AS used_as_comp,
+					(SELECT COUNT(*) FROM sku_accessories WHERE accessory_sku = ?) AS used_as_acc
+			`, s.ID, s.ID, s.SKU, s.SKU, s.SKU, s.SKU, s.SKU).Scan(&refs).Error; err != nil {
 				return fmt.Errorf("reference check failed: %w", err)
 			}
 		}
@@ -926,6 +1298,9 @@ func (h *WorkspaceHandler) deleteProductRecord(c *fiber.Ctx, s *domainSKU.SKU) e
 		if refs.UsedAsComp > 0 {
 			inUseReasons = append(inUseReasons, fmt.Sprintf("ถูกใช้เป็นส่วนประกอบในชุด Bundle อื่น (%d รายการ)", refs.UsedAsComp))
 		}
+		if refs.UsedAsAcc > 0 {
+			inUseReasons = append(inUseReasons, fmt.Sprintf("ถูกใช้เป็นบรรจุภัณฑ์/Accessory ในสินค้าอื่น (%d รายการ)", refs.UsedAsAcc))
+		}
 
 		if len(inUseReasons) > 0 {
 			inUse = true
@@ -933,11 +1308,14 @@ func (h *WorkspaceHandler) deleteProductRecord(c *fiber.Ctx, s *domainSKU.SKU) e
 			return nil
 		}
 
-		// Clean up initial zero-stock records and bundle definitions owned by this SKU
+		// Clean up initial zero-stock records, bundle definitions, and accessories owned by this SKU
 		if err := tx.Where("sku_id = ?", s.ID).Delete(&domainStock.Stock{}).Error; err != nil {
 			return err
 		}
 		if err := tx.Where("bundle_sku = ?", s.SKU).Delete(&domainBundle.BundleItem{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("sku = ?", s.SKU).Delete(&domainSKU.SKUAccessory{}).Error; err != nil {
 			return err
 		}
 
@@ -2812,3 +3190,29 @@ func (h *WorkspaceHandler) GetBundleComponents(c *fiber.Ctx) error {
 
 	return response.OK(c, records)
 }
+
+func (h *WorkspaceHandler) GetSKUAccessories(c *fiber.Ctx) error {
+	sku := c.Params("sku")
+	var items []domainSKU.SKUAccessory
+	query := h.db.WithContext(c.Context()).Model(&domainSKU.SKUAccessory{})
+	if sku != "" {
+		query = query.Where("UPPER(sku) = ?", strings.ToUpper(strings.TrimSpace(sku)))
+	}
+	if err := query.Find(&items).Error; err != nil {
+		return response.InternalServerError(c, "Failed to fetch SKU accessories: "+err.Error())
+	}
+
+	records := make([]SKUAccessoryRecord, len(items))
+	for i, item := range items {
+		records[i] = SKUAccessoryRecord{
+			ID:           item.ID,
+			SKU:          item.SKU,
+			AccessorySKU: item.AccessorySKU,
+			Quantity:     item.Quantity,
+			Note:         item.Note,
+		}
+	}
+
+	return response.OK(c, records)
+}
+

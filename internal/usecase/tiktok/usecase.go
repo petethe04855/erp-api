@@ -596,6 +596,51 @@ func (u *tiktokUsecase) deductStockForOrder(ctx context.Context, orderID string)
 				}); err != nil {
 					return err
 				}
+
+				// Deduct associated accessories for non-bundle SKU in TikTok order
+				var accessories []domainSKU.SKUAccessory
+				if err := u.db.WithContext(txCtx).Where("UPPER(sku) = ?", strings.ToUpper(skuEntity.SKU)).Find(&accessories).Error; err == nil && len(accessories) > 0 {
+					for _, acc := range accessories {
+						accSKU, err := u.skuRepo.FindBySKU(txCtx, acc.AccessorySKU)
+						if err != nil || accSKU == nil {
+							return fmt.Errorf("accessory %s not found for SKU %s", acc.AccessorySKU, skuEntity.SKU)
+						}
+						accQtyToDeduct := acc.Quantity * item.Qty
+						accStk, err := u.stockRepo.GetBySKUIDForUpdate(txCtx, accSKU.ID, warehouseID)
+						if err != nil {
+							return err
+						}
+						if accStk == nil || accStk.Quantity < accQtyToDeduct {
+							avail := 0
+							if accStk != nil {
+								avail = accStk.Quantity
+							}
+							return appErrors.NewAppError(
+								"INSUFFICIENT_STOCK",
+								fmt.Sprintf("Stock Accessory %s ไม่พอ: ต้องการ %d, คงเหลือ %d", acc.AccessorySKU, accQtyToDeduct, avail),
+								409,
+							)
+						}
+						updatedAccStk, err := u.stockRepo.UpdateQuantity(txCtx, accSKU.ID, warehouseID, -accQtyToDeduct)
+						if err != nil {
+							return err
+						}
+						if err := u.stockRepo.CreateMovement(txCtx, &domainStock.StockMovement{
+							SKUID:         accSKU.ID,
+							SKUCode:       accSKU.SKU,
+							WarehouseID:   warehouseID,
+							Type:          domainStock.MovementOut,
+							Quantity:      accQtyToDeduct,
+							BeforeQty:     accStk.Quantity,
+							AfterQty:      updatedAccStk.Quantity,
+							ReferenceType: "TIKTOK_ACCESSORY",
+							ReferenceID:   order.ID,
+							Note:          fmt.Sprintf("TikTok order %s shipped accessory %s for %s", order.ID, acc.AccessorySKU, skuEntity.SKU),
+						}); err != nil {
+							return err
+						}
+					}
+				}
 			}
 		}
 

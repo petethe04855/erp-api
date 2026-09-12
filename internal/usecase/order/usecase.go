@@ -3,6 +3,7 @@ package order
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	domainBundle "chawy-erp-api/internal/domain/bundle"
@@ -423,6 +424,52 @@ func (u *orderUsecase) ShipOrder(ctx context.Context, id uint, warehouseID uint)
 				}
 				if err := u.stockRepo.CreateMovement(txCtx, movement); err != nil {
 					return err
+				}
+
+				// Deduct associated accessories for non-bundle SKU
+				var accessories []domainSKU.SKUAccessory
+				if err := u.db.WithContext(txCtx).Where("UPPER(sku) = ?", strings.ToUpper(skuEntity.SKU)).Find(&accessories).Error; err == nil && len(accessories) > 0 {
+					for _, acc := range accessories {
+						accSKU, err := u.skuRepo.FindBySKU(txCtx, acc.AccessorySKU)
+						if err != nil || accSKU == nil {
+							return fmt.Errorf("accessory %s not found for SKU %s", acc.AccessorySKU, skuEntity.SKU)
+						}
+						accQtyToDeduct := acc.Quantity * line.Quantity
+						accStk, err := u.stockRepo.GetBySKUIDForUpdate(txCtx, accSKU.ID, warehouseID)
+						if err != nil {
+							return err
+						}
+						if accStk == nil || accStk.Quantity < accQtyToDeduct {
+							avail := 0
+							if accStk != nil {
+								avail = accStk.Quantity
+							}
+							return appErrors.NewAppError(
+								"INSUFFICIENT_STOCK",
+								fmt.Sprintf("Stock Accessory %s ไม่พอ: ต้องการ %d, คงเหลือ %d", acc.AccessorySKU, accQtyToDeduct, avail),
+								409,
+							)
+						}
+						updatedAccStk, err := u.stockRepo.UpdateQuantity(txCtx, accSKU.ID, warehouseID, -accQtyToDeduct)
+						if err != nil {
+							return err
+						}
+						accMovement := &domainStock.StockMovement{
+							SKUID:         accSKU.ID,
+							SKUCode:       accSKU.SKU,
+							WarehouseID:   warehouseID,
+							Type:          domainStock.MovementOut,
+							Quantity:      accQtyToDeduct,
+							BeforeQty:     accStk.Quantity,
+							AfterQty:      updatedAccStk.Quantity,
+							ReferenceType: "ORDER_ACCESSORY",
+							ReferenceID:   orderItem.OrderNo,
+							Note:          fmt.Sprintf("Shipped accessory %s for %s in order %s", acc.AccessorySKU, skuEntity.SKU, orderItem.OrderNo),
+						}
+						if err := u.stockRepo.CreateMovement(txCtx, accMovement); err != nil {
+							return err
+						}
+					}
 				}
 			}
 		}

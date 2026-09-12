@@ -23,6 +23,7 @@ type Config struct {
 	TikTokHandler     *handler.TikTokHandler
 	SettingsHandler   *handler.SettingsHandler
 	UploadHandler     *handler.UploadHandler
+	LiveHandler       *handler.LiveHandler
 	JWTSecret         string
 	UserStatusLoader  middleware.UserStatusLoader
 }
@@ -195,6 +196,8 @@ func RegisterRoutes(cfg Config) {
 	protected.Post("/stock-adjustments", middleware.RequireRole("owner", "warehouse"), cfg.WorkspaceHandler.AdjustStock)
 	protected.Get("/bundle-components", cfg.WorkspaceHandler.GetBundleComponents)
 	protected.Get("/bundle-components/:sku", cfg.WorkspaceHandler.GetBundleComponents)
+	protected.Get("/sku-accessories", cfg.WorkspaceHandler.GetSKUAccessories)
+	protected.Get("/sku-accessories/:sku", cfg.WorkspaceHandler.GetSKUAccessories)
 
 	// Customer Workspace & Detail endpoints
 	// FULL-30: the native /customers/:id above already serves GET detail with
@@ -248,4 +251,21 @@ func RegisterRoutes(cfg Config) {
 	tiktok.Post("/mappings", middleware.RequireRole("owner", "warehouse"), cfg.TikTokHandler.SaveMapping)
 	tiktok.Post("/orders/manual-sync", middleware.RequireRole("owner", "sales", "warehouse"), cfg.TikTokHandler.SyncOrder)
 	tiktok.Get("/logs", cfg.TikTokHandler.GetSyncLogs)
+
+	// Live & Content Routes
+	liveGroup := protected.Group("/live")
+	liveGroup.Get("/sessions", cfg.LiveHandler.ListSessions)
+	liveGroup.Post("/sessions", middleware.RequireRole("owner", "sales", "warehouse"), cfg.LiveHandler.CreateSession)
+	liveGroup.Get("/sessions/:id", cfg.LiveHandler.GetSessionByID)
+	liveGroup.Put("/sessions/:id", middleware.RequireRole("owner", "sales"), cfg.LiveHandler.UpdateSession)
+	liveGroup.Post("/sessions/:id/approve", middleware.RequireRole("owner"), cfg.LiveHandler.ApproveSession)
+	liveGroup.Post("/sessions/:id/reject", middleware.RequireRole("owner"), cfg.LiveHandler.RejectSession)
+	liveGroup.Get("/payroll", middleware.RequireRole("owner", "accountant"), cfg.LiveHandler.GetPayrollSummary)
+
+	// Content Items (Schedule + Performance)
+	liveGroup.Get("/content", cfg.LiveHandler.ListContentItems)
+	liveGroup.Post("/content", middleware.RequireRole("owner", "sales"), cfg.LiveHandler.CreateContentItem)
+	liveGroup.Put("/content/:id", middleware.RequireRole("owner", "sales"), cfg.LiveHandler.UpdateContentItem)
+	liveGroup.Delete("/content/:id", middleware.RequireRole("owner", "sales"), cfg.LiveHandler.DeleteContentItem)
 }
+
