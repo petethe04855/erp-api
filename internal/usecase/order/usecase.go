@@ -7,6 +7,7 @@ import (
 	"time"
 
 	domainBundle "chawy-erp-api/internal/domain/bundle"
+	domainFinance "chawy-erp-api/internal/domain/finance"
 	domainOrder "chawy-erp-api/internal/domain/order"
 	domainSKU "chawy-erp-api/internal/domain/sku"
 	domainStock "chawy-erp-api/internal/domain/stock"
@@ -325,6 +326,8 @@ func (u *orderUsecase) ShipOrder(ctx context.Context, id uint, warehouseID uint)
 			return appErrors.NewAppError("ORDER_CANCELLED", "Cannot ship a cancelled order", 400)
 		}
 
+		totalCOGS := 0.0
+
 		for _, line := range orderItem.Items {
 			if line.Quantity <= 0 {
 				return appErrors.NewAppError("INVALID_QUANTITY", fmt.Sprintf("Order line %s has invalid quantity", line.SKU), 400)
@@ -352,6 +355,9 @@ func (u *orderUsecase) ShipOrder(ctx context.Context, id uint, warehouseID uint)
 					}
 
 					qtyToDeduct := bi.Quantity * line.Quantity
+					if compSKU.CostPrice > 0 {
+						totalCOGS += compSKU.CostPrice * float64(qtyToDeduct)
+					}
 
 					// Check availability under the stock row lock
 					stk, err := u.stockRepo.GetBySKUIDForUpdate(txCtx, compSKU.ID, warehouseID)
@@ -390,6 +396,10 @@ func (u *orderUsecase) ShipOrder(ctx context.Context, id uint, warehouseID uint)
 					}
 				}
 			} else {
+				if skuEntity.CostPrice > 0 {
+					totalCOGS += skuEntity.CostPrice * float64(line.Quantity)
+				}
+
 				// Single SKU: check total quantity under the stock row lock
 				stk, err := u.stockRepo.GetBySKUIDForUpdate(txCtx, skuEntity.ID, warehouseID)
 				if err != nil {
@@ -435,6 +445,10 @@ func (u *orderUsecase) ShipOrder(ctx context.Context, id uint, warehouseID uint)
 							return fmt.Errorf("accessory %s not found for SKU %s", acc.AccessorySKU, skuEntity.SKU)
 						}
 						accQtyToDeduct := acc.Quantity * line.Quantity
+						if accSKU.CostPrice > 0 {
+							totalCOGS += accSKU.CostPrice * float64(accQtyToDeduct)
+						}
+
 						accStk, err := u.stockRepo.GetBySKUIDForUpdate(txCtx, accSKU.ID, warehouseID)
 						if err != nil {
 							return err
@@ -477,6 +491,67 @@ func (u *orderUsecase) ShipOrder(ctx context.Context, id uint, warehouseID uint)
 		// Update order status to SHIPPED inside the same transaction
 		if err := u.orderRepo.UpdateStatus(txCtx, orderItem.ID, domainOrder.StatusShipped); err != nil {
 			return err
+		}
+
+		// Auto-Post Journal Entry for Cost of Goods Sold (Dr. 5000 COGS / Cr. 1300 Inventory)
+		// when database transaction is available and total COGS is positive.
+		if u.db != nil && totalCOGS > 0 {
+			var accCOGS domainFinance.Account
+			var accInventory domainFinance.Account
+			dbTx := u.db.WithContext(txCtx)
+
+			_ = dbTx.Where("code = ?", "5000").First(&accCOGS).Error
+			_ = dbTx.Where("code = ?", "1300").First(&accInventory).Error
+
+			cogsAccountID := accCOGS.ID
+			cogsAccountName := accCOGS.Name
+			if cogsAccountName == "" {
+				cogsAccountName = "ต้นทุนขาย (Cost of Goods Sold)"
+			}
+
+			invAccountID := accInventory.ID
+			invAccountName := accInventory.Name
+			if invAccountName == "" {
+				invAccountName = "สินค้าคงเหลือ (Inventory)"
+			}
+
+			jeCode := fmt.Sprintf("JE-%s-%04d", time.Now().Format("2006"), time.Now().UnixNano()%10000)
+			journal := domainFinance.JournalEntry{
+				Code:        jeCode,
+				Date:        time.Now().Format("2006-01-02"),
+				SourceType:  "sales_delivery",
+				SourceID:    orderItem.ID,
+				SourceRef:   orderItem.OrderNo,
+				Description: fmt.Sprintf("ต้นทุนขายจากการจัดส่งสินค้าคำสั่งซื้อ %s", orderItem.OrderNo),
+				Status:      domainFinance.JournalStatusPosted,
+				CreatedBy:   "System (ShipOrder)",
+				PostedAt:    time.Now().UTC(),
+				Lines: []domainFinance.JournalLine{
+					{
+						AccountID:   cogsAccountID,
+						AccountCode: "5000",
+						AccountName: cogsAccountName,
+						Debit:       totalCOGS,
+						Credit:      0,
+						Channel:     orderItem.Channel,
+					},
+					{
+						AccountID:   invAccountID,
+						AccountCode: "1300",
+						AccountName: invAccountName,
+						Debit:       0,
+						Credit:      totalCOGS,
+						Channel:     orderItem.Channel,
+					},
+				},
+			}
+
+			var existingCount int64
+			if err := dbTx.Model(&domainFinance.JournalEntry{}).
+				Where("source_type = ? AND source_id = ?", "sales_delivery", orderItem.ID).
+				Count(&existingCount).Error; err == nil && existingCount == 0 {
+				_ = dbTx.Create(&journal).Error
+			}
 		}
 
 		orderItem.Status = domainOrder.StatusShipped
