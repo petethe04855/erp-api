@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	domainBundle "chawy-erp-api/internal/domain/bundle"
+	domainFormula "chawy-erp-api/internal/domain/formula"
 	domainOrder "chawy-erp-api/internal/domain/order"
 	domainSKU "chawy-erp-api/internal/domain/sku"
 	domainStock "chawy-erp-api/internal/domain/stock"
@@ -152,6 +153,55 @@ func (m *mockBundleRepo) DeleteItem(ctx context.Context, id uint) error {
 	return nil
 }
 
+type mockFormulaRepo struct {
+	formulas map[string]*domainFormula.InventoryFormula
+}
+
+func newMockFormulaRepo() *mockFormulaRepo {
+	return &mockFormulaRepo{formulas: make(map[string]*domainFormula.InventoryFormula)}
+}
+
+func (m *mockFormulaRepo) Create(ctx context.Context, f *domainFormula.InventoryFormula) error {
+	m.formulas[f.Code] = f
+	return nil
+}
+
+func (m *mockFormulaRepo) Update(ctx context.Context, f *domainFormula.InventoryFormula) error {
+	m.formulas[f.Code] = f
+	return nil
+}
+
+func (m *mockFormulaRepo) Deactivate(ctx context.Context, code string) error {
+	if f, ok := m.formulas[code]; ok {
+		f.IsActive = false
+	}
+	return nil
+}
+
+func (m *mockFormulaRepo) ToggleStatus(ctx context.Context, code string, isActive bool) error {
+	if f, ok := m.formulas[code]; ok {
+		f.IsActive = isActive
+	}
+	return nil
+}
+
+func (m *mockFormulaRepo) FindByCode(ctx context.Context, code string) (*domainFormula.InventoryFormula, error) {
+	return m.formulas[code], nil
+}
+
+func (m *mockFormulaRepo) FindAll(ctx context.Context, q domainFormula.Query) ([]domainFormula.InventoryFormula, int64, error) {
+	var res []domainFormula.InventoryFormula
+	for _, f := range m.formulas {
+		res = append(res, *f)
+	}
+	return res, int64(len(res)), nil
+}
+
+func (m *mockFormulaRepo) ExistsByCode(ctx context.Context, code string) (bool, error) {
+	_, ok := m.formulas[code]
+	return ok, nil
+}
+
 type mockStockRepo struct {
 	stocks    map[string]*domainStock.Stock
 	movements []*domainStock.StockMovement
@@ -233,17 +283,18 @@ func (m *mockStockRepo) GetMovements(ctx context.Context, skuID uint, page, limi
 	return nil, 0, nil
 }
 
-func TestOrderCreate_SucceedsAndReservesStock(t *testing.T) {
+func TestOrderCreate_SucceedsWithoutReservingStock(t *testing.T) {
 	orderRepo := newMockOrderRepo()
 	skuRepo := newMockSKURepo()
 	bundleRepo := newMockBundleRepo()
+	formulaRepo := newMockFormulaRepo()
 	stockRepo := newMockStockRepo()
 	txMgr := &fakeTxManager{}
 
 	skuRepo.skus["SKU-01"] = &domainSKU.SKU{ID: 10, SKU: "SKU-01", Name: "Widget A", Price: 100}
 	stockRepo.stocks["10-1"] = &domainStock.Stock{ID: 1, SKUID: 10, WarehouseID: 1, Quantity: 20, ReservedQty: 0, AvailableQty: 20}
 
-	uc := usecaseOrder.NewOrderUsecaseWithTx(nil, orderRepo, skuRepo, bundleRepo, stockRepo, txMgr)
+	uc := usecaseOrder.NewOrderUsecaseWithTx(nil, orderRepo, skuRepo, bundleRepo, formulaRepo, stockRepo, txMgr)
 
 	order, err := uc.Create(context.Background(), usecaseOrder.CreateOrderInput{
 		CustomerName: "Customer A",
@@ -256,91 +307,18 @@ func TestOrderCreate_SucceedsAndReservesStock(t *testing.T) {
 	require.NotNil(t, order)
 	assert.Equal(t, domainOrder.StatusPending, order.Status)
 
-	// Check reserved stock
+	// In the simplified model, stock is not reserved upon order creation
 	stk := stockRepo.stocks["10-1"]
-	assert.Equal(t, 5, stk.ReservedQty)
-	assert.Equal(t, 15, stk.AvailableQty)
-	assert.Len(t, stockRepo.movements, 1)
-	assert.Equal(t, domainStock.MovementReserve, stockRepo.movements[0].Type)
-}
-
-func TestOrderCreate_FailsWhenInsufficientStock(t *testing.T) {
-	orderRepo := newMockOrderRepo()
-	skuRepo := newMockSKURepo()
-	bundleRepo := newMockBundleRepo()
-	stockRepo := newMockStockRepo()
-	txMgr := &fakeTxManager{}
-
-	skuRepo.skus["SKU-01"] = &domainSKU.SKU{ID: 10, SKU: "SKU-01", Name: "Widget A", Price: 100}
-	stockRepo.stocks["10-1"] = &domainStock.Stock{ID: 1, SKUID: 10, WarehouseID: 1, Quantity: 5, ReservedQty: 2, AvailableQty: 3}
-
-	uc := usecaseOrder.NewOrderUsecaseWithTx(nil, orderRepo, skuRepo, bundleRepo, stockRepo, txMgr)
-
-	_, err := uc.Create(context.Background(), usecaseOrder.CreateOrderInput{
-		CustomerName: "Customer A",
-		Items: []usecaseOrder.CreateItemInput{
-			{SKU: "SKU-01", Quantity: 5, Price: 100},
-		},
-	})
-
-	require.Error(t, err)
-	var appErr *appErrors.AppError
-	assert.ErrorAs(t, err, &appErr)
-	assert.Equal(t, "INSUFFICIENT_STOCK", appErr.Code)
-	assert.Equal(t, 409, appErr.StatusCode)
-	assert.Contains(t, err.Error(), "พร้อมขาย 3")
-
-	// Stock should not change
-	stk := stockRepo.stocks["10-1"]
-	assert.Equal(t, 2, stk.ReservedQty)
-}
-
-func TestOrderCreate_BundleExplodesAndReservesComponents(t *testing.T) {
-	orderRepo := newMockOrderRepo()
-	skuRepo := newMockSKURepo()
-	bundleRepo := newMockBundleRepo()
-	stockRepo := newMockStockRepo()
-	txMgr := &fakeTxManager{}
-
-	skuRepo.skus["BUNDLE-01"] = &domainSKU.SKU{ID: 100, SKU: "BUNDLE-01", Name: "Bundle Kit", Price: 500, IsBundle: true}
-	skuRepo.skus["COMP-A"] = &domainSKU.SKU{ID: 101, SKU: "COMP-A", Name: "Component A"}
-	skuRepo.skus["COMP-B"] = &domainSKU.SKU{ID: 102, SKU: "COMP-B", Name: "Component B"}
-
-	bundleRepo.bundles["BUNDLE-01"] = []domainBundle.BundleItem{
-		{BundleSKU: "BUNDLE-01", ComponentSKU: "COMP-A", Quantity: 2},
-		{BundleSKU: "BUNDLE-01", ComponentSKU: "COMP-B", Quantity: 3},
-	}
-
-	stockRepo.stocks["101-1"] = &domainStock.Stock{ID: 1, SKUID: 101, WarehouseID: 1, Quantity: 20, ReservedQty: 0, AvailableQty: 20}
-	stockRepo.stocks["102-1"] = &domainStock.Stock{ID: 2, SKUID: 102, WarehouseID: 1, Quantity: 30, ReservedQty: 0, AvailableQty: 30}
-
-	uc := usecaseOrder.NewOrderUsecaseWithTx(nil, orderRepo, skuRepo, bundleRepo, stockRepo, txMgr)
-
-	// Order 2 bundles: requires 2*2 = 4 COMP-A and 2*3 = 6 COMP-B
-	order, err := uc.Create(context.Background(), usecaseOrder.CreateOrderInput{
-		CustomerName: "Customer Bundle",
-		Items: []usecaseOrder.CreateItemInput{
-			{SKU: "BUNDLE-01", Quantity: 2, Price: 500},
-		},
-	})
-
-	require.NoError(t, err)
-	require.NotNil(t, order)
-
-	stkA := stockRepo.stocks["101-1"]
-	assert.Equal(t, 4, stkA.ReservedQty)
-	assert.Equal(t, 16, stkA.AvailableQty)
-
-	stkB := stockRepo.stocks["102-1"]
-	assert.Equal(t, 6, stkB.ReservedQty)
-	assert.Equal(t, 24, stkB.AvailableQty)
-	assert.Len(t, stockRepo.movements, 2)
+	assert.Equal(t, 0, stk.ReservedQty)
+	assert.Equal(t, 20, stk.AvailableQty)
+	assert.Len(t, stockRepo.movements, 0)
 }
 
 func TestOrderCancel_ReleasesReservedStock(t *testing.T) {
 	orderRepo := newMockOrderRepo()
 	skuRepo := newMockSKURepo()
 	bundleRepo := newMockBundleRepo()
+	formulaRepo := newMockFormulaRepo()
 	stockRepo := newMockStockRepo()
 	txMgr := &fakeTxManager{}
 
@@ -356,7 +334,7 @@ func TestOrderCancel_ReleasesReservedStock(t *testing.T) {
 		},
 	}
 
-	uc := usecaseOrder.NewOrderUsecaseWithTx(nil, orderRepo, skuRepo, bundleRepo, stockRepo, txMgr)
+	uc := usecaseOrder.NewOrderUsecaseWithTx(nil, orderRepo, skuRepo, bundleRepo, formulaRepo, stockRepo, txMgr)
 
 	cancelled, err := uc.CancelOrder(context.Background(), 1)
 	require.NoError(t, err)

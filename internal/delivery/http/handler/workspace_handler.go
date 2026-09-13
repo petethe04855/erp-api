@@ -364,7 +364,7 @@ func (h *WorkspaceHandler) GetProducts(c *fiber.Ctx) error {
 			Cost:            s.CostPrice,
 			Stock:           stk.Quantity,
 			ReservedQty:     totalReserved,
-			Reorder:         10,
+			Reorder:         s.ReorderPoint,
 			IsBundle:        s.IsBundle,
 			IsActive:        s.Status == "active",
 			Available:       available,
@@ -487,7 +487,7 @@ func (h *WorkspaceHandler) GetProductByCode(c *fiber.Ctx) error {
 		Cost:            s.CostPrice,
 		Stock:           stk.Quantity,
 		ReservedQty:     totalReserved,
-		Reorder:         10,
+		Reorder:         s.ReorderPoint,
 		IsBundle:        s.IsBundle,
 		IsActive:        s.Status == "active",
 		Available:       available,
@@ -535,28 +535,9 @@ func (h *WorkspaceHandler) CreateProduct(c *fiber.Ctx) error {
 		return response.BadRequest(c, "Product name is required")
 	}
 
-	if req.IsBundle {
-		if len(req.Components) == 0 {
-			return response.BadRequest(c, "Bundle product must include at least one component")
-		}
-		for _, comp := range req.Components {
-			cSKU := comp.ComponentSKU
-			if cSKU == "" && comp.SKU != "" {
-				cSKU = comp.SKU
-			}
-			cSKU = strings.ToUpper(strings.TrimSpace(cSKU))
-			if cSKU == "" {
-				return response.BadRequest(c, "Component SKU cannot be empty")
-			}
-			qty := comp.Quantity
-			if qty <= 0 && comp.Qty > 0 {
-				qty = comp.Qty
-			}
-			if qty <= 0 {
-				return response.BadRequest(c, fmt.Sprintf("Component quantity for SKU %s must be greater than 0", cSKU))
-			}
-		}
-	} else if len(req.Accessories) > 0 {
+	// Spec: SKU ใหม่และการแก้ไข SKU ถูกบังคับเป็นสินค้าปกติ (is_bundle = false)
+	req.IsBundle = false
+	if len(req.Accessories) > 0 {
 		for _, acc := range req.Accessories {
 			aSKU := acc.AccessorySKU
 			if aSKU == "" && acc.SKU != "" {
@@ -800,9 +781,8 @@ func (h *WorkspaceHandler) UpdateProductByID(c *fiber.Ctx) error {
 	if req.Cost != nil && *req.Cost >= 0 {
 		s.CostPrice = *req.Cost
 	}
-	if req.IsBundle != nil {
-		s.IsBundle = *req.IsBundle
-	}
+	// Spec: SKU ใหม่และการแก้ไข SKU ถูกบังคับเป็นสินค้าปกติ
+	s.IsBundle = false
 	if req.Image != nil {
 		s.Image = *req.Image
 	}
@@ -857,6 +837,29 @@ func (h *WorkspaceHandler) UpdateProductStatusByID(c *fiber.Ctx) error {
 	return response.OK(c, fiber.Map{"sku": s.SKU, "status": s.Status}, "Product status updated successfully")
 }
 
+// UpdateProductReorderByID updates a product's reorder point by numeric record ID.
+func (h *WorkspaceHandler) UpdateProductReorderByID(c *fiber.Ctx) error {
+	var req struct {
+		Reorder *int `json:"reorder"`
+	}
+	if err := c.BodyParser(&req); err != nil || req.Reorder == nil {
+		return response.BadRequest(c, "Invalid request body: reorder point is required")
+	}
+	if *req.Reorder < 0 {
+		return response.BadRequest(c, "Reorder point must be greater than or equal to 0")
+	}
+	s, err := h.resolveProductByID(c, c.Params("id"))
+	if err != nil {
+		return response.NotFound(c, "Product not found")
+	}
+	s.ReorderPoint = *req.Reorder
+	s.UpdatedAt = time.Now()
+	if err := h.db.WithContext(c.Context()).Save(s).Error; err != nil {
+		return response.InternalServerError(c, "Failed to update product reorder point")
+	}
+	return response.OK(c, fiber.Map{"id": s.ID, "sku": s.SKU, "reorder": s.ReorderPoint}, "Reorder point updated successfully")
+}
+
 // DeleteProductByID deletes a product by numeric record ID (reference-safe).
 func (h *WorkspaceHandler) DeleteProductByID(c *fiber.Ctx) error {
 	s, err := h.resolveProductByID(c, c.Params("id"))
@@ -864,6 +867,40 @@ func (h *WorkspaceHandler) DeleteProductByID(c *fiber.Ctx) error {
 		return response.NotFound(c, "Product not found")
 	}
 	return h.deleteProductRecord(c, s)
+}
+
+// UpdateProductReorder updates a product's reorder point by SKU code.
+func (h *WorkspaceHandler) UpdateProductReorder(c *fiber.Ctx) error {
+	code := strings.TrimSpace(c.Params("code"))
+	if code == "" {
+		return response.BadRequest(c, "Product SKU is required")
+	}
+
+	var req struct {
+		Reorder *int `json:"reorder"`
+	}
+	if err := c.BodyParser(&req); err != nil || req.Reorder == nil {
+		return response.BadRequest(c, "Invalid request body: reorder point is required")
+	}
+	if *req.Reorder < 0 {
+		return response.BadRequest(c, "Reorder point must be greater than or equal to 0")
+	}
+
+	var s domainSKU.SKU
+	if err := h.db.WithContext(c.Context()).Where("UPPER(sku) = ?", strings.ToUpper(code)).First(&s).Error; err != nil {
+		return response.NotFound(c, "Product not found")
+	}
+
+	s.ReorderPoint = *req.Reorder
+	s.UpdatedAt = time.Now()
+	if err := h.db.WithContext(c.Context()).Save(&s).Error; err != nil {
+		return response.InternalServerError(c, "Failed to update product reorder point")
+	}
+
+	return response.OK(c, fiber.Map{
+		"sku":     s.SKU,
+		"reorder": s.ReorderPoint,
+	}, "Reorder point updated successfully")
 }
 
 func (h *WorkspaceHandler) UpdateProductStatus(c *fiber.Ctx) error {
@@ -979,9 +1016,8 @@ func (h *WorkspaceHandler) UpdateProduct(c *fiber.Ctx) error {
 	if req.Cost != nil && *req.Cost >= 0 {
 		s.CostPrice = *req.Cost
 	}
-	if req.IsBundle != nil {
-		s.IsBundle = *req.IsBundle
-	}
+	// Spec: SKU ใหม่และการแก้ไข SKU ถูกบังคับเป็นสินค้าปกติ
+	s.IsBundle = false
 	if req.Image != nil {
 		s.Image = *req.Image
 	}

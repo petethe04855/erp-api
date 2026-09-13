@@ -15,6 +15,7 @@ import (
 	domainBundle "chawy-erp-api/internal/domain/bundle"
 	domainCustomer "chawy-erp-api/internal/domain/customer"
 	domainFinance "chawy-erp-api/internal/domain/finance"
+	domainFormula "chawy-erp-api/internal/domain/formula"
 	domainInvoice "chawy-erp-api/internal/domain/invoice"
 	domainLive "chawy-erp-api/internal/domain/live"
 	domainOrder "chawy-erp-api/internal/domain/order"
@@ -29,6 +30,7 @@ import (
 	usecaseBundle "chawy-erp-api/internal/usecase/bundle"
 	usecaseCustomer "chawy-erp-api/internal/usecase/customer"
 	usecaseFinance "chawy-erp-api/internal/usecase/finance"
+	usecaseFormula "chawy-erp-api/internal/usecase/formula"
 	usecaseInvoice "chawy-erp-api/internal/usecase/invoice"
 	usecaseLive "chawy-erp-api/internal/usecase/live"
 	usecaseOrder "chawy-erp-api/internal/usecase/order"
@@ -102,10 +104,22 @@ func main() {
 		&domainFinance.Expense{},
 		&domainLive.LiveSession{},
 		&domainLive.ContentItem{},
+		&domainFormula.InventoryFormula{},
+		&domainFormula.InventoryFormulaItem{},
 	); err != nil {
 		// Fail-closed: running on an incompatible schema causes partial data
 		// failures at runtime; it is safer to refuse to start.
 		log.Fatalf("[FATAL] AutoMigrate failed: %v", err)
+	}
+
+	// 3.0 Migration: Reset SKU bundle flag to Finished Product and clear legacy bundle items
+	// according to the TikTok Order Inventory Deduction spec:
+	// "ล้างความสัมพันธ์ Bundle เดิมและเปลี่ยน SKU แบบ Bundle เป็น Finished Product"
+	if err := db.Exec(`
+		UPDATE skus SET is_bundle = false WHERE is_bundle = true;
+		DELETE FROM bundle_items;
+	`).Error; err != nil {
+		log.Printf("[WARN] Bundle cleanup migration note: %v", err)
 	}
 
 	// 3.0 Column compatibility migration for stocks and stock_movements
@@ -137,6 +151,7 @@ func main() {
 	authRepo := postgres.NewAuthRepository(db)
 	skuRepo := postgres.NewSKURepository(db)
 	bundleRepo := postgres.NewBundleRepository(db)
+	formulaRepo := postgres.NewFormulaRepository(db)
 	stockRepo := postgres.NewStockRepository(db)
 	customerRepo := postgres.NewCustomerRepository(db)
 	orderRepo := postgres.NewOrderRepository(db)
@@ -151,13 +166,14 @@ func main() {
 	authUsecase := usecaseAuth.NewAuthUsecase(authRepo, cfg.JWTSecret, cfg.JWTExpHours)
 	skuUsecase := usecaseSKU.NewSKUUsecase(skuRepo)
 	bundleUsecase := usecaseBundle.NewBundleUsecase(bundleRepo, skuRepo, stockRepo)
+	formulaUsecase := usecaseFormula.NewFormulaUsecase(formulaRepo, skuRepo, stockRepo)
 	stockUsecase := usecaseStock.NewStockUsecaseWithTx(stockRepo, txManager)
 	customerUsecase := usecaseCustomer.NewCustomerUsecase(customerRepo)
-	orderUsecase := usecaseOrder.NewOrderUsecase(db, orderRepo, skuRepo, bundleRepo, stockRepo)
+	orderUsecase := usecaseOrder.NewOrderUsecase(db, orderRepo, skuRepo, bundleRepo, formulaRepo, stockRepo)
 	purchasingUsecase := usecasePurchasing.NewPurchasingUsecaseWithTx(db, purchasingRepo, skuRepo, stockRepo, txManager)
 	invoiceUsecase := usecaseInvoice.NewInvoiceUsecaseWithTx(invoiceRepo, orderRepo, txManager)
 	reportUsecase := usecaseReport.NewReportUsecase(db)
-	tiktokUsecase := usecaseTikTok.NewTikTokUsecase(cfg, db, tiktokRepo, orderRepo, skuRepo, bundleRepo, stockRepo)
+	tiktokUsecase := usecaseTikTok.NewTikTokUsecase(cfg, db, tiktokRepo, orderRepo, formulaRepo, skuRepo, bundleRepo, stockRepo)
 	settingsUsecase := usecaseSettings.NewSettingsUsecase(settingsRepo)
 	financeRepo := postgres.NewFinanceRepository(db)
 	financeUsecase := usecaseFinance.NewFinanceUsecase(financeRepo, txManager)
@@ -170,6 +186,7 @@ func main() {
 	authHdl := handler.NewAuthHandler(authUsecase)
 	skuHdl := handler.NewSKUHandler(skuUsecase)
 	bundleHdl := handler.NewBundleHandler(bundleUsecase)
+	formulaHdl := handler.NewFormulaHandler(formulaUsecase)
 	stockHdl := handler.NewStockHandler(stockUsecase)
 	customerHdl := handler.NewCustomerHandler(customerUsecase)
 	orderHdl := handler.NewOrderHandler(orderUsecase)
@@ -211,6 +228,7 @@ func main() {
 		AuthHandler:       authHdl,
 		SKUHandler:        skuHdl,
 		BundleHandler:     bundleHdl,
+		FormulaHandler:    formulaHdl,
 		StockHandler:      stockHdl,
 		CustomerHandler:   customerHdl,
 		OrderHandler:      orderHdl,

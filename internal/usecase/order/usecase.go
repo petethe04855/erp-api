@@ -8,6 +8,7 @@ import (
 
 	domainBundle "chawy-erp-api/internal/domain/bundle"
 	domainFinance "chawy-erp-api/internal/domain/finance"
+	domainFormula "chawy-erp-api/internal/domain/formula"
 	domainOrder "chawy-erp-api/internal/domain/order"
 	domainSKU "chawy-erp-api/internal/domain/sku"
 	domainStock "chawy-erp-api/internal/domain/stock"
@@ -43,12 +44,13 @@ type Usecase interface {
 }
 
 type orderUsecase struct {
-	db         *gorm.DB
-	orderRepo  domainOrder.Repository
-	skuRepo    domainSKU.Repository
-	bundleRepo domainBundle.Repository
-	stockRepo  domainStock.Repository
-	txMgr      database.TxManager
+	db          *gorm.DB
+	orderRepo   domainOrder.Repository
+	skuRepo     domainSKU.Repository
+	bundleRepo  domainBundle.Repository
+	formulaRepo domainFormula.Repository
+	stockRepo   domainStock.Repository
+	txMgr       database.TxManager
 }
 
 func NewOrderUsecase(
@@ -56,6 +58,7 @@ func NewOrderUsecase(
 	orderRepo domainOrder.Repository,
 	skuRepo domainSKU.Repository,
 	bundleRepo domainBundle.Repository,
+	formulaRepo domainFormula.Repository,
 	stockRepo domainStock.Repository,
 ) Usecase {
 	var txMgr database.TxManager
@@ -63,12 +66,13 @@ func NewOrderUsecase(
 		txMgr = database.NewTxManager(db)
 	}
 	return &orderUsecase{
-		db:         db,
-		orderRepo:  orderRepo,
-		skuRepo:    skuRepo,
-		bundleRepo: bundleRepo,
-		stockRepo:  stockRepo,
-		txMgr:      txMgr,
+		db:          db,
+		orderRepo:   orderRepo,
+		skuRepo:     skuRepo,
+		bundleRepo:  bundleRepo,
+		formulaRepo: formulaRepo,
+		stockRepo:   stockRepo,
+		txMgr:       txMgr,
 	}
 }
 
@@ -77,16 +81,18 @@ func NewOrderUsecaseWithTx(
 	orderRepo domainOrder.Repository,
 	skuRepo domainSKU.Repository,
 	bundleRepo domainBundle.Repository,
+	formulaRepo domainFormula.Repository,
 	stockRepo domainStock.Repository,
 	txMgr database.TxManager,
 ) Usecase {
 	return &orderUsecase{
-		db:         db,
-		orderRepo:  orderRepo,
-		skuRepo:    skuRepo,
-		bundleRepo: bundleRepo,
-		stockRepo:  stockRepo,
-		txMgr:      txMgr,
+		db:          db,
+		orderRepo:   orderRepo,
+		skuRepo:     skuRepo,
+		bundleRepo:  bundleRepo,
+		formulaRepo: formulaRepo,
+		stockRepo:   stockRepo,
+		txMgr:       txMgr,
 	}
 }
 
@@ -124,21 +130,39 @@ func (u *orderUsecase) Create(ctx context.Context, in CreateOrderInput) (*domain
 		if err != nil {
 			return nil, err
 		}
-		if skuItem == nil {
-			return nil, appErrors.ErrSKUNotFound
+
+		var itemName string
+		var itemPrice float64
+		var itemSKUCode string
+
+		if skuItem != nil {
+			itemName = skuItem.Name
+			itemPrice = skuItem.Price
+			itemSKUCode = skuItem.SKU
+		} else {
+			// If not found in SKU Master, check if it is defined in Inventory Formula
+			formula, err := u.formulaRepo.FindByCode(ctx, itemInput.SKU)
+			if err != nil {
+				return nil, err
+			}
+			if formula == nil || !formula.IsActive {
+				return nil, appErrors.ErrSKUNotFound
+			}
+			itemName = formula.Name
+			itemSKUCode = formula.Code
 		}
 
 		price := itemInput.Price
 		if price <= 0 {
-			price = skuItem.Price
+			price = itemPrice
 		}
 
 		subtotal := price * float64(itemInput.Quantity)
 		totalAmount += subtotal
 
 		items = append(items, domainOrder.OrderItem{
-			SKU:      skuItem.SKU,
-			Name:     skuItem.Name,
+			SKU:      itemSKUCode,
+			Name:     itemName,
 			Price:    price,
 			Quantity: itemInput.Quantity,
 			Subtotal: subtotal,
@@ -162,111 +186,10 @@ func (u *orderUsecase) Create(ctx context.Context, in CreateOrderInput) (*domain
 		Items:        items,
 	}
 
-	warehouseID := uint(1)
-
-	// Execute stock verification, reservation, and order creation in a single transaction
 	err := u.withTransaction(ctx, func(txCtx context.Context) error {
-		for _, item := range order.Items {
-			skuEntity, err := u.skuRepo.FindBySKU(txCtx, item.SKU)
-			if err != nil || skuEntity == nil {
-				return appErrors.ErrSKUNotFound
-			}
-
-			if skuEntity.IsBundle {
-				bundleItems, err := u.bundleRepo.GetItemsByBundleSKU(txCtx, skuEntity.SKU)
-				if err != nil {
-					return err
-				}
-				if len(bundleItems) == 0 {
-					return fmt.Errorf("cannot order bundle %s: no component items defined in formula", skuEntity.SKU)
-				}
-
-				for _, bi := range bundleItems {
-					compSKU, err := u.skuRepo.FindBySKU(txCtx, bi.ComponentSKU)
-					if err != nil || compSKU == nil {
-						return fmt.Errorf("bundle component %s not found", bi.ComponentSKU)
-					}
-
-					qtyToReserve := bi.Quantity * item.Quantity
-					stk, err := u.stockRepo.GetBySKUIDForUpdate(txCtx, compSKU.ID, warehouseID)
-					if err != nil {
-						return err
-					}
-					if stk == nil || stk.AvailableQty < qtyToReserve {
-						avail := 0
-						if stk != nil {
-							avail = stk.AvailableQty
-						}
-						return appErrors.NewAppError(
-							"INSUFFICIENT_STOCK",
-							fmt.Sprintf("Stock %s ไม่พอ: ต้องการ %d, พร้อมขาย %d", bi.ComponentSKU, qtyToReserve, avail),
-							409,
-						)
-					}
-
-					if _, err := u.stockRepo.ReserveStock(txCtx, compSKU.ID, warehouseID, qtyToReserve); err != nil {
-						return err
-					}
-
-					movement := &domainStock.StockMovement{
-						SKUID:         compSKU.ID,
-						SKUCode:       compSKU.SKU,
-						WarehouseID:   warehouseID,
-						Type:          domainStock.MovementReserve,
-						Quantity:      qtyToReserve,
-						BeforeQty:     stk.Quantity,
-						AfterQty:      stk.Quantity,
-						ReferenceType: "ORDER_RESERVE",
-						ReferenceID:   order.OrderNo,
-						Note:          fmt.Sprintf("Reserved for bundle %s in order %s", item.SKU, order.OrderNo),
-					}
-					if err := u.stockRepo.CreateMovement(txCtx, movement); err != nil {
-						return err
-					}
-				}
-			} else {
-				stk, err := u.stockRepo.GetBySKUIDForUpdate(txCtx, skuEntity.ID, warehouseID)
-				if err != nil {
-					return err
-				}
-				if stk == nil || stk.AvailableQty < item.Quantity {
-					avail := 0
-					if stk != nil {
-						avail = stk.AvailableQty
-					}
-					return appErrors.NewAppError(
-						"INSUFFICIENT_STOCK",
-						fmt.Sprintf("Stock %s ไม่พอ: ต้องการ %d, พร้อมขาย %d", item.SKU, item.Quantity, avail),
-						409,
-					)
-				}
-
-				if _, err := u.stockRepo.ReserveStock(txCtx, skuEntity.ID, warehouseID, item.Quantity); err != nil {
-					return err
-				}
-
-				movement := &domainStock.StockMovement{
-					SKUID:         skuEntity.ID,
-					SKUCode:       skuEntity.SKU,
-					WarehouseID:   warehouseID,
-					Type:          domainStock.MovementReserve,
-					Quantity:      item.Quantity,
-					BeforeQty:     stk.Quantity,
-					AfterQty:      stk.Quantity,
-					ReferenceType: "ORDER_RESERVE",
-					ReferenceID:   order.OrderNo,
-					Note:          fmt.Sprintf("Reserved for order %s", order.OrderNo),
-				}
-				if err := u.stockRepo.CreateMovement(txCtx, movement); err != nil {
-					return err
-				}
-			}
-		}
-
 		if err := u.orderRepo.Create(txCtx, order); err != nil {
 			return err
 		}
-
 		return nil
 	})
 
@@ -328,163 +251,142 @@ func (u *orderUsecase) ShipOrder(ctx context.Context, id uint, warehouseID uint)
 
 		totalCOGS := 0.0
 
+		// Step 1: Collect and aggregate all physical SKU quantities to deduct across all order lines
+		type ShipTarget struct {
+			SKUCode string
+			Qty     int
+			RefType string
+			Note    string
+		}
+		shipMap := make(map[string]*ShipTarget)
+
 		for _, line := range orderItem.Items {
 			if line.Quantity <= 0 {
 				return appErrors.NewAppError("INVALID_QUANTITY", fmt.Sprintf("Order line %s has invalid quantity", line.SKU), 400)
 			}
 
-			skuEntity, err := u.skuRepo.FindBySKU(txCtx, line.SKU)
+			lineSKU := strings.ToUpper(strings.TrimSpace(line.SKU))
+			formula, err := u.formulaRepo.FindByCode(txCtx, lineSKU)
+			if err != nil {
+				return err
+			}
+
+			if formula != nil && formula.IsActive && len(formula.Items) > 0 {
+				// Explode components
+				for _, fi := range formula.Items {
+					compCode := strings.ToUpper(strings.TrimSpace(fi.ComponentSKU))
+					neededQty := fi.Qty * line.Quantity
+					if entry, exists := shipMap[compCode]; exists {
+						entry.Qty += neededQty
+					} else {
+						shipMap[compCode] = &ShipTarget{
+							SKUCode: compCode,
+							Qty:     neededQty,
+							RefType: "ORDER_FORMULA",
+							Note:    fmt.Sprintf("Shipped for formula %s in order %s", line.SKU, orderItem.OrderNo),
+						}
+					}
+				}
+			} else {
+				// No formula: direct SKU
+				if entry, exists := shipMap[lineSKU]; exists {
+					entry.Qty += line.Quantity
+				} else {
+					shipMap[lineSKU] = &ShipTarget{
+						SKUCode: lineSKU,
+						Qty:     line.Quantity,
+						RefType: "ORDER",
+						Note:    fmt.Sprintf("Shipped for order %s", orderItem.OrderNo),
+					}
+				}
+
+				// Deduct associated accessories for non-formula SKU
+				var accessories []domainSKU.SKUAccessory
+				if err := u.db.WithContext(txCtx).Where("UPPER(sku) = ?", lineSKU).Find(&accessories).Error; err == nil && len(accessories) > 0 {
+					for _, acc := range accessories {
+						accCode := strings.ToUpper(strings.TrimSpace(acc.AccessorySKU))
+						accQty := acc.Quantity * line.Quantity
+						if entry, exists := shipMap[accCode]; exists {
+							entry.Qty += accQty
+						} else {
+							shipMap[accCode] = &ShipTarget{
+								SKUCode: accCode,
+								Qty:     accQty,
+								RefType: "ORDER_ACCESSORY",
+								Note:    fmt.Sprintf("Shipped accessory %s for %s in order %s", acc.AccessorySKU, line.SKU, orderItem.OrderNo),
+							}
+						}
+					}
+				}
+			}
+		}
+
+		// Step 2: Validate stock and calculate COGS under FOR UPDATE locks
+		type ValidatedShipStock struct {
+			Target *ShipTarget
+			SKU    *domainSKU.SKU
+			Stock  *domainStock.Stock
+		}
+		var toShip []ValidatedShipStock
+
+		for _, target := range shipMap {
+			skuEntity, err := u.skuRepo.FindBySKU(txCtx, target.SKUCode)
 			if err != nil || skuEntity == nil {
 				return appErrors.ErrSKUNotFound
 			}
 
-			if skuEntity.IsBundle {
-				// Bundle resolution: load bundle components
-				bundleItems, err := u.bundleRepo.GetItemsByBundleSKU(txCtx, skuEntity.SKU)
-				if err != nil {
-					return err
-				}
-				if len(bundleItems) == 0 {
-					return fmt.Errorf("cannot ship bundle %s: no component items defined in formula", skuEntity.SKU)
-				}
+			if skuEntity.CostPrice > 0 {
+				totalCOGS += skuEntity.CostPrice * float64(target.Qty)
+			}
 
-				for _, bi := range bundleItems {
-					compSKU, err := u.skuRepo.FindBySKU(txCtx, bi.ComponentSKU)
-					if err != nil || compSKU == nil {
-						return fmt.Errorf("bundle component %s not found", bi.ComponentSKU)
-					}
-
-					qtyToDeduct := bi.Quantity * line.Quantity
-					if compSKU.CostPrice > 0 {
-						totalCOGS += compSKU.CostPrice * float64(qtyToDeduct)
-					}
-
-					// Check availability under the stock row lock
-					stk, err := u.stockRepo.GetBySKUIDForUpdate(txCtx, compSKU.ID, warehouseID)
-					if err != nil {
-						return err
-					}
-					if stk == nil || stk.Quantity < qtyToDeduct {
-						avail := 0
-						if stk != nil {
-							avail = stk.Quantity
-						}
-						return appErrors.NewAppError("INSUFFICIENT_STOCK", fmt.Sprintf("Stock %s ไม่พอ: ต้องการ %d, คงเหลือ %d", bi.ComponentSKU, qtyToDeduct, avail), 409)
-					}
-
-					updatedStk, err := u.stockRepo.UpdateQuantity(txCtx, compSKU.ID, warehouseID, -qtyToDeduct)
-					if err != nil {
-						return err
-					}
-					// Also release the reservation for this order
-					_, _ = u.stockRepo.ReleaseStock(txCtx, compSKU.ID, warehouseID, qtyToDeduct)
-
-					movement := &domainStock.StockMovement{
-						SKUID:         compSKU.ID,
-						SKUCode:       compSKU.SKU,
-						WarehouseID:   warehouseID,
-						Type:          domainStock.MovementOut,
-						Quantity:      qtyToDeduct,
-						BeforeQty:     stk.Quantity,
-						AfterQty:      updatedStk.Quantity,
-						ReferenceType: "ORDER_BUNDLE",
-						ReferenceID:   orderItem.OrderNo,
-						Note:          fmt.Sprintf("Shipped for bundle %s in order %s", line.SKU, orderItem.OrderNo),
-					}
-					if err := u.stockRepo.CreateMovement(txCtx, movement); err != nil {
-						return err
-					}
+			stk, err := u.stockRepo.GetBySKUIDForUpdate(txCtx, skuEntity.ID, warehouseID)
+			if err != nil {
+				return err
+			}
+			if stk == nil || stk.Quantity < target.Qty {
+				avail := 0
+				if stk != nil {
+					avail = stk.Quantity
 				}
-			} else {
-				if skuEntity.CostPrice > 0 {
-					totalCOGS += skuEntity.CostPrice * float64(line.Quantity)
-				}
+				return appErrors.NewAppError("INSUFFICIENT_STOCK", fmt.Sprintf("Stock %s ไม่พอ: ต้องการ %d, คงเหลือ %d", target.SKUCode, target.Qty, avail), 409)
+			}
 
-				// Single SKU: check total quantity under the stock row lock
-				stk, err := u.stockRepo.GetBySKUIDForUpdate(txCtx, skuEntity.ID, warehouseID)
-				if err != nil {
-					return err
-				}
-				if stk == nil || stk.Quantity < line.Quantity {
-					avail := 0
-					if stk != nil {
-						avail = stk.Quantity
-					}
-					return appErrors.NewAppError("INSUFFICIENT_STOCK", fmt.Sprintf("Stock %s ไม่พอ: ต้องการ %d, คงเหลือ %d", line.SKU, line.Quantity, avail), 409)
-				}
+			toShip = append(toShip, ValidatedShipStock{
+				Target: target,
+				SKU:    skuEntity,
+				Stock:  stk,
+			})
+		}
 
-				updatedStk, err := u.stockRepo.UpdateQuantity(txCtx, skuEntity.ID, warehouseID, -line.Quantity)
-				if err != nil {
-					return err
+		// Step 3: Deduct stock and release reservations (if any)
+		for _, vs := range toShip {
+			updatedStk, err := u.stockRepo.UpdateQuantity(txCtx, vs.SKU.ID, warehouseID, -vs.Target.Qty)
+			if err != nil {
+				return err
+			}
+			// Safely release reservation if there was any historical reservation
+			if vs.Stock != nil && vs.Stock.ReservedQty > 0 {
+				relQty := vs.Target.Qty
+				if relQty > vs.Stock.ReservedQty {
+					relQty = vs.Stock.ReservedQty
 				}
-				// Also release the reservation for this order
-				_, _ = u.stockRepo.ReleaseStock(txCtx, skuEntity.ID, warehouseID, line.Quantity)
+				_, _ = u.stockRepo.ReleaseStock(txCtx, vs.SKU.ID, warehouseID, relQty)
+			}
 
-				movement := &domainStock.StockMovement{
-					SKUID:         skuEntity.ID,
-					SKUCode:       skuEntity.SKU,
-					WarehouseID:   warehouseID,
-					Type:          domainStock.MovementOut,
-					Quantity:      line.Quantity,
-					BeforeQty:     stk.Quantity,
-					AfterQty:      updatedStk.Quantity,
-					ReferenceType: "ORDER",
-					ReferenceID:   orderItem.OrderNo,
-					Note:          fmt.Sprintf("Shipped for order %s", orderItem.OrderNo),
-				}
-				if err := u.stockRepo.CreateMovement(txCtx, movement); err != nil {
-					return err
-				}
-
-				// Deduct associated accessories for non-bundle SKU
-				var accessories []domainSKU.SKUAccessory
-				if err := u.db.WithContext(txCtx).Where("UPPER(sku) = ?", strings.ToUpper(skuEntity.SKU)).Find(&accessories).Error; err == nil && len(accessories) > 0 {
-					for _, acc := range accessories {
-						accSKU, err := u.skuRepo.FindBySKU(txCtx, acc.AccessorySKU)
-						if err != nil || accSKU == nil {
-							return fmt.Errorf("accessory %s not found for SKU %s", acc.AccessorySKU, skuEntity.SKU)
-						}
-						accQtyToDeduct := acc.Quantity * line.Quantity
-						if accSKU.CostPrice > 0 {
-							totalCOGS += accSKU.CostPrice * float64(accQtyToDeduct)
-						}
-
-						accStk, err := u.stockRepo.GetBySKUIDForUpdate(txCtx, accSKU.ID, warehouseID)
-						if err != nil {
-							return err
-						}
-						if accStk == nil || accStk.Quantity < accQtyToDeduct {
-							avail := 0
-							if accStk != nil {
-								avail = accStk.Quantity
-							}
-							return appErrors.NewAppError(
-								"INSUFFICIENT_STOCK",
-								fmt.Sprintf("Stock Accessory %s ไม่พอ: ต้องการ %d, คงเหลือ %d", acc.AccessorySKU, accQtyToDeduct, avail),
-								409,
-							)
-						}
-						updatedAccStk, err := u.stockRepo.UpdateQuantity(txCtx, accSKU.ID, warehouseID, -accQtyToDeduct)
-						if err != nil {
-							return err
-						}
-						accMovement := &domainStock.StockMovement{
-							SKUID:         accSKU.ID,
-							SKUCode:       accSKU.SKU,
-							WarehouseID:   warehouseID,
-							Type:          domainStock.MovementOut,
-							Quantity:      accQtyToDeduct,
-							BeforeQty:     accStk.Quantity,
-							AfterQty:      updatedAccStk.Quantity,
-							ReferenceType: "ORDER_ACCESSORY",
-							ReferenceID:   orderItem.OrderNo,
-							Note:          fmt.Sprintf("Shipped accessory %s for %s in order %s", acc.AccessorySKU, skuEntity.SKU, orderItem.OrderNo),
-						}
-						if err := u.stockRepo.CreateMovement(txCtx, accMovement); err != nil {
-							return err
-						}
-					}
-				}
+			movement := &domainStock.StockMovement{
+				SKUID:         vs.SKU.ID,
+				SKUCode:       vs.SKU.SKU,
+				WarehouseID:   warehouseID,
+				Type:          domainStock.MovementOut,
+				Quantity:      vs.Target.Qty,
+				BeforeQty:     vs.Stock.Quantity,
+				AfterQty:      updatedStk.Quantity,
+				ReferenceType: vs.Target.RefType,
+				ReferenceID:   orderItem.OrderNo,
+				Note:          vs.Target.Note,
+			}
+			if err := u.stockRepo.CreateMovement(txCtx, movement); err != nil {
+				return err
 			}
 		}
 
@@ -588,60 +490,79 @@ func (u *orderUsecase) CancelOrder(ctx context.Context, id uint) (*domainOrder.O
 		}
 
 		warehouseID := uint(1)
-		// Release reserved stock for all order items
+		// Release reserved stock for all order items (resolving formulas or direct SKU)
+		type ReleaseTarget struct {
+			SKUCode string
+			Qty     int
+			RefType string
+			Note    string
+		}
+		releaseMap := make(map[string]*ReleaseTarget)
+
 		for _, line := range o.Items {
-			skuEntity, err := u.skuRepo.FindBySKU(txCtx, line.SKU)
+			lineSKU := strings.ToUpper(strings.TrimSpace(line.SKU))
+			formula, err := u.formulaRepo.FindByCode(txCtx, lineSKU)
+			if err != nil {
+				continue
+			}
+
+			if formula != nil && formula.IsActive && len(formula.Items) > 0 {
+				for _, fi := range formula.Items {
+					compCode := strings.ToUpper(strings.TrimSpace(fi.ComponentSKU))
+					qtyToRel := fi.Qty * line.Quantity
+					if entry, exists := releaseMap[compCode]; exists {
+						entry.Qty += qtyToRel
+					} else {
+						releaseMap[compCode] = &ReleaseTarget{
+							SKUCode: compCode,
+							Qty:     qtyToRel,
+							RefType: "ORDER_CANCEL_FORMULA",
+							Note:    fmt.Sprintf("Released reserved stock for formula %s from cancelled order %s", line.SKU, o.OrderNo),
+						}
+					}
+				}
+			} else {
+				if entry, exists := releaseMap[lineSKU]; exists {
+					entry.Qty += line.Quantity
+				} else {
+					releaseMap[lineSKU] = &ReleaseTarget{
+						SKUCode: lineSKU,
+						Qty:     line.Quantity,
+						RefType: "ORDER_CANCEL",
+						Note:    fmt.Sprintf("Released reserved stock from cancelled order %s", o.OrderNo),
+					}
+				}
+			}
+		}
+
+		for _, target := range releaseMap {
+			skuEntity, err := u.skuRepo.FindBySKU(txCtx, target.SKUCode)
 			if err != nil || skuEntity == nil {
 				continue
 			}
 
-			if skuEntity.IsBundle {
-				bundleItems, err := u.bundleRepo.GetItemsByBundleSKU(txCtx, skuEntity.SKU)
-				if err != nil {
-					continue
+			stk, _ := u.stockRepo.GetBySKUIDForUpdate(txCtx, skuEntity.ID, warehouseID)
+			if stk != nil && stk.ReservedQty > 0 {
+				qtyToRel := target.Qty
+				if qtyToRel > stk.ReservedQty {
+					qtyToRel = stk.ReservedQty
 				}
-				for _, bi := range bundleItems {
-					compSKU, err := u.skuRepo.FindBySKU(txCtx, bi.ComponentSKU)
-					if err != nil || compSKU == nil {
-						continue
-					}
-					qtyToRelease := bi.Quantity * line.Quantity
-					stk, err := u.stockRepo.ReleaseStock(txCtx, compSKU.ID, warehouseID, qtyToRelease)
-					if err != nil {
-						return err
-					}
+				updatedStk, err := u.stockRepo.ReleaseStock(txCtx, skuEntity.ID, warehouseID, qtyToRel)
+				if err == nil && updatedStk != nil {
 					movement := &domainStock.StockMovement{
-						SKUID:         compSKU.ID,
-						SKUCode:       compSKU.SKU,
+						SKUID:         skuEntity.ID,
+						SKUCode:       skuEntity.SKU,
 						WarehouseID:   warehouseID,
 						Type:          domainStock.MovementRelease,
-						Quantity:      qtyToRelease,
+						Quantity:      qtyToRel,
 						BeforeQty:     stk.Quantity,
 						AfterQty:      stk.Quantity,
-						ReferenceType: "ORDER_CANCEL",
+						ReferenceType: target.RefType,
 						ReferenceID:   o.OrderNo,
-						Note:          fmt.Sprintf("Released reserved stock for bundle %s from cancelled order %s", line.SKU, o.OrderNo),
+						Note:          target.Note,
 					}
 					_ = u.stockRepo.CreateMovement(txCtx, movement)
 				}
-			} else {
-				stk, err := u.stockRepo.ReleaseStock(txCtx, skuEntity.ID, warehouseID, line.Quantity)
-				if err != nil {
-					return err
-				}
-				movement := &domainStock.StockMovement{
-					SKUID:         skuEntity.ID,
-					SKUCode:       skuEntity.SKU,
-					WarehouseID:   warehouseID,
-					Type:          domainStock.MovementRelease,
-					Quantity:      line.Quantity,
-					BeforeQty:     stk.Quantity,
-					AfterQty:      stk.Quantity,
-					ReferenceType: "ORDER_CANCEL",
-					ReferenceID:   o.OrderNo,
-					Note:          fmt.Sprintf("Released reserved stock from cancelled order %s", o.OrderNo),
-				}
-				_ = u.stockRepo.CreateMovement(txCtx, movement)
 			}
 		}
 

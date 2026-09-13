@@ -13,6 +13,7 @@ type Config struct {
 	SKUHandler        *handler.SKUHandler
 	StockHandler      *handler.StockHandler
 	BundleHandler     *handler.BundleHandler
+	FormulaHandler    *handler.FormulaHandler
 	CustomerHandler   *handler.CustomerHandler
 	OrderHandler      *handler.OrderHandler
 	PurchasingHandler *handler.PurchasingHandler
@@ -70,7 +71,27 @@ func RegisterRoutes(cfg Config) {
 	skus.Put("/:id", middleware.RequireRole("owner", "warehouse", "sales"), cfg.SKUHandler.Update)
 	skus.Delete("/:id", middleware.RequireRole("owner", "accountant"), cfg.SKUHandler.Delete)
 
-	// Bundle Routes
+	// Inventory Formulas Routes (Replaces SKU-based bundles)
+	if cfg.FormulaHandler != nil {
+		formulas := protected.Group("/inventory-formulas")
+		formulas.Get("/", cfg.FormulaHandler.List)
+		formulas.Post("/", middleware.RequireRole("owner", "warehouse"), cfg.FormulaHandler.Create)
+		formulas.Get("/:code", cfg.FormulaHandler.GetByCode)
+		formulas.Put("/:code", middleware.RequireRole("owner", "warehouse"), cfg.FormulaHandler.Update)
+		formulas.Patch("/:code/status", middleware.RequireRole("owner", "warehouse"), cfg.FormulaHandler.ToggleStatus)
+		formulas.Delete("/:code", middleware.RequireRole("owner", "warehouse"), cfg.FormulaHandler.Deactivate)
+
+		// Root aliases matching /api/inventory-formulas
+		rootFormulas := cfg.App.Group("/api/inventory-formulas", middleware.AuthMiddleware(cfg.JWTSecret, cfg.UserStatusLoader))
+		rootFormulas.Get("/", cfg.FormulaHandler.List)
+		rootFormulas.Post("/", middleware.RequireRole("owner", "warehouse"), cfg.FormulaHandler.Create)
+		rootFormulas.Get("/:code", cfg.FormulaHandler.GetByCode)
+		rootFormulas.Put("/:code", middleware.RequireRole("owner", "warehouse"), cfg.FormulaHandler.Update)
+		rootFormulas.Patch("/:code/status", middleware.RequireRole("owner", "warehouse"), cfg.FormulaHandler.ToggleStatus)
+		rootFormulas.Delete("/:code", middleware.RequireRole("owner", "warehouse"), cfg.FormulaHandler.Deactivate)
+	}
+
+	// Bundle Routes (Legacy support)
 	bundles := protected.Group("/bundles")
 	bundles.Get("/:sku", cfg.BundleHandler.GetComponents)
 	bundles.Post("/:sku", middleware.RequireRole("owner", "warehouse"), cfg.BundleHandler.SetComponents)
@@ -185,10 +206,12 @@ func RegisterRoutes(cfg Config) {
 	protected.Get("/products/id/:id", cfg.WorkspaceHandler.GetProductByID)
 	protected.Put("/products/id/:id", middleware.RequireRole("owner", "warehouse", "sales"), cfg.WorkspaceHandler.UpdateProductByID)
 	protected.Put("/products/id/:id/status", middleware.RequireRole("owner", "warehouse", "sales"), cfg.WorkspaceHandler.UpdateProductStatusByID)
+	protected.Put("/products/id/:id/reorder", middleware.RequireRole("owner", "warehouse"), cfg.WorkspaceHandler.UpdateProductReorderByID)
 	protected.Delete("/products/id/:id", middleware.RequireRole("owner", "accountant"), cfg.WorkspaceHandler.DeleteProductByID)
 	protected.Post("/products", middleware.RequireRole("owner", "warehouse", "sales"), cfg.WorkspaceHandler.CreateProduct)
 	protected.Put("/products/:code", middleware.RequireRole("owner", "warehouse", "sales"), cfg.WorkspaceHandler.UpdateProduct)
 	protected.Put("/products/:code/status", middleware.RequireRole("owner", "warehouse", "sales"), cfg.WorkspaceHandler.UpdateProductStatus)
+	protected.Put("/products/:code/reorder", middleware.RequireRole("owner", "warehouse"), cfg.WorkspaceHandler.UpdateProductReorder)
 	protected.Delete("/products/:code", middleware.RequireRole("owner", "accountant"), cfg.WorkspaceHandler.DeleteProduct)
 	protected.Post("/sales-orders", middleware.RequireRole("owner", "sales"), cfg.WorkspaceHandler.CreateSalesOrder)
 	protected.Get("/sales-orders/:id", cfg.WorkspaceHandler.GetSalesOrderByID)

@@ -29,7 +29,7 @@ func CanTransition(from, to Status) bool {
 	}
 	switch from {
 	case StatusPending:
-		return to == StatusConfirmed || to == StatusCancelled
+		return to == StatusShipped || to == StatusConfirmed || to == StatusCancelled
 	case StatusConfirmed:
 		return to == StatusShipped || to == StatusCancelled
 	case StatusShipped:

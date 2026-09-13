@@ -15,6 +15,7 @@ import (
 
 	"chawy-erp-api/config"
 	domainBundle "chawy-erp-api/internal/domain/bundle"
+	domainFormula "chawy-erp-api/internal/domain/formula"
 	domainOrder "chawy-erp-api/internal/domain/order"
 	domainSKU "chawy-erp-api/internal/domain/sku"
 	domainStock "chawy-erp-api/internal/domain/stock"
@@ -115,6 +116,7 @@ type tiktokUsecase struct {
 	tiktokRepo   domainTikTok.Repository
 	tiktokClient *pkgTikTok.Client
 	orderUsecase domainOrder.Repository
+	formulaRepo  domainFormula.Repository
 	skuRepo      domainSKU.Repository
 	bundleRepo   domainBundle.Repository
 	stockRepo    domainStock.Repository
@@ -125,6 +127,7 @@ func NewTikTokUsecase(
 	db *gorm.DB,
 	tiktokRepo domainTikTok.Repository,
 	orderRepo domainOrder.Repository,
+	formulaRepo domainFormula.Repository,
 	skuRepo domainSKU.Repository,
 	bundleRepo domainBundle.Repository,
 	stockRepo domainStock.Repository,
@@ -135,6 +138,7 @@ func NewTikTokUsecase(
 		tiktokRepo:   tiktokRepo,
 		tiktokClient: pkgTikTok.NewClient(),
 		orderUsecase: orderRepo,
+		formulaRepo:  formulaRepo,
 		skuRepo:      skuRepo,
 		bundleRepo:   bundleRepo,
 		stockRepo:    stockRepo,
@@ -490,13 +494,23 @@ func (u *tiktokUsecase) deductStockForOrder(ctx context.Context, orderID string)
 			return nil // already processed (or gone) — nothing to do
 		}
 
+		// Step 1: Collect and aggregate all physical SKU quantities to deduct across all items
+		// (Resolving Inventory Formulas if defined; otherwise directly deducting the SKU)
+		type DeductionTarget struct {
+			SKUCode string
+			Qty     int
+			RefType string
+			Note    string
+		}
+
+		deductionMap := make(map[string]*DeductionTarget)
+
 		for _, item := range order.Items {
 			if item.Qty <= 0 {
 				continue
 			}
 
-			// Map TikTok SKU to ERP SKU (case-insensitive, matching the
-			// uppercase write in SaveSKUMapping — FULL-28)
+			// Map TikTok SKU to ERP SKU (case-insensitive)
 			erpSKUCode := strings.ToUpper(strings.TrimSpace(item.SKU))
 			mapping, err := u.tiktokRepo.GetMapping(txCtx, erpSKUCode)
 			if err != nil {
@@ -506,141 +520,122 @@ func (u *tiktokUsecase) deductStockForOrder(ctx context.Context, orderID string)
 				erpSKUCode = strings.ToUpper(strings.TrimSpace(mapping.LocalSKU))
 			}
 
-			skuEntity, err := u.skuRepo.FindBySKU(txCtx, erpSKUCode)
+			// Check if there is an active Inventory Formula for this SKU
+			formula, err := u.formulaRepo.FindByCode(txCtx, erpSKUCode)
+			if err != nil {
+				return err
+			}
+
+			if formula != nil && formula.IsActive && len(formula.Items) > 0 {
+				// Explode components and multiply by ordered quantity
+				for _, fi := range formula.Items {
+					compCode := strings.ToUpper(strings.TrimSpace(fi.ComponentSKU))
+					neededQty := fi.Qty * item.Qty
+					if entry, exists := deductionMap[compCode]; exists {
+						entry.Qty += neededQty
+					} else {
+						deductionMap[compCode] = &DeductionTarget{
+							SKUCode: compCode,
+							Qty:     neededQty,
+							RefType: "TIKTOK_FORMULA",
+							Note:    fmt.Sprintf("TikTok order %s: formula %s component %s", order.ID, formula.Code, compCode),
+						}
+					}
+				}
+			} else {
+				// No formula: deduct the SKU directly
+				if entry, exists := deductionMap[erpSKUCode]; exists {
+					entry.Qty += item.Qty
+				} else {
+					deductionMap[erpSKUCode] = &DeductionTarget{
+						SKUCode: erpSKUCode,
+						Qty:     item.Qty,
+						RefType: "TIKTOK_ORDER",
+						Note:    fmt.Sprintf("TikTok order %s: SKU %s", order.ID, erpSKUCode),
+					}
+				}
+
+				// Deduct associated accessories for non-formula SKU if configured
+				var accessories []domainSKU.SKUAccessory
+				if err := u.db.WithContext(txCtx).Where("UPPER(sku) = ?", erpSKUCode).Find(&accessories).Error; err == nil && len(accessories) > 0 {
+					for _, acc := range accessories {
+						accCode := strings.ToUpper(strings.TrimSpace(acc.AccessorySKU))
+						accQty := acc.Quantity * item.Qty
+						if entry, exists := deductionMap[accCode]; exists {
+							entry.Qty += accQty
+						} else {
+							deductionMap[accCode] = &DeductionTarget{
+								SKUCode: accCode,
+								Qty:     accQty,
+								RefType: "TIKTOK_ACCESSORY",
+								Note:    fmt.Sprintf("TikTok order %s: accessory %s for %s", order.ID, accCode, erpSKUCode),
+							}
+						}
+					}
+				}
+			}
+		}
+
+		// Step 2: Validate all SKUs exist and have sufficient stock under FOR UPDATE locks
+		type ValidatedStock struct {
+			Target  *DeductionTarget
+			SKU     *domainSKU.SKU
+			Stock   *domainStock.Stock
+		}
+		var toDeduct []ValidatedStock
+
+		for _, target := range deductionMap {
+			skuEntity, err := u.skuRepo.FindBySKU(txCtx, target.SKUCode)
 			if err != nil {
 				return err
 			}
 			if skuEntity == nil {
-				// FULL-25: never skip silently — fail the order so it retries
-				// after the mapping is fixed.
-				return appErrors.NewAppError("TIKTOK_SKU_UNMAPPED",
-					fmt.Sprintf("SKU %s (mapped to %s) not found in ERP; fix the mapping and resync", item.SKU, erpSKUCode), 422)
+				return appErrors.NewAppError("SKU_NOT_FOUND", fmt.Sprintf("SKU %s ไม่พบในระบบ", target.SKUCode), 404)
 			}
 
-			if skuEntity.IsBundle {
-				// Bundle resolution: load bundle items
-				bundleItems, err := u.bundleRepo.GetItemsByBundleSKU(txCtx, skuEntity.SKU)
-				if err != nil {
-					return err
-				}
-				if len(bundleItems) == 0 {
-					return fmt.Errorf("bundle %s has no components defined", skuEntity.SKU)
-				}
+			stk, err := u.stockRepo.GetBySKUIDForUpdate(txCtx, skuEntity.ID, warehouseID)
+			if err != nil {
+				return err
+			}
+			avail := 0
+			if stk != nil {
+				avail = stk.AvailableQty
+			}
+			if stk == nil || avail < target.Qty {
+				return appErrors.NewAppError(
+					"INSUFFICIENT_STOCK",
+					fmt.Sprintf("Stock %s ไม่พอ: ต้องการ %d, พร้อมขาย %d (Order %s)", target.SKUCode, target.Qty, avail, order.ID),
+					409,
+				)
+			}
 
-				for _, bi := range bundleItems {
-					compSKU, err := u.skuRepo.FindBySKU(txCtx, bi.ComponentSKU)
-					if err != nil {
-						return err
-					}
-					if compSKU == nil {
-						return fmt.Errorf("bundle component %s not found", bi.ComponentSKU)
-					}
+			toDeduct = append(toDeduct, ValidatedStock{
+				Target: target,
+				SKU:    skuEntity,
+				Stock:  stk,
+			})
+		}
 
-					qtyDeduct := bi.Quantity * item.Qty
+		// Step 3: Perform all stock deductions and write movements in the same transaction
+		for _, vs := range toDeduct {
+			updatedStk, err := u.stockRepo.UpdateQuantity(txCtx, vs.SKU.ID, warehouseID, -vs.Target.Qty)
+			if err != nil {
+				return err
+			}
 
-					// Lock the stock row so check and update share one lock.
-					stk, err := u.stockRepo.GetBySKUIDForUpdate(txCtx, compSKU.ID, warehouseID)
-					if err != nil {
-						return err
-					}
-					if stk == nil || stk.AvailableQty < qtyDeduct {
-						return fmt.Errorf("insufficient stock for component %s: required %d", bi.ComponentSKU, qtyDeduct)
-					}
-
-					updatedStk, err := u.stockRepo.UpdateQuantity(txCtx, compSKU.ID, warehouseID, -qtyDeduct)
-					if err != nil {
-						return err
-					}
-
-					if err := u.stockRepo.CreateMovement(txCtx, &domainStock.StockMovement{
-						SKUID:         compSKU.ID,
-						SKUCode:       compSKU.SKU,
-						WarehouseID:   warehouseID,
-						Type:          domainStock.MovementOut,
-						Quantity:      qtyDeduct,
-						BeforeQty:     stk.Quantity,
-						AfterQty:      updatedStk.Quantity,
-						ReferenceType: "TIKTOK_BUNDLE",
-						ReferenceID:   order.ID,
-						Note:          fmt.Sprintf("TikTok order %s shipped: bundle %s component %s", order.ID, skuEntity.SKU, compSKU.SKU),
-					}); err != nil {
-						return err
-					}
-				}
-			} else {
-				// Single SKU stock deduction
-				stk, err := u.stockRepo.GetBySKUIDForUpdate(txCtx, skuEntity.ID, warehouseID)
-				if err != nil {
-					return err
-				}
-				if stk == nil || stk.AvailableQty < item.Qty {
-					return fmt.Errorf("insufficient stock for SKU %s: required %d", skuEntity.SKU, item.Qty)
-				}
-
-				updatedStk, err := u.stockRepo.UpdateQuantity(txCtx, skuEntity.ID, warehouseID, -item.Qty)
-				if err != nil {
-					return err
-				}
-
-				if err := u.stockRepo.CreateMovement(txCtx, &domainStock.StockMovement{
-					SKUID:         skuEntity.ID,
-					SKUCode:       skuEntity.SKU,
-					WarehouseID:   warehouseID,
-					Type:          domainStock.MovementOut,
-					Quantity:      item.Qty,
-					BeforeQty:     stk.Quantity,
-					AfterQty:      updatedStk.Quantity,
-					ReferenceType: "TIKTOK_ORDER",
-					ReferenceID:   order.ID,
-					Note:          fmt.Sprintf("TikTok order %s shipped: SKU %s", order.ID, skuEntity.SKU),
-				}); err != nil {
-					return err
-				}
-
-				// Deduct associated accessories for non-bundle SKU in TikTok order
-				var accessories []domainSKU.SKUAccessory
-				if err := u.db.WithContext(txCtx).Where("UPPER(sku) = ?", strings.ToUpper(skuEntity.SKU)).Find(&accessories).Error; err == nil && len(accessories) > 0 {
-					for _, acc := range accessories {
-						accSKU, err := u.skuRepo.FindBySKU(txCtx, acc.AccessorySKU)
-						if err != nil || accSKU == nil {
-							return fmt.Errorf("accessory %s not found for SKU %s", acc.AccessorySKU, skuEntity.SKU)
-						}
-						accQtyToDeduct := acc.Quantity * item.Qty
-						accStk, err := u.stockRepo.GetBySKUIDForUpdate(txCtx, accSKU.ID, warehouseID)
-						if err != nil {
-							return err
-						}
-						if accStk == nil || accStk.Quantity < accQtyToDeduct {
-							avail := 0
-							if accStk != nil {
-								avail = accStk.Quantity
-							}
-							return appErrors.NewAppError(
-								"INSUFFICIENT_STOCK",
-								fmt.Sprintf("Stock Accessory %s ไม่พอ: ต้องการ %d, คงเหลือ %d", acc.AccessorySKU, accQtyToDeduct, avail),
-								409,
-							)
-						}
-						updatedAccStk, err := u.stockRepo.UpdateQuantity(txCtx, accSKU.ID, warehouseID, -accQtyToDeduct)
-						if err != nil {
-							return err
-						}
-						if err := u.stockRepo.CreateMovement(txCtx, &domainStock.StockMovement{
-							SKUID:         accSKU.ID,
-							SKUCode:       accSKU.SKU,
-							WarehouseID:   warehouseID,
-							Type:          domainStock.MovementOut,
-							Quantity:      accQtyToDeduct,
-							BeforeQty:     accStk.Quantity,
-							AfterQty:      updatedAccStk.Quantity,
-							ReferenceType: "TIKTOK_ACCESSORY",
-							ReferenceID:   order.ID,
-							Note:          fmt.Sprintf("TikTok order %s shipped accessory %s for %s", order.ID, acc.AccessorySKU, skuEntity.SKU),
-						}); err != nil {
-							return err
-						}
-					}
-				}
+			if err := u.stockRepo.CreateMovement(txCtx, &domainStock.StockMovement{
+				SKUID:         vs.SKU.ID,
+				SKUCode:       vs.SKU.SKU,
+				WarehouseID:   warehouseID,
+				Type:          domainStock.MovementOut,
+				Quantity:      vs.Target.Qty,
+				BeforeQty:     vs.Stock.Quantity,
+				AfterQty:      updatedStk.Quantity,
+				ReferenceType: vs.Target.RefType,
+				ReferenceID:   order.ID,
+				Note:          vs.Target.Note,
+			}); err != nil {
+				return err
 			}
 		}
 

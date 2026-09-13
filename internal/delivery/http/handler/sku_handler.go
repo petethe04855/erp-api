@@ -36,7 +36,7 @@ func (h *SKUHandler) Create(c *fiber.Ctx) error {
 		Category:  req.Category,
 		Price:     req.Price,
 		CostPrice: req.CostPrice,
-		IsBundle:  req.IsBundle,
+		IsBundle:  false,
 		Image:     req.Image,
 	})
 	if err != nil {
@@ -111,13 +111,14 @@ func (h *SKUHandler) Update(c *fiber.Ctx) error {
 		return response.BadRequest(c, "Invalid request body")
 	}
 
+	falseVal := false
 	result, err := h.usecase.Update(c.Context(), uint(id), usecaseSKU.UpdateInput{
 		Name:      req.Name,
 		Barcode:   req.Barcode,
 		Category:  req.Category,
 		Price:     req.Price,
 		CostPrice: req.CostPrice,
-		IsBundle:  req.IsBundle,
+		IsBundle:  &falseVal,
 		Image:     req.Image,
 		Status:    req.Status,
 	})

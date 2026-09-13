@@ -17,7 +17,7 @@ func TestOrderCanTransition(t *testing.T) {
 		{"Pending to Pending (idempotent)", domainOrder.StatusPending, domainOrder.StatusPending, true},
 		{"Pending to Confirmed", domainOrder.StatusPending, domainOrder.StatusConfirmed, true},
 		{"Pending to Cancelled", domainOrder.StatusPending, domainOrder.StatusCancelled, true},
-		{"Pending to Shipped (forbidden skip)", domainOrder.StatusPending, domainOrder.StatusShipped, false},
+		{"Pending to Shipped (direct complete)", domainOrder.StatusPending, domainOrder.StatusShipped, true},
 
 		// From Confirmed
 		{"Confirmed to Confirmed (idempotent)", domainOrder.StatusConfirmed, domainOrder.StatusConfirmed, true},
