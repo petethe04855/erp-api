@@ -117,6 +117,7 @@ func RegisterRoutes(cfg Config) {
 	invoices.Get("/", cfg.InvoiceHandler.List)
 	invoices.Post("/", middleware.RequireRole("owner", "accountant", "sales"), cfg.InvoiceHandler.Create)
 	invoices.Get("/:id", cfg.WorkspaceHandler.GetInvoiceByID)
+	invoices.Get("/:id/pdf", cfg.InvoiceHandler.ExportPDF)
 	invoices.Post("/:id/pay", middleware.RequireRole("owner", "accountant"), cfg.InvoiceHandler.MarkAsPaid)
 	invoices.Post("/:id/payment", middleware.RequireRole("owner", "accountant"), cfg.InvoiceHandler.MarkAsPaid)
 
@@ -208,6 +209,7 @@ func RegisterRoutes(cfg Config) {
 	// Quotation endpoints
 	protected.Post("/quotations", middleware.RequireRole("owner", "sales"), cfg.WorkspaceHandler.CreateQuotation)
 	protected.Get("/quotations/:id", cfg.WorkspaceHandler.GetQuotationByID)
+	protected.Get("/quotations/:id/pdf", cfg.WorkspaceHandler.ExportQuotationPDF)
 	protected.Put("/quotations/:id/status", middleware.RequireRole("owner", "sales"), cfg.WorkspaceHandler.UpdateQuotationStatus)
 	protected.Post("/quotations/:id/convert", middleware.RequireRole("owner", "sales"), cfg.WorkspaceHandler.ConvertQuotationToSO)
 

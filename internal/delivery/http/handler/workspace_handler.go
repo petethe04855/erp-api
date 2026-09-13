@@ -19,6 +19,7 @@ import (
 	usecaseOrder "chawy-erp-api/internal/usecase/order"
 	usecaseQuotation "chawy-erp-api/internal/usecase/quotation"
 	usecaseStock "chawy-erp-api/internal/usecase/stock"
+	"chawy-erp-api/pkg/pdf"
 	"chawy-erp-api/pkg/response"
 
 	"github.com/gofiber/fiber/v2"
@@ -2502,6 +2503,109 @@ func (h *WorkspaceHandler) GetQuotationByID(c *fiber.Ctx) error {
 		"lines":      lines,
 		"itemsCount": len(q.Lines),
 	})
+}
+
+func (h *WorkspaceHandler) ExportQuotationPDF(c *fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return response.BadRequest(c, "Invalid quotation ID")
+	}
+
+	q, err := h.quotationUsecase.GetByID(c.Context(), uint(id))
+	if err != nil {
+		return err
+	}
+
+	// Company settings
+	companyName := "Chawy ERP"
+	companyAddress := "–"
+	companyTaxID := "–"
+	companyPhone := "–"
+	companyEmail := "–"
+
+	type CompanySettingsModel struct {
+		Name    string `gorm:"column:name"`
+		TaxID   string `gorm:"column:tax_id"`
+		Address string `gorm:"column:address"`
+		Phone   string `gorm:"column:phone"`
+		Email   string `gorm:"column:email"`
+		LogoURL string `gorm:"column:logo_url"`
+	}
+	var cs CompanySettingsModel
+	companyLogo := ""
+	if err := h.db.WithContext(c.Context()).Table("company_settings").First(&cs).Error; err == nil {
+		if cs.Name != "" {
+			companyName = cs.Name
+		}
+		if cs.Address != "" {
+			companyAddress = cs.Address
+		}
+		if cs.TaxID != "" {
+			companyTaxID = cs.TaxID
+		}
+		if cs.Phone != "" {
+			companyPhone = cs.Phone
+		}
+		if cs.Email != "" {
+			companyEmail = cs.Email
+		}
+		if cs.LogoURL != "" {
+			companyLogo = cs.LogoURL
+		}
+	}
+
+	var customerAddress string
+	var customerTaxID string
+	if q.CustomerID > 0 {
+		var cust domainCustomer.Customer
+		if err := h.db.WithContext(c.Context()).First(&cust, q.CustomerID).Error; err == nil {
+			customerAddress = cust.Address
+			customerTaxID = cust.TaxID
+		}
+	}
+
+	var pdfLines []pdf.QuotationPDFLine
+	for i, l := range q.Lines {
+		pdfLines = append(pdfLines, pdf.QuotationPDFLine{
+			Index:     i + 1,
+			Name:      l.Name,
+			SKU:       l.SKU,
+			Quantity:  l.Quantity,
+			UnitPrice: l.Price,
+			LineTotal: l.Subtotal,
+		})
+	}
+
+	pdfData := pdf.QuotationPDFData{
+		Code:            q.Code,
+		Date:            q.Date,
+		ValidUntil:      q.ValidUntil,
+		LeadSource:      q.LeadSource,
+		CompanyName:     companyName,
+		CompanyAddress:  companyAddress,
+		CompanyTaxID:    companyTaxID,
+		CompanyPhone:    companyPhone,
+		CompanyEmail:    companyEmail,
+		CompanyLogo:     companyLogo,
+		CustomerName:    q.CustomerName,
+		CustomerAddress: customerAddress,
+		CustomerTaxID:   customerTaxID,
+		Lines:           pdfLines,
+		TotalAmount:     q.TotalAmount,
+		VatRate:         7.0,
+		Note:            q.Note,
+		Status:          string(q.Status),
+	}
+
+	pdfBytes, err := pdf.GenerateQuotationPDF(pdfData)
+	if err != nil {
+		return response.InternalServerError(c, "Failed to generate quotation PDF: "+err.Error())
+	}
+
+	filename := fmt.Sprintf("Quotation-%s.pdf", q.Code)
+	c.Set("Content-Type", "application/pdf")
+	c.Set("Content-Disposition", fmt.Sprintf("inline; filename=\"%s\"", filename))
+	return c.Send(pdfBytes)
 }
 
 func (h *WorkspaceHandler) UpdateQuotationStatus(c *fiber.Ctx) error {

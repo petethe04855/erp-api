@@ -174,7 +174,7 @@ func main() {
 	customerHdl := handler.NewCustomerHandler(customerUsecase)
 	orderHdl := handler.NewOrderHandler(orderUsecase)
 	purchasingHdl := handler.NewPurchasingHandler(purchasingUsecase)
-	invoiceHdl := handler.NewInvoiceHandler(invoiceUsecase)
+	invoiceHdl := handler.NewInvoiceHandler(invoiceUsecase, db, settingsUsecase)
 	reportHdl := handler.NewReportHandler(reportUsecase)
 	financeHdl := handler.NewFinanceHandler(financeUsecase)
 	workspaceHdl := handler.NewWorkspaceHandler(db, orderUsecase, quotationUsecase, stockUsecase, skuRepo)
