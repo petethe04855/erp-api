@@ -24,6 +24,7 @@ func (h *FormulaHandler) Create(c *fiber.Ctx) error {
 		Code        string                     `json:"code"`
 		Name        string                     `json:"name"`
 		Description string                     `json:"description"`
+		Image       string                     `json:"image"`
 		IsActive    *bool                      `json:"isActive"`
 		Items       []usecaseFormula.ItemInput `json:"items"`
 	}
@@ -35,6 +36,7 @@ func (h *FormulaHandler) Create(c *fiber.Ctx) error {
 		Code:        req.Code,
 		Name:        req.Name,
 		Description: req.Description,
+		Image:       req.Image,
 		IsActive:    req.IsActive,
 		Items:       req.Items,
 	})
@@ -54,6 +56,7 @@ func (h *FormulaHandler) Update(c *fiber.Ctx) error {
 	var req struct {
 		Name        *string                    `json:"name"`
 		Description *string                    `json:"description"`
+		Image       *string                    `json:"image"`
 		IsActive    *bool                      `json:"isActive"`
 		Items       []usecaseFormula.ItemInput `json:"items"`
 	}
@@ -64,6 +67,7 @@ func (h *FormulaHandler) Update(c *fiber.Ctx) error {
 	result, err := h.usecase.Update(c.Context(), code, usecaseFormula.UpdateFormulaInput{
 		Name:        req.Name,
 		Description: req.Description,
+		Image:       req.Image,
 		IsActive:    req.IsActive,
 		Items:       req.Items,
 	})

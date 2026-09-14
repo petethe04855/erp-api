@@ -232,6 +232,11 @@ func (m *mockStockRepo) FindAll(ctx context.Context, query domainStock.Query) ([
 	return nil, 0, nil
 }
 
+func (m *mockStockRepo) FindAllBySKU(ctx context.Context, query domainStock.StockBySKUQuery) ([]domainStock.StockBySKU, int64, error) {
+	return nil, 0, nil
+}
+
+
 func (m *mockStockRepo) UpdateQuantity(ctx context.Context, skuID, whID uint, delta int) (*domainStock.Stock, error) {
 	k := m.key(skuID, whID)
 	stk, ok := m.stocks[k]

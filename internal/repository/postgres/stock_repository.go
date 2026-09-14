@@ -85,6 +85,66 @@ func (r *StockRepository) FindAll(ctx context.Context, q stock.Query) ([]stock.S
 	return items, total, nil
 }
 
+func (r *StockRepository) FindAllBySKU(ctx context.Context, q stock.StockBySKUQuery) ([]stock.StockBySKU, int64, error) {
+	type AggregateResult struct {
+		SKUID          uint   `gorm:"column:sku_id"`
+		SKUCode        string `gorm:"column:sku_code"`
+		Quantity       int    `gorm:"column:quantity"`
+		ReservedQty    int    `gorm:"column:reserved_qty"`
+		AvailableQty   int    `gorm:"column:available_qty"`
+		WarehouseCount int    `gorm:"column:warehouse_count"`
+	}
+
+	db := r.getDB(ctx)
+	tx := db.Table("stocks").
+		Select("stocks.sku_id, stocks.sku_code, COALESCE(SUM(stocks.quantity), 0) AS quantity, COALESCE(SUM(stocks.reserved_qty), 0) AS reserved_qty, COALESCE(SUM(stocks.available_qty), 0) AS available_qty, COUNT(DISTINCT stocks.warehouse_id) AS warehouse_count").
+		Joins("JOIN skus ON skus.id = stocks.sku_id").
+		Where("skus.status = 'active'")
+
+	if q.Search != "" {
+		s := "%" + q.Search + "%"
+		tx = tx.Where("stocks.sku_code ILIKE ? OR skus.name ILIKE ?", s, s)
+	}
+
+	tx = tx.Group("stocks.sku_id, stocks.sku_code")
+
+	// Count total aggregated SKU groups
+	var total int64
+	countTx := db.Table("(?) as agg", tx).Count(&total)
+	if countTx.Error != nil {
+		return nil, 0, countTx.Error
+	}
+
+	queryTx := tx.Order("stocks.sku_code ASC")
+	if q.Limit > 0 {
+		offset := (q.Page - 1) * q.Limit
+		if offset < 0 {
+			offset = 0
+		}
+		queryTx = queryTx.Offset(offset).Limit(q.Limit)
+	}
+
+	var rawResults []AggregateResult
+	if err := queryTx.Scan(&rawResults).Error; err != nil {
+		return nil, 0, err
+	}
+
+	results := make([]stock.StockBySKU, len(rawResults))
+	for i, rItem := range rawResults {
+		results[i] = stock.StockBySKU{
+			SKUID:          rItem.SKUID,
+			SKUCode:        rItem.SKUCode,
+			Quantity:       rItem.Quantity,
+			ReservedQty:    rItem.ReservedQty,
+			AvailableQty:   rItem.AvailableQty,
+			WarehouseCount: rItem.WarehouseCount,
+		}
+	}
+
+	return results, total, nil
+}
+
+
 func (r *StockRepository) UpdateQuantity(ctx context.Context, skuID, warehouseID uint, delta int) (*stock.Stock, error) {
 	var item stock.Stock
 

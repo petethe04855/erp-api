@@ -34,10 +34,11 @@ func (h *SKUHandler) Create(c *fiber.Ctx) error {
 		Name:      req.Name,
 		Barcode:   req.Barcode,
 		Category:  req.Category,
-		Price:     req.Price,
-		CostPrice: req.CostPrice,
-		IsBundle:  false,
-		Image:     req.Image,
+		Price:           req.Price,
+		CostPrice:       req.CostPrice,
+		IsBundle:        false,
+		Image:           req.Image,
+		InitialQuantity: req.InitialQuantity,
 	})
 	if err != nil {
 		return err

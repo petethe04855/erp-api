@@ -29,14 +29,18 @@ func (r *FormulaRepository) Create(ctx context.Context, formula *domainFormula.I
 func (r *FormulaRepository) Update(ctx context.Context, formula *domainFormula.InventoryFormula) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Update header
+		updates := map[string]interface{}{
+			"name":        formula.Name,
+			"description": formula.Description,
+			"is_active":   formula.IsActive,
+			"updated_at":  formula.UpdatedAt,
+		}
+		if formula.Image != "" || formula.Image == "" {
+			updates["image"] = formula.Image
+		}
 		if err := tx.Model(&domainFormula.InventoryFormula{}).
 			Where("code = ?", formula.Code).
-			Updates(map[string]interface{}{
-				"name":        formula.Name,
-				"description": formula.Description,
-				"is_active":   formula.IsActive,
-				"updated_at":  formula.UpdatedAt,
-			}).Error; err != nil {
+			Updates(updates).Error; err != nil {
 			return err
 		}
 

@@ -21,6 +21,7 @@ import (
 	domainOrder "chawy-erp-api/internal/domain/order"
 	domainPurchasing "chawy-erp-api/internal/domain/purchasing"
 	domainQuotation "chawy-erp-api/internal/domain/quotation"
+	domainSalesReturn "chawy-erp-api/internal/domain/salesreturn"
 	domainSettings "chawy-erp-api/internal/domain/settings"
 	domainSKU "chawy-erp-api/internal/domain/sku"
 	domainStock "chawy-erp-api/internal/domain/stock"
@@ -37,6 +38,7 @@ import (
 	usecasePurchasing "chawy-erp-api/internal/usecase/purchasing"
 	usecaseQuotation "chawy-erp-api/internal/usecase/quotation"
 	usecaseReport "chawy-erp-api/internal/usecase/report"
+	usecaseSalesReturn "chawy-erp-api/internal/usecase/salesreturn"
 	usecaseSettings "chawy-erp-api/internal/usecase/settings"
 	usecaseSKU "chawy-erp-api/internal/usecase/sku"
 	usecaseStock "chawy-erp-api/internal/usecase/stock"
@@ -106,6 +108,8 @@ func main() {
 		&domainLive.ContentItem{},
 		&domainFormula.InventoryFormula{},
 		&domainFormula.InventoryFormulaItem{},
+		&domainSalesReturn.SalesReturn{},
+		&domainSalesReturn.SalesReturnLine{},
 	); err != nil {
 		// Fail-closed: running on an incompatible schema causes partial data
 		// failures at runtime; it is safer to refuse to start.
@@ -159,12 +163,13 @@ func main() {
 	invoiceRepo := postgres.NewInvoiceRepository(db)
 	tiktokRepo := postgres.NewTikTokRepository(db)
 	settingsRepo := postgres.NewSettingsRepository(db)
+	salesReturnRepo := postgres.NewSalesReturnRepository(db)
 
 	// 5. Dependency Injection - Usecases
 	txManager := database.NewTxManager(db)
 
 	authUsecase := usecaseAuth.NewAuthUsecase(authRepo, cfg.JWTSecret, cfg.JWTExpHours)
-	skuUsecase := usecaseSKU.NewSKUUsecase(skuRepo)
+	skuUsecase := usecaseSKU.NewSKUUsecaseWithStock(skuRepo, stockRepo)
 	bundleUsecase := usecaseBundle.NewBundleUsecase(bundleRepo, skuRepo, stockRepo)
 	formulaUsecase := usecaseFormula.NewFormulaUsecase(formulaRepo, skuRepo, stockRepo)
 	stockUsecase := usecaseStock.NewStockUsecaseWithTx(stockRepo, txManager)
@@ -181,6 +186,7 @@ func main() {
 	quotationUsecase := usecaseQuotation.NewQuotationUsecaseWithStock(quotationRepo, skuRepo, orderRepo, txManager, stockRepo, bundleRepo)
 	liveRepo := postgres.NewLiveRepository(db)
 	liveUsecase := usecaseLive.NewLiveUsecase(db, liveRepo, settingsRepo, authRepo)
+	salesReturnUsecase := usecaseSalesReturn.NewSalesReturnUsecase(db, salesReturnRepo, orderRepo, invoiceRepo, skuRepo, stockRepo, formulaRepo, financeUsecase)
 
 	// 6. Dependency Injection - Handlers
 	authHdl := handler.NewAuthHandler(authUsecase)
@@ -199,6 +205,7 @@ func main() {
 	settingsHdl := handler.NewSettingsHandler(settingsUsecase)
 	uploadHdl := handler.NewUploadHandler()
 	liveHdl := handler.NewLiveHandler(liveUsecase)
+	salesReturnHdl := handler.NewSalesReturnHandler(salesReturnUsecase)
 
 	// 7. Initialize Fiber App
 	app := fiber.New(fiber.Config{
@@ -224,25 +231,26 @@ func main() {
 
 	// 9. Register Routes
 	route.RegisterRoutes(route.Config{
-		App:               app,
-		AuthHandler:       authHdl,
-		SKUHandler:        skuHdl,
-		BundleHandler:     bundleHdl,
-		FormulaHandler:    formulaHdl,
-		StockHandler:      stockHdl,
-		CustomerHandler:   customerHdl,
-		OrderHandler:      orderHdl,
-		PurchasingHandler: purchasingHdl,
-		InvoiceHandler:    invoiceHdl,
-		ReportHandler:     reportHdl,
-		FinanceHandler:    financeHdl,
-		WorkspaceHandler:  workspaceHdl,
-		TikTokHandler:     tiktokHdl,
-		SettingsHandler:   settingsHdl,
-		UploadHandler:     uploadHdl,
-		LiveHandler:       liveHdl,
-		JWTSecret:         cfg.JWTSecret,
-		UserStatusLoader:  authRepo,
+		App:                app,
+		AuthHandler:        authHdl,
+		SKUHandler:         skuHdl,
+		BundleHandler:      bundleHdl,
+		FormulaHandler:     formulaHdl,
+		StockHandler:       stockHdl,
+		CustomerHandler:    customerHdl,
+		OrderHandler:       orderHdl,
+		PurchasingHandler:  purchasingHdl,
+		InvoiceHandler:     invoiceHdl,
+		ReportHandler:      reportHdl,
+		FinanceHandler:     financeHdl,
+		WorkspaceHandler:   workspaceHdl,
+		TikTokHandler:      tiktokHdl,
+		SettingsHandler:    settingsHdl,
+		UploadHandler:      uploadHdl,
+		LiveHandler:        liveHdl,
+		SalesReturnHandler: salesReturnHdl,
+		JWTSecret:          cfg.JWTSecret,
+		UserStatusLoader:   authRepo,
 	})
 
 	// 9.1 Start Background TikTok Sync Scheduler

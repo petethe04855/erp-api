@@ -7,8 +7,9 @@ type CreateSKURequest struct {
 	Category  string  `json:"category"`
 	Price     float64 `json:"price"`
 	CostPrice float64 `json:"cost_price"`
-	IsBundle  bool    `json:"is_bundle"`
-	Image     string  `json:"image"`
+	IsBundle        bool    `json:"is_bundle"`
+	Image           string  `json:"image"`
+	InitialQuantity int     `json:"initial_quantity"`
 }
 
 // UpdateSKURequest uses pointers so omitted fields keep their stored values

@@ -10,6 +10,7 @@ type InventoryFormula struct {
 	Code        string                 `json:"code" gorm:"size:100;uniqueIndex;not null"`
 	Name        string                 `json:"name" gorm:"size:255;not null"`
 	Description string                 `json:"description" gorm:"size:500"`
+	Image       string                 `json:"image" gorm:"size:500"`
 	IsActive    bool                   `json:"isActive" gorm:"column:is_active;default:true"`
 	Items       []InventoryFormulaItem `json:"items,omitempty" gorm:"foreignKey:FormulaCode;references:Code"`
 	CreatedAt   time.Time              `json:"createdAt"`

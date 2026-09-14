@@ -22,6 +22,7 @@ type CreateFormulaInput struct {
 	Code        string      `json:"code"`
 	Name        string      `json:"name"`
 	Description string      `json:"description"`
+	Image       string      `json:"image"`
 	IsActive    *bool       `json:"isActive"`
 	Items       []ItemInput `json:"items"`
 }
@@ -29,6 +30,7 @@ type CreateFormulaInput struct {
 type UpdateFormulaInput struct {
 	Name        *string     `json:"name"`
 	Description *string     `json:"description"`
+	Image       *string     `json:"image"`
 	IsActive    *bool       `json:"isActive"`
 	Items       []ItemInput `json:"items"`
 }
@@ -46,6 +48,7 @@ type FormulaResponse struct {
 	Code          string                `json:"code"`
 	Name          string                `json:"name"`
 	Description   string                `json:"description"`
+	Image         string                `json:"image"`
 	IsActive      bool                  `json:"isActive"`
 	AvailableSets int                   `json:"availableSets"`
 	Items         []FormulaItemResponse `json:"items"`
@@ -204,6 +207,7 @@ func (u *formulaUsecase) Create(ctx context.Context, in CreateFormulaInput) (*Fo
 		Code:        normCode,
 		Name:        strings.TrimSpace(in.Name),
 		Description: strings.TrimSpace(in.Description),
+		Image:       strings.TrimSpace(in.Image),
 		IsActive:    isActive,
 		Items:       formulaItems,
 		CreatedAt:   time.Now(),
@@ -221,6 +225,7 @@ func (u *formulaUsecase) Create(ctx context.Context, in CreateFormulaInput) (*Fo
 		Code:          formula.Code,
 		Name:          formula.Name,
 		Description:   formula.Description,
+		Image:         formula.Image,
 		IsActive:      formula.IsActive,
 		AvailableSets: availSets,
 		Items:         itemRes,
@@ -244,6 +249,9 @@ func (u *formulaUsecase) Update(ctx context.Context, code string, in UpdateFormu
 	}
 	if in.Description != nil {
 		existing.Description = strings.TrimSpace(*in.Description)
+	}
+	if in.Image != nil {
+		existing.Image = strings.TrimSpace(*in.Image)
 	}
 	if in.IsActive != nil {
 		existing.IsActive = *in.IsActive
@@ -269,6 +277,7 @@ func (u *formulaUsecase) Update(ctx context.Context, code string, in UpdateFormu
 		Code:          existing.Code,
 		Name:          existing.Name,
 		Description:   existing.Description,
+		Image:         existing.Image,
 		IsActive:      existing.IsActive,
 		AvailableSets: availSets,
 		Items:         itemRes,
@@ -311,6 +320,7 @@ func (u *formulaUsecase) ToggleStatus(ctx context.Context, code string, isActive
 		Code:          existing.Code,
 		Name:          existing.Name,
 		Description:   existing.Description,
+		Image:         existing.Image,
 		IsActive:      existing.IsActive,
 		AvailableSets: availSets,
 		Items:         itemRes,
@@ -336,6 +346,7 @@ func (u *formulaUsecase) GetByCode(ctx context.Context, code string) (*FormulaRe
 		Code:          existing.Code,
 		Name:          existing.Name,
 		Description:   existing.Description,
+		Image:         existing.Image,
 		IsActive:      existing.IsActive,
 		AvailableSets: availSets,
 		Items:         itemRes,
@@ -358,6 +369,7 @@ func (u *formulaUsecase) List(ctx context.Context, query domainFormula.Query) ([
 			Code:          f.Code,
 			Name:          f.Name,
 			Description:   f.Description,
+			Image:         f.Image,
 			IsActive:      f.IsActive,
 			AvailableSets: availSets,
 			Items:         itemRes,

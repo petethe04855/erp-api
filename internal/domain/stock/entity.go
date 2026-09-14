@@ -48,15 +48,32 @@ type Query struct {
 	Limit       int
 }
 
+type StockBySKU struct {
+	SKUID          uint   `json:"sku_id"`
+	SKUCode        string `json:"sku_code"`
+	Quantity       int    `json:"quantity"`
+	ReservedQty    int    `json:"reserved_qty"`
+	AvailableQty   int    `json:"available_qty"`
+	WarehouseCount int    `json:"warehouse_count"`
+}
+
+type StockBySKUQuery struct {
+	Search string
+	Page   int
+	Limit  int
+}
+
 type Repository interface {
 	GetBySKUID(ctx context.Context, skuID, warehouseID uint) (*Stock, error)
 	// GetBySKUIDForUpdate locks the stock row (SELECT ... FOR UPDATE) so
 	// availability checks and quantity updates share the same lock.
 	GetBySKUIDForUpdate(ctx context.Context, skuID, warehouseID uint) (*Stock, error)
 	FindAll(ctx context.Context, query Query) ([]Stock, int64, error)
+	FindAllBySKU(ctx context.Context, query StockBySKUQuery) ([]StockBySKU, int64, error)
 	UpdateQuantity(ctx context.Context, skuID, warehouseID uint, delta int) (*Stock, error)
 	ReserveStock(ctx context.Context, skuID, warehouseID uint, qty int) (*Stock, error)
 	ReleaseStock(ctx context.Context, skuID, warehouseID uint, qty int) (*Stock, error)
 	CreateMovement(ctx context.Context, movement *StockMovement) error
 	GetMovements(ctx context.Context, skuID uint, page, limit int) ([]StockMovement, int64, error)
 }
+

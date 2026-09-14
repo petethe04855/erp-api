@@ -73,6 +73,7 @@ type ProductRecord struct {
 	Cost            float64              `json:"cost"`
 	Stock           int                  `json:"stock"`
 	ReservedQty     int                  `json:"reservedQty"`
+	UsedQty         int                  `json:"usedQty"`
 	Reorder         int                  `json:"reorder"`
 	IsBundle        bool                 `json:"isBundle"`
 	IsActive        bool                 `json:"isActive"`
@@ -88,8 +89,10 @@ func (h *WorkspaceHandler) GetProducts(c *fiber.Ctx) error {
 	if page < 1 {
 		page = 1
 	}
-	if limit < 1 || limit > 100 {
-		limit = 50
+	if limit <= 0 {
+		limit = 1000
+	} else if limit > 1000 {
+		limit = 1000
 	}
 	search := strings.TrimSpace(c.Query("search", ""))
 	prodType := strings.TrimSpace(c.Query("type", ""))
@@ -174,6 +177,29 @@ func (h *WorkspaceHandler) GetProducts(c *fiber.Ctx) error {
 	stockMap := make(map[uint]StockSum, len(stockSums))
 	for _, ss := range stockSums {
 		stockMap[ss.SKUID] = ss
+	}
+
+	// 1.1 Batch fetch total used quantity (movement type OUT) for retrieved SKUs
+	type UsedSum struct {
+		SKUID   uint   `gorm:"column:sku_id"`
+		SKUCode string `gorm:"column:sku_code"`
+		Qty     int    `gorm:"column:qty"`
+	}
+	var usedSums []UsedSum
+	_ = h.db.WithContext(c.Context()).Model(&domainStock.StockMovement{}).
+		Select("COALESCE(sku_id, 0) AS sku_id, UPPER(TRIM(sku_code)) AS sku_code, COALESCE(SUM(quantity), 0) AS qty").
+		Where("(sku_id IN ? OR UPPER(TRIM(sku_code)) IN ?) AND type = ?", skuIDs, skuCodes, domainStock.MovementOut).
+		Group("sku_id, UPPER(TRIM(sku_code))").
+		Scan(&usedSums).Error
+	usedMap := make(map[uint]int)
+	usedCodeMap := make(map[string]int)
+	for _, us := range usedSums {
+		if us.SKUID > 0 {
+			usedMap[us.SKUID] += us.Qty
+		}
+		if us.SKUCode != "" {
+			usedCodeMap[us.SKUCode] += us.Qty
+		}
 	}
 
 	// 2. Batch fetch TikTok SKU mappings for candidate SKU sets
@@ -352,6 +378,11 @@ func (h *WorkspaceHandler) GetProducts(c *fiber.Ctx) error {
 			}
 		}
 
+		usedTotal := usedMap[s.ID]
+		if alt, ok := usedCodeMap[sCode]; ok && alt > usedTotal {
+			usedTotal = alt
+		}
+
 		records[i] = ProductRecord{
 			ID:              s.ID,
 			SKU:             s.SKU,
@@ -364,6 +395,7 @@ func (h *WorkspaceHandler) GetProducts(c *fiber.Ctx) error {
 			Cost:            s.CostPrice,
 			Stock:           stk.Quantity,
 			ReservedQty:     totalReserved,
+			UsedQty:         usedTotal,
 			Reorder:         s.ReorderPoint,
 			IsBundle:        s.IsBundle,
 			IsActive:        s.Status == "active",
@@ -475,6 +507,12 @@ func (h *WorkspaceHandler) GetProductByCode(c *fiber.Ctx) error {
 		}
 	}
 
+	var usedQty int64
+	_ = h.db.WithContext(c.Context()).Model(&domainStock.StockMovement{}).
+		Where("(sku_id = ? OR UPPER(TRIM(sku_code)) = ?) AND type = ?", s.ID, skuUpper, domainStock.MovementOut).
+		Select("COALESCE(SUM(quantity), 0)").
+		Scan(&usedQty).Error
+
 	rec := ProductRecord{
 		ID:              s.ID,
 		SKU:             s.SKU,
@@ -487,6 +525,7 @@ func (h *WorkspaceHandler) GetProductByCode(c *fiber.Ctx) error {
 		Cost:            s.CostPrice,
 		Stock:           stk.Quantity,
 		ReservedQty:     totalReserved,
+		UsedQty:         int(usedQty),
 		Reorder:         s.ReorderPoint,
 		IsBundle:        s.IsBundle,
 		IsActive:        s.Status == "active",
@@ -506,8 +545,10 @@ func (h *WorkspaceHandler) CreateProduct(c *fiber.Ctx) error {
 		BaseUnit    string  `json:"baseUnit"`
 		RetailPrice float64 `json:"retailPrice"`
 		Cost        float64 `json:"cost"`
-		IsBundle    bool    `json:"isBundle"`
-		Image       string  `json:"image"`
+		IsBundle        bool    `json:"isBundle"`
+		Image           string  `json:"image"`
+		InitialQuantity int     `json:"initialQuantity"`
+		Stock           int     `json:"stock"`
 		Components  []struct {
 			ComponentSKU string `json:"componentSku"`
 			SKU          string `json:"sku"`
@@ -594,17 +635,45 @@ func (h *WorkspaceHandler) CreateProduct(c *fiber.Ctx) error {
 			return err
 		}
 
+		// Determine initial stock
+		initQty := req.InitialQuantity
+		if initQty <= 0 && req.Stock > 0 {
+			initQty = req.Stock
+		}
+		if initQty < 0 {
+			initQty = 0
+		}
+
 		// Create initial stock row
 		stockEntity := domainStock.Stock{
 			SKUID:        skuEntity.ID,
 			SKUCode:      skuEntity.SKU,
 			WarehouseID:  1,
-			Quantity:     0,
-			AvailableQty: 0,
+			Quantity:     initQty,
+			AvailableQty: initQty,
 			UpdatedAt:    time.Now(),
 		}
 		if err := tx.Create(&stockEntity).Error; err != nil {
 			return err
+		}
+
+		if initQty > 0 {
+			movement := domainStock.StockMovement{
+				SKUID:         skuEntity.ID,
+				SKUCode:       skuEntity.SKU,
+				WarehouseID:   1,
+				Type:          domainStock.MovementIn,
+				Quantity:      initQty,
+				BeforeQty:     0,
+				AfterQty:      initQty,
+				ReferenceType: "opening_stock",
+				ReferenceID:   skuEntity.SKU,
+				Note:          "Initial stock on SKU creation",
+				CreatedAt:     time.Now(),
+			}
+			if err := tx.Create(&movement).Error; err != nil {
+				return err
+			}
 		}
 
 		if req.IsBundle {
@@ -2827,23 +2896,36 @@ func (h *WorkspaceHandler) CreateGoodsReceive(c *fiber.Ctx) error {
 				if qc == "" {
 					qc = "Accepted"
 				}
+				expiry := strings.TrimSpace(it.ExpiryDate)
+				if expiry == "" {
+					if parsedDate, err := time.Parse("2006-01-02", receiveDate); err == nil {
+						expiry = parsedDate.AddDate(1, 6, 0).Format("2006-01-02")
+					} else {
+						expiry = time.Now().AddDate(1, 6, 0).Format("2006-01-02")
+					}
+				}
 				itemsToReceive = append(itemsToReceive, receiveItem{
 					SKU:         strings.ToUpper(strings.TrimSpace(it.SKU)),
 					Quantity:    qty,
 					SupplierLot: it.SupplierLot,
-					ExpiryDate:  it.ExpiryDate,
+					ExpiryDate:  expiry,
 					QCStatus:    qc,
 				})
 			}
 		}
 	} else if hasPO {
+		defaultExpiry := time.Now().AddDate(1, 6, 0).Format("2006-01-02")
+		if parsedDate, err := time.Parse("2006-01-02", receiveDate); err == nil {
+			defaultExpiry = parsedDate.AddDate(1, 6, 0).Format("2006-01-02")
+		}
 		for _, it := range po.Items {
 			remaining := it.Quantity - it.ReceivedQty
 			if remaining > 0 {
 				itemsToReceive = append(itemsToReceive, receiveItem{
-					SKU:      strings.ToUpper(strings.TrimSpace(it.SKU)),
-					Quantity: remaining,
-					QCStatus: "Accepted",
+					SKU:        strings.ToUpper(strings.TrimSpace(it.SKU)),
+					Quantity:   remaining,
+					ExpiryDate: defaultExpiry,
+					QCStatus:   "Accepted",
 				})
 			}
 		}

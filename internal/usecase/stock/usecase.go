@@ -25,6 +25,7 @@ type AdjustInput struct {
 type Usecase interface {
 	GetStock(ctx context.Context, skuID, warehouseID uint) (*domainStock.Stock, error)
 	ListStock(ctx context.Context, query domainStock.Query) ([]domainStock.Stock, int64, error)
+	ListStockBySKU(ctx context.Context, query domainStock.StockBySKUQuery) ([]domainStock.StockBySKU, int64, error)
 	AdjustStock(ctx context.Context, input AdjustInput) (*domainStock.Stock, error)
 	// AdjustBySKU applies multi-line physical-count adjustments keyed by SKU
 	// code (skuRepo resolves codes; wired separately to avoid an import cycle).
@@ -74,6 +75,18 @@ func (u *stockUsecase) ListStock(ctx context.Context, query domainStock.Query) (
 		query.Limit = 20
 	}
 	return u.repo.FindAll(ctx, query)
+}
+
+func (u *stockUsecase) ListStockBySKU(ctx context.Context, query domainStock.StockBySKUQuery) ([]domainStock.StockBySKU, int64, error) {
+	if query.Page <= 0 {
+		query.Page = 1
+	}
+	// Note: if limit is <= 0, FindAllBySKU fetches without pagination limit (e.g. for complete dropdowns),
+	// or up to a maximum safety threshold if requested.
+	if query.Limit > 1000 {
+		query.Limit = 1000
+	}
+	return u.repo.FindAllBySKU(ctx, query)
 }
 
 func (u *stockUsecase) AdjustStock(ctx context.Context, input AdjustInput) (*domainStock.Stock, error) {

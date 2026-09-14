@@ -25,6 +25,7 @@ type Config struct {
 	SettingsHandler   *handler.SettingsHandler
 	UploadHandler     *handler.UploadHandler
 	LiveHandler       *handler.LiveHandler
+	SalesReturnHandler *handler.SalesReturnHandler
 	JWTSecret         string
 	UserStatusLoader  middleware.UserStatusLoader
 }
@@ -119,6 +120,23 @@ func RegisterRoutes(cfg Config) {
 	orders.Get("/:id", cfg.OrderHandler.GetByID)
 	orders.Post("/:id/ship", middleware.RequireRole("owner", "warehouse", "sales"), cfg.OrderHandler.Ship)
 	orders.Post("/:id/cancel", middleware.RequireRole("owner", "sales"), cfg.OrderHandler.Cancel)
+	if cfg.SalesReturnHandler != nil {
+		orders.Get("/:id/returnable", cfg.SalesReturnHandler.GetOrderReturnable)
+	}
+
+	// Sales Return Routes
+	if cfg.SalesReturnHandler != nil {
+		returns := protected.Group("/returns")
+		returns.Get("/", cfg.SalesReturnHandler.List)
+		returns.Post("/", middleware.RequireRole("owner", "sales"), cfg.SalesReturnHandler.Create)
+		returns.Get("/:id", cfg.SalesReturnHandler.GetByID)
+		returns.Put("/:id", middleware.RequireRole("owner", "sales"), cfg.SalesReturnHandler.Update)
+		returns.Post("/:id/submit", middleware.RequireRole("owner", "sales"), cfg.SalesReturnHandler.Submit)
+		returns.Post("/:id/approve", middleware.RequireRole("owner"), cfg.SalesReturnHandler.Approve)
+		returns.Post("/:id/reject", middleware.RequireRole("owner"), cfg.SalesReturnHandler.Reject)
+		returns.Post("/:id/complete", middleware.RequireRole("owner", "warehouse"), cfg.SalesReturnHandler.Complete)
+		returns.Post("/:id/cancel", middleware.RequireRole("owner", "sales"), cfg.SalesReturnHandler.Cancel)
+	}
 
 	// Purchasing & Supplier Routes
 	suppliers := protected.Group("/suppliers")

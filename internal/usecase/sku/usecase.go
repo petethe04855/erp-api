@@ -2,20 +2,23 @@ package sku
 
 import (
 	"context"
+	"time"
 
 	domainSKU "chawy-erp-api/internal/domain/sku"
+	domainStock "chawy-erp-api/internal/domain/stock"
 	appErrors "chawy-erp-api/pkg/errors"
 )
 
 type CreateInput struct {
-	SKU       string
-	Name      string
-	Barcode   string
-	Category  string
-	Price     float64
-	CostPrice float64
-	IsBundle  bool
-	Image     string
+	SKU             string
+	Name            string
+	Barcode         string
+	Category        string
+	Price           float64
+	CostPrice       float64
+	IsBundle        bool
+	Image           string
+	InitialQuantity int
 }
 
 // UpdateInput uses pointer fields so an update only touches what the caller
@@ -41,11 +44,16 @@ type Usecase interface {
 }
 
 type skuUsecase struct {
-	repo domainSKU.Repository
+	repo      domainSKU.Repository
+	stockRepo domainStock.Repository
 }
 
 func NewSKUUsecase(repo domainSKU.Repository) Usecase {
 	return &skuUsecase{repo: repo}
+}
+
+func NewSKUUsecaseWithStock(repo domainSKU.Repository, stockRepo domainStock.Repository) Usecase {
+	return &skuUsecase{repo: repo, stockRepo: stockRepo}
 }
 
 func (u *skuUsecase) Create(ctx context.Context, input CreateInput) (*domainSKU.SKU, error) {
@@ -71,6 +79,33 @@ func (u *skuUsecase) Create(ctx context.Context, input CreateInput) (*domainSKU.
 
 	if err := u.repo.Create(ctx, item); err != nil {
 		return nil, err
+	}
+
+	// Initialize stock and record opening stock movement if stockRepo is configured
+	if u.stockRepo != nil {
+		initQty := input.InitialQuantity
+		if initQty < 0 {
+			initQty = 0
+		}
+		if initQty > 0 {
+			_, _ = u.stockRepo.UpdateQuantity(ctx, item.ID, 1, initQty)
+			_ = u.stockRepo.CreateMovement(ctx, &domainStock.StockMovement{
+				SKUID:         item.ID,
+				SKUCode:       item.SKU,
+				WarehouseID:   1,
+				Type:          domainStock.MovementIn,
+				Quantity:      initQty,
+				BeforeQty:     0,
+				AfterQty:      initQty,
+				ReferenceType: "opening_stock",
+				ReferenceID:   item.SKU,
+				Note:          "Initial stock on SKU creation",
+				CreatedAt:     time.Now(),
+			})
+		} else {
+			// Create row with 0 quantity
+			_, _ = u.stockRepo.UpdateQuantity(ctx, item.ID, 1, 0)
+		}
 	}
 
 	return item, nil

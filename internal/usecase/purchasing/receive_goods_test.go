@@ -132,6 +132,11 @@ func (f *fakeStockRepoP) GetBySKUIDForUpdate(ctx context.Context, skuID, whID ui
 func (f *fakeStockRepoP) FindAll(ctx context.Context, q domainStock.Query) ([]domainStock.Stock, int64, error) {
 	return nil, 0, nil
 }
+
+func (f *fakeStockRepoP) FindAllBySKU(ctx context.Context, q domainStock.StockBySKUQuery) ([]domainStock.StockBySKU, int64, error) {
+	return nil, 0, nil
+}
+
 func (f *fakeStockRepoP) UpdateQuantity(ctx context.Context, skuID, whID uint, delta int) (*domainStock.Stock, error) {
 	s, ok := f.stocks[skuID]
 	if !ok {

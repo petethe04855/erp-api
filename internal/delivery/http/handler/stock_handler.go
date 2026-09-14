@@ -36,6 +36,36 @@ func (h *StockHandler) GetStock(c *fiber.Ctx) error {
 }
 
 func (h *StockHandler) ListStock(c *fiber.Ctx) error {
+	view := c.Query("view")
+	if view == "by-sku" {
+		page, _ := strconv.Atoi(c.Query("page", "1"))
+		limit, _ := strconv.Atoi(c.Query("limit", "0"))
+		search := c.Query("search")
+
+		items, total, err := h.usecase.ListStockBySKU(c.Context(), domainStock.StockBySKUQuery{
+			Search: search,
+			Page:   page,
+			Limit:  limit,
+		})
+		if err != nil {
+			return err
+		}
+
+		responses := make([]dto.StockBySKUResponse, len(items))
+		for i, item := range items {
+			responses[i] = dto.StockBySKUResponse{
+				SKUID:          item.SKUID,
+				SKUCode:        item.SKUCode,
+				Quantity:       item.Quantity,
+				ReservedQty:    item.ReservedQty,
+				AvailableQty:   item.AvailableQty,
+				WarehouseCount: item.WarehouseCount,
+			}
+		}
+
+		return response.List(c, responses, page, limit, total)
+	}
+
 	page, _ := strconv.Atoi(c.Query("page", "1"))
 	limit, _ := strconv.Atoi(c.Query("limit", "20"))
 	skuID, _ := strconv.ParseUint(c.Query("skuId", "0"), 10, 32)
@@ -58,6 +88,7 @@ func (h *StockHandler) ListStock(c *fiber.Ctx) error {
 
 	return response.List(c, responses, page, limit, total)
 }
+
 
 func (h *StockHandler) Adjust(c *fiber.Ctx) error {
 	var req dto.AdjustStockRequest

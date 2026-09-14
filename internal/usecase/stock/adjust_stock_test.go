@@ -44,6 +44,11 @@ func (f *fakeStockRepo) FindAll(ctx context.Context, q domainStock.Query) ([]dom
 	return nil, 0, nil
 }
 
+func (f *fakeStockRepo) FindAllBySKU(ctx context.Context, q domainStock.StockBySKUQuery) ([]domainStock.StockBySKU, int64, error) {
+	return nil, 0, nil
+}
+
+
 func (f *fakeStockRepo) UpdateQuantity(ctx context.Context, skuID, warehouseID uint, delta int) (*domainStock.Stock, error) {
 	s, ok := f.stocks[warehouseID]
 	if !ok {
@@ -222,3 +227,18 @@ func TestAdjustStock_ValidAdjustSucceeds(t *testing.T) {
 	assert.Equal(t, 0, updated.AvailableQty)
 	assert.Equal(t, 1, len(repo.movements))
 }
+
+
+func TestListStockBySKU(t *testing.T) {
+	repo := newFakeStockRepo(nil)
+	repo.stocks[1] = &domainStock.Stock{SKUID: 1, SKUCode: "SKU-01", WarehouseID: 1, Quantity: 10, AvailableQty: 10}
+
+	uc := usecaseStock.NewStockUsecase(repo)
+	items, total, err := uc.ListStockBySKU(context.Background(), domainStock.StockBySKUQuery{
+		Limit: 20,
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, int64(0), total)
+	assert.Nil(t, items)
+}
+

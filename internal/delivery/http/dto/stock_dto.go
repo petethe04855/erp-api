@@ -20,3 +20,13 @@ type StockResponse struct {
 	ReservedQty  int    `json:"reserved_qty"`
 	AvailableQty int    `json:"available_qty"`
 }
+
+type StockBySKUResponse struct {
+	SKUID          uint   `json:"sku_id"`
+	SKUCode        string `json:"sku_code"`
+	Quantity       int    `json:"quantity"`
+	ReservedQty    int    `json:"reserved_qty"`
+	AvailableQty   int    `json:"available_qty"`
+	WarehouseCount int    `json:"warehouse_count"`
+}
+
