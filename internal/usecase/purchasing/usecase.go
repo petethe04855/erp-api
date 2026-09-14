@@ -160,7 +160,7 @@ func (u *purchasingUsecase) CreatePO(ctx context.Context, in CreatePOInput) (*do
 		return nil, fmt.Errorf("purchase order must have at least one item")
 	}
 
-	poNo := fmt.Sprintf("PO-%s-%04d", time.Now().Format("20060102"), time.Now().UnixNano()%10000)
+	poNo := fmt.Sprintf("PO-%s-%04d", time.Now().Format("2006/01/02"), time.Now().UnixNano()%10000)
 	var totalCost float64
 	var items []domainPurchasing.POItem
 
@@ -271,7 +271,7 @@ func (u *purchasingUsecase) ReceiveGoods(ctx context.Context, in ReceiveGoodsInp
 			return appErrors.NewAppError("PO_CANCELLED", "cannot receive goods for a cancelled purchase order", 400)
 		}
 
-		grCode := fmt.Sprintf("GR-%s", time.Now().Format("20060102150405"))
+		grCode := fmt.Sprintf("GR-%s-%04d", time.Now().Format("2006/01/02"), time.Now().UnixNano()%10000)
 		gr := &domainPurchasing.GoodsReceive{
 			Code:         grCode,
 			POID:         &po.ID,

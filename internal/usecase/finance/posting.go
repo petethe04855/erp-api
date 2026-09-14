@@ -72,8 +72,8 @@ func (u *financeUsecase) PostJournal(ctx context.Context, req PostingRequest) (*
 		dateStr = time.Now().Format("2006-01-02")
 	}
 
-	// Generate code JE-YYYY-XXXX
-	code := fmt.Sprintf("JE-%s-%04d", time.Now().Format("2006"), time.Now().UnixNano()%10000)
+	// Generate code JE-YYYY/MM/DD-XXXX
+	code := fmt.Sprintf("JE-%s-%04d", time.Now().Format("2006/01/02"), time.Now().UnixNano()%10000)
 
 	entry := &domainFinance.JournalEntry{
 		Code:        code,

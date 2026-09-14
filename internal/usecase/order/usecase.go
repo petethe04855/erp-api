@@ -114,7 +114,7 @@ func (u *orderUsecase) Create(ctx context.Context, in CreateOrderInput) (*domain
 		return nil, appErrors.NewAppError("EMPTY_ORDER", "Order must contain at least one item", 400)
 	}
 
-	orderNo := fmt.Sprintf("SO-%s-%04d", time.Now().Format("20060102"), time.Now().UnixNano()%10000)
+	orderNo := fmt.Sprintf("SO-%s-%04d", time.Now().Format("2006/01/02"), time.Now().UnixNano()%10000)
 
 	var totalAmount float64
 	var items []domainOrder.OrderItem
@@ -443,7 +443,7 @@ func (u *orderUsecase) ShipOrder(ctx context.Context, id uint, warehouseID uint)
 				invAccountName = "สินค้าคงเหลือ (Inventory)"
 			}
 
-			jeCode := fmt.Sprintf("JE-%s-%04d", time.Now().Format("2006"), time.Now().UnixNano()%10000)
+			jeCode := fmt.Sprintf("JE-%s-%04d", time.Now().Format("2006/01/02"), time.Now().UnixNano()%10000)
 			journal := domainFinance.JournalEntry{
 				Code:        jeCode,
 				Date:        time.Now().Format("2006-01-02"),

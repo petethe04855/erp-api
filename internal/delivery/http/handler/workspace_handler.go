@@ -2275,7 +2275,7 @@ func (h *WorkspaceHandler) CreatePurchaseOrder(c *fiber.Ctx) error {
 		}
 	}
 
-	poNo := fmt.Sprintf("PO-%s-%04d", time.Now().Format("2006"), time.Now().Unix()%10000)
+	poNo := fmt.Sprintf("PO-%s-%04d", time.Now().Format("2006/01/02"), time.Now().Unix()%10000)
 	var total float64
 	poItems := make([]domainPurchasing.POItem, len(req.Items))
 	for i, it := range req.Items {
@@ -3047,7 +3047,7 @@ func (h *WorkspaceHandler) CreateGoodsReceive(c *fiber.Ctx) error {
 			po = lockedPO
 		}
 
-		grCode := fmt.Sprintf("GR-%s", time.Now().Format("20060102150405"))
+		grCode := fmt.Sprintf("GR-%s-%04d", time.Now().Format("2006/01/02"), time.Now().UnixNano()%10000)
 		createdGR = domainPurchasing.GoodsReceive{
 			Code:         grCode,
 			POID:         poIDPtr,
@@ -3232,7 +3232,7 @@ func (h *WorkspaceHandler) GetGoodsIssues(c *fiber.Ctx) error {
 	for i, m := range movements {
 		records[i] = IssueRecord{
 			ID:       m.ID,
-			Code:     fmt.Sprintf("GI-%04d", m.ID),
+			Code:     fmt.Sprintf("GI-%s-%04d", m.CreatedAt.Format("2006/01/02"), m.ID),
 			SKU:      m.SKUCode,
 			SKUName:  m.SKUCode,
 			Qty:      m.Quantity,
@@ -3341,7 +3341,7 @@ func (h *WorkspaceHandler) CreateGoodsIssue(c *fiber.Ctx) error {
 
 	return response.Created(c, IssueRecord{
 		ID:       movement.ID,
-		Code:     fmt.Sprintf("GI-%04d", movement.ID),
+		Code:     fmt.Sprintf("GI-%s-%04d", movement.CreatedAt.Format("2006/01/02"), movement.ID),
 		SKU:      movement.SKUCode,
 		SKUName:  movement.SKUCode,
 		Qty:      movement.Quantity,

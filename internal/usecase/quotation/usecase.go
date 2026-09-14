@@ -167,7 +167,7 @@ func (u *quotationUsecase) Create(ctx context.Context, input CreateInput) (*doma
 	} else {
 		rndVal = rnd.Int64()
 	}
-	code := fmt.Sprintf("QT-%s-%09d-%08d", now.Format("20060102"), now.UnixNano()%1000000000, rndVal)
+	code := fmt.Sprintf("QT-%s-%09d-%08d", now.Format("2006/01/02"), now.UnixNano()%1000000000, rndVal)
 
 	q := &domainQuotation.Quotation{
 		Code:         code,

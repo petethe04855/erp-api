@@ -66,7 +66,7 @@ func (u *invoiceUsecase) CreateFromOrder(ctx context.Context, in CreateInvoiceFr
 		return existing, nil
 	}
 
-	invNo := fmt.Sprintf("INV-%s-%04d", time.Now().Format("20060102"), time.Now().UnixNano()%10000)
+	invNo := fmt.Sprintf("INV-%s-%04d", time.Now().Format("2006/01/02"), time.Now().UnixNano()%10000)
 	dueDate := time.Now().AddDate(0, 0, 30)
 
 	inv := &domainInvoice.Invoice{

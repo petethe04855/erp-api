@@ -214,7 +214,7 @@ func (u *salesReturnUsecase) Create(ctx context.Context, in CreateReturnInput) (
 		}
 	}
 
-	returnNo := fmt.Sprintf("RT-%s-%04d", time.Now().Format("2006"), time.Now().UnixNano()%10000)
+	returnNo := fmt.Sprintf("RT-%s-%04d", time.Now().Format("2006/01/02"), time.Now().UnixNano()%10000)
 
 	var subtotal float64
 	var totalQty int
