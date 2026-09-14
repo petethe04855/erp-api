@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"chawy-erp-api/config"
@@ -75,6 +76,7 @@ func main() {
 		&domainSKU.SKUAccessory{},
 		&domainBundle.BundleItem{},
 		&domainStock.Stock{},
+		&domainStock.StockLot{},
 		&domainStock.StockMovement{},
 		&domainCustomer.Customer{},
 		&domainOrder.Order{},
@@ -219,11 +221,18 @@ func main() {
 	app.Use(logger.New(logger.Config{
 		Format: "[${time}] ${status} - ${latency} ${method} ${path}\n",
 	}))
+	allowedOrigins := cfg.AllowedOrigins
+	if allowedOrigins == "" {
+		allowedOrigins = "http://localhost:3000,http://localhost:3001,http://localhost:8082,http://127.0.0.1:8082,http://127.0.0.1:3000,http://127.0.0.1:3001"
+	} else if !strings.Contains(allowedOrigins, "8082") {
+		allowedOrigins += ",http://localhost:8082,http://127.0.0.1:8082"
+	}
+
 	app.Use(cors.New(cors.Config{
-		AllowOrigins:     "*",
-		AllowHeaders:     "Origin, Content-Type, Accept, Authorization",
-		AllowMethods:     "GET, POST, PUT, DELETE, OPTIONS",
-		AllowCredentials: false,
+		AllowOrigins:     allowedOrigins,
+		AllowHeaders:     "Origin, Content-Type, Accept, Authorization, X-Requested-With, Cache-Control, Pragma",
+		AllowMethods:     "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+		AllowCredentials: true,
 	}))
 
 	// Serve uploaded files statically

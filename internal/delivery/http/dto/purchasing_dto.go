@@ -21,6 +21,16 @@ type CreatePORequest struct {
 	Items      []CreatePOItemDTO `json:"items"`
 }
 
-type ReceiveGoodsRequest struct {
-	WarehouseID uint `json:"warehouse_id"`
+type ReceiveGoodsItemDTO struct {
+	SKU         string `json:"sku"`
+	Quantity    int    `json:"quantity"`
+	LotNumber   string `json:"lot_number"`
+	SupplierLot string `json:"supplier_lot"`
+	ExpiryDate  string `json:"expiry_date"`
 }
+
+type ReceiveGoodsRequest struct {
+	WarehouseID uint                  `json:"warehouse_id"`
+	Items       []ReceiveGoodsItemDTO `json:"items"`
+}
+

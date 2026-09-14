@@ -144,6 +144,7 @@ type Repository interface {
 	FindByReturnNo(ctx context.Context, returnNo string) (*SalesReturn, error)
 	FindAll(ctx context.Context, query Query) ([]SalesReturn, int64, error)
 	Update(ctx context.Context, ret *SalesReturn) error
+	UpdateLines(ctx context.Context, lines []SalesReturnLine) error
 	DeleteLines(ctx context.Context, returnID uint) error
 	CreateLines(ctx context.Context, lines []SalesReturnLine) error
 	CountReturnedQtyByOrderAndSKU(ctx context.Context, orderID uint, excludeReturnID uint) (map[string]int, error)

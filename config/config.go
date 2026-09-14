@@ -10,17 +10,18 @@ import (
 )
 
 type Config struct {
-	Port        string
-	Environment string
-	DBHost      string
-	DBPort      string
-	DBUser      string
-	DBPassword  string
-	DBName      string
-	DBSSLMode   string
-	DatabaseURL string
-	JWTSecret   string
-	JWTExpHours string
+	Port           string
+	Environment    string
+	DBHost         string
+	DBPort         string
+	DBUser         string
+	DBPassword     string
+	DBName         string
+	DBSSLMode      string
+	DatabaseURL    string
+	JWTSecret      string
+	JWTExpHours    string
+	AllowedOrigins string
 
 	// TikTok Shop Integration
 	TikTokAppKey              string
@@ -76,18 +77,18 @@ func LoadConfig() *Config {
 	}
 
 	return &Config{
-		Port:        getEnv("PORT", "8084"),
-		Environment: getEnv("ENV", "development"),
-		DBHost:      getEnv("DB_HOST", "localhost"),
-		DBPort:      getEnv("DB_PORT", "5432"),
-		DBUser:      dbUser,
-		DBPassword:  dbPassword,
-		DBName:      dbName,
-		DBSSLMode:   getEnv("DB_SSLMODE", "disable"),
-		DatabaseURL: databaseURL,
-		// FULL-02: no hardcoded fallback secret; startup validation lives in main
-		JWTSecret:   getEnv("JWT_SECRET", ""),
-		JWTExpHours: getEnv("JWT_EXPIRATION_HOURS", "24"),
+		Port:           getEnv("PORT", "8084"),
+		Environment:    getEnv("ENV", "development"),
+		DBHost:         getEnv("DB_HOST", "localhost"),
+		DBPort:         getEnv("DB_PORT", "5432"),
+		DBUser:         dbUser,
+		DBPassword:     dbPassword,
+		DBName:         dbName,
+		DBSSLMode:      getEnv("DB_SSLMODE", "disable"),
+		DatabaseURL:    databaseURL,
+		JWTSecret:      getEnv("JWT_SECRET", ""),
+		JWTExpHours:    getEnv("JWT_EXPIRATION_HOURS", "24"),
+		AllowedOrigins: getEnv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:3001,http://localhost:8082,http://127.0.0.1:3000,http://127.0.0.1:3001,http://127.0.0.1:8082"),
 
 		TikTokAppKey:              getEnv("TIKTOK_APP_KEY", ""),
 		TikTokAppSecret:           getEnv("TIKTOK_APP_SECRET", ""),

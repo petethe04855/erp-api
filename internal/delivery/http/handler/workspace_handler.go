@@ -53,12 +53,12 @@ func NewWorkspaceHandler(
 
 // ProductRecord matching erp-web-v2 features/erp/types/records.ts
 type SKUAccessoryRecord struct {
-	ID           uint    `json:"id"`
-	SKU          string  `json:"sku"`
-	AccessorySKU string  `json:"accessorySku"`
-	Quantity     int     `json:"quantity"`
-	Note         string  `json:"note"`
-	Name         string  `json:"name,omitempty"`
+	ID           uint   `json:"id"`
+	SKU          string `json:"sku"`
+	AccessorySKU string `json:"accessorySku"`
+	Quantity     int    `json:"quantity"`
+	Note         string `json:"note"`
+	Name         string `json:"name,omitempty"`
 }
 
 type ProductRecord struct {
@@ -539,17 +539,17 @@ func (h *WorkspaceHandler) GetProductByCode(c *fiber.Ctx) error {
 
 func (h *WorkspaceHandler) CreateProduct(c *fiber.Ctx) error {
 	var req struct {
-		SKU         string  `json:"sku"`
-		Name        string  `json:"name"`
-		Type        string  `json:"type"`
-		BaseUnit    string  `json:"baseUnit"`
-		RetailPrice float64 `json:"retailPrice"`
-		Cost        float64 `json:"cost"`
+		SKU             string  `json:"sku"`
+		Name            string  `json:"name"`
+		Type            string  `json:"type"`
+		BaseUnit        string  `json:"baseUnit"`
+		RetailPrice     float64 `json:"retailPrice"`
+		Cost            float64 `json:"cost"`
 		IsBundle        bool    `json:"isBundle"`
 		Image           string  `json:"image"`
 		InitialQuantity int     `json:"initialQuantity"`
 		Stock           int     `json:"stock"`
-		Components  []struct {
+		Components      []struct {
 			ComponentSKU string `json:"componentSku"`
 			SKU          string `json:"sku"`
 			Quantity     int    `json:"quantity"`
@@ -3437,4 +3437,3 @@ func (h *WorkspaceHandler) GetSKUAccessories(c *fiber.Ctx) error {
 
 	return response.OK(c, records)
 }
-

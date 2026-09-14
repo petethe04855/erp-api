@@ -52,6 +52,10 @@ func (m *MockReturnRepository) Update(ctx context.Context, ret *domainReturn.Sal
 	args := m.Called(ctx, ret)
 	return args.Error(0)
 }
+func (m *MockReturnRepository) UpdateLines(ctx context.Context, lines []domainReturn.SalesReturnLine) error {
+	args := m.Called(ctx, lines)
+	return args.Error(0)
+}
 func (m *MockReturnRepository) DeleteLines(ctx context.Context, returnID uint) error {
 	args := m.Called(ctx, returnID)
 	return args.Error(0)
@@ -191,6 +195,30 @@ func (m *MockStockRepository) GetMovements(ctx context.Context, skuID uint, page
 	args := m.Called(ctx, skuID, page, limit)
 	return args.Get(0).([]domainStock.StockMovement), args.Get(1).(int64), args.Error(2)
 }
+func (m *MockStockRepository) CreateLot(ctx context.Context, lot *domainStock.StockLot) error {
+	return m.Called(ctx, lot).Error(0)
+}
+func (m *MockStockRepository) GetAvailableLotsForUpdate(ctx context.Context, skuID, warehouseID uint) ([]domainStock.StockLot, error) {
+	args := m.Called(ctx, skuID, warehouseID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]domainStock.StockLot), args.Error(1)
+}
+func (m *MockStockRepository) DeductLotQuantity(ctx context.Context, lotID uint, qty int) (*domainStock.StockLot, error) {
+	args := m.Called(ctx, lotID, qty)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*domainStock.StockLot), args.Error(1)
+}
+func (m *MockStockRepository) FindLotsBySKU(ctx context.Context, skuID, warehouseID uint) ([]domainStock.StockLot, error) {
+	args := m.Called(ctx, skuID, warehouseID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]domainStock.StockLot), args.Error(1)
+}
 
 func TestSalesReturn_CreateAndEnforceReturnable(t *testing.T) {
 	mockRet := new(MockReturnRepository)
@@ -300,6 +328,7 @@ func TestSalesReturn_CompleteRestocksGoodConditionOnly(t *testing.T) {
 
 	mockRet.On("FindByIDForUpdate", mock.Anything, returnID).Return(retDoc, nil)
 	mockRet.On("Update", mock.Anything, mock.Anything).Return(nil)
+	mockRet.On("UpdateLines", mock.Anything, mock.Anything).Return(nil)
 
 	skuGood := &domainSKU.SKU{ID: 1, SKU: "SKU-GOOD", CostPrice: 50}
 	skuDamaged := &domainSKU.SKU{ID: 2, SKU: "SKU-DAMAGED", CostPrice: 50}

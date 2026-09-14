@@ -288,6 +288,22 @@ func (m *mockStockRepo) GetMovements(ctx context.Context, skuID uint, page, limi
 	return nil, 0, nil
 }
 
+func (m *mockStockRepo) CreateLot(ctx context.Context, lot *domainStock.StockLot) error {
+	return nil
+}
+
+func (m *mockStockRepo) GetAvailableLotsForUpdate(ctx context.Context, skuID, whID uint) ([]domainStock.StockLot, error) {
+	return nil, nil
+}
+
+func (m *mockStockRepo) DeductLotQuantity(ctx context.Context, lotID uint, qty int) (*domainStock.StockLot, error) {
+	return &domainStock.StockLot{}, nil
+}
+
+func (m *mockStockRepo) FindLotsBySKU(ctx context.Context, skuID, whID uint) ([]domainStock.StockLot, error) {
+	return nil, nil
+}
+
 func TestOrderCreate_SucceedsWithoutReservingStock(t *testing.T) {
 	orderRepo := newMockOrderRepo()
 	skuRepo := newMockSKURepo()

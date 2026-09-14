@@ -12,6 +12,7 @@ import (
 	domainOrder "chawy-erp-api/internal/domain/order"
 	domainSKU "chawy-erp-api/internal/domain/sku"
 	domainStock "chawy-erp-api/internal/domain/stock"
+	usecaseStock "chawy-erp-api/internal/usecase/stock"
 	"chawy-erp-api/pkg/database"
 	appErrors "chawy-erp-api/pkg/errors"
 
@@ -251,142 +252,167 @@ func (u *orderUsecase) ShipOrder(ctx context.Context, id uint, warehouseID uint)
 
 		totalCOGS := 0.0
 
-		// Step 1: Collect and aggregate all physical SKU quantities to deduct across all order lines
-		type ShipTarget struct {
-			SKUCode string
-			Qty     int
-			RefType string
-			Note    string
+		// Step 1: Resolve all physical SKU quantities to deduct across all order lines using shared resolver
+		resolver := usecaseStock.NewDeductionResolver(u.db, u.formulaRepo, u.skuRepo)
+		itemsToResolve := make([]usecaseStock.ItemToResolve, len(orderItem.Items))
+		for i, line := range orderItem.Items {
+			itemsToResolve[i] = usecaseStock.ItemToResolve{
+				SKU:      line.SKU,
+				Quantity: line.Quantity,
+				Price:    line.Price,
+			}
 		}
-		shipMap := make(map[string]*ShipTarget)
 
-		for _, line := range orderItem.Items {
-			if line.Quantity <= 0 {
-				return appErrors.NewAppError("INVALID_QUANTITY", fmt.Sprintf("Order line %s has invalid quantity", line.SKU), 400)
-			}
+		resolvedItems, err := resolver.ResolveDeductionItems(txCtx, itemsToResolve, "ORDER", orderItem.OrderNo)
+		if err != nil {
+			return err
+		}
 
-			lineSKU := strings.ToUpper(strings.TrimSpace(line.SKU))
-			formula, err := u.formulaRepo.FindByCode(txCtx, lineSKU)
-			if err != nil {
-				return err
-			}
-
-			if formula != nil && formula.IsActive && len(formula.Items) > 0 {
-				// Explode components
-				for _, fi := range formula.Items {
-					compCode := strings.ToUpper(strings.TrimSpace(fi.ComponentSKU))
-					neededQty := fi.Qty * line.Quantity
-					if entry, exists := shipMap[compCode]; exists {
-						entry.Qty += neededQty
-					} else {
-						shipMap[compCode] = &ShipTarget{
-							SKUCode: compCode,
-							Qty:     neededQty,
-							RefType: "ORDER_FORMULA",
-							Note:    fmt.Sprintf("Shipped for formula %s in order %s", line.SKU, orderItem.OrderNo),
-						}
-					}
-				}
+		// Aggregate resolved items by SKUCode
+		type AggregatedItem struct {
+			SKUCode           string
+			Quantity          int
+			SourceFormulaCode string
+			RefType           string
+			Note              string
+		}
+		aggMap := make(map[string]*AggregatedItem)
+		for _, ri := range resolvedItems {
+			if entry, exists := aggMap[ri.SKUCode]; exists {
+				entry.Quantity += ri.Quantity
 			} else {
-				// No formula: direct SKU
-				if entry, exists := shipMap[lineSKU]; exists {
-					entry.Qty += line.Quantity
-				} else {
-					shipMap[lineSKU] = &ShipTarget{
-						SKUCode: lineSKU,
-						Qty:     line.Quantity,
-						RefType: "ORDER",
-						Note:    fmt.Sprintf("Shipped for order %s", orderItem.OrderNo),
-					}
-				}
-
-				// Deduct associated accessories for non-formula SKU
-				var accessories []domainSKU.SKUAccessory
-				if err := u.db.WithContext(txCtx).Where("UPPER(sku) = ?", lineSKU).Find(&accessories).Error; err == nil && len(accessories) > 0 {
-					for _, acc := range accessories {
-						accCode := strings.ToUpper(strings.TrimSpace(acc.AccessorySKU))
-						accQty := acc.Quantity * line.Quantity
-						if entry, exists := shipMap[accCode]; exists {
-							entry.Qty += accQty
-						} else {
-							shipMap[accCode] = &ShipTarget{
-								SKUCode: accCode,
-								Qty:     accQty,
-								RefType: "ORDER_ACCESSORY",
-								Note:    fmt.Sprintf("Shipped accessory %s for %s in order %s", acc.AccessorySKU, line.SKU, orderItem.OrderNo),
-							}
-						}
-					}
+				aggMap[ri.SKUCode] = &AggregatedItem{
+					SKUCode:           ri.SKUCode,
+					Quantity:          ri.Quantity,
+					SourceFormulaCode: ri.SourceFormulaCode,
+					RefType:           ri.RefType,
+					Note:              ri.Note,
 				}
 			}
 		}
 
-		// Step 2: Validate stock and calculate COGS under FOR UPDATE locks
+		// Step 2: Validate stock under FOR UPDATE locks and compute COGS
 		type ValidatedShipStock struct {
-			Target *ShipTarget
+			Target *AggregatedItem
 			SKU    *domainSKU.SKU
 			Stock  *domainStock.Stock
+			Lots   []domainStock.StockLot
 		}
 		var toShip []ValidatedShipStock
 
-		for _, target := range shipMap {
+		for _, target := range aggMap {
 			skuEntity, err := u.skuRepo.FindBySKU(txCtx, target.SKUCode)
 			if err != nil || skuEntity == nil {
 				return appErrors.ErrSKUNotFound
 			}
 
 			if skuEntity.CostPrice > 0 {
-				totalCOGS += skuEntity.CostPrice * float64(target.Qty)
+				totalCOGS += skuEntity.CostPrice * float64(target.Quantity)
 			}
 
 			stk, err := u.stockRepo.GetBySKUIDForUpdate(txCtx, skuEntity.ID, warehouseID)
 			if err != nil {
 				return err
 			}
-			if stk == nil || stk.Quantity < target.Qty {
-				avail := 0
-				if stk != nil {
-					avail = stk.Quantity
-				}
-				return appErrors.NewAppError("INSUFFICIENT_STOCK", fmt.Sprintf("Stock %s ไม่พอ: ต้องการ %d, คงเหลือ %d", target.SKUCode, target.Qty, avail), 409)
+			avail := 0
+			if stk != nil {
+				avail = stk.Quantity
+			}
+			if stk == nil || avail < target.Quantity {
+				return appErrors.NewAppError("INSUFFICIENT_STOCK", fmt.Sprintf("Stock %s ไม่พอ: ต้องการ %d, คงเหลือ %d", target.SKUCode, target.Quantity, avail), 409)
+			}
+
+			// Load lots with FEFO lock
+			lots, err := u.stockRepo.GetAvailableLotsForUpdate(txCtx, skuEntity.ID, warehouseID)
+			if err != nil {
+				return err
 			}
 
 			toShip = append(toShip, ValidatedShipStock{
 				Target: target,
 				SKU:    skuEntity,
 				Stock:  stk,
+				Lots:   lots,
 			})
 		}
 
-		// Step 3: Deduct stock and release reservations (if any)
+		// Step 3: Deduct stock, deduct from FEFO lots, and record movements with lot/channel/formula metadata
 		for _, vs := range toShip {
-			updatedStk, err := u.stockRepo.UpdateQuantity(txCtx, vs.SKU.ID, warehouseID, -vs.Target.Qty)
+			updatedStk, err := u.stockRepo.UpdateQuantity(txCtx, vs.SKU.ID, warehouseID, -vs.Target.Quantity)
 			if err != nil {
 				return err
 			}
-			// Safely release reservation if there was any historical reservation
+
+			// Release reservation if present
 			if vs.Stock != nil && vs.Stock.ReservedQty > 0 {
-				relQty := vs.Target.Qty
+				relQty := vs.Target.Quantity
 				if relQty > vs.Stock.ReservedQty {
 					relQty = vs.Stock.ReservedQty
 				}
 				_, _ = u.stockRepo.ReleaseStock(txCtx, vs.SKU.ID, warehouseID, relQty)
 			}
 
-			movement := &domainStock.StockMovement{
-				SKUID:         vs.SKU.ID,
-				SKUCode:       vs.SKU.SKU,
-				WarehouseID:   warehouseID,
-				Type:          domainStock.MovementOut,
-				Quantity:      vs.Target.Qty,
-				BeforeQty:     vs.Stock.Quantity,
-				AfterQty:      updatedStk.Quantity,
-				ReferenceType: vs.Target.RefType,
-				ReferenceID:   orderItem.OrderNo,
-				Note:          vs.Target.Note,
+			// FEFO Lot Allocation: deduct from earliest expiring lots
+			needed := vs.Target.Quantity
+			currentStockQty := vs.Stock.Quantity
+			for _, lot := range vs.Lots {
+				if needed <= 0 {
+					break
+				}
+				lotAvail := lot.Quantity - lot.ReservedQty
+				if lotAvail <= 0 {
+					continue
+				}
+				deductQty := lotAvail
+				if deductQty > needed {
+					deductQty = needed
+				}
+
+				if _, err := u.stockRepo.DeductLotQuantity(txCtx, lot.ID, deductQty); err != nil {
+					return err
+				}
+
+				movement := &domainStock.StockMovement{
+					SKUID:             vs.SKU.ID,
+					SKUCode:           vs.SKU.SKU,
+					WarehouseID:       warehouseID,
+					StockLotID:        &lot.ID,
+					SourceFormulaCode: vs.Target.SourceFormulaCode,
+					Channel:           "ORDER",
+					Type:              domainStock.MovementOut,
+					Quantity:          deductQty,
+					BeforeQty:         currentStockQty,
+					AfterQty:          currentStockQty - deductQty,
+					ReferenceType:     vs.Target.RefType,
+					ReferenceID:       orderItem.OrderNo,
+					Note:              fmt.Sprintf("%s (Lot: %s)", vs.Target.Note, lot.LotNumber),
+				}
+				if err := u.stockRepo.CreateMovement(txCtx, movement); err != nil {
+					return err
+				}
+				currentStockQty -= deductQty
+				needed -= deductQty
 			}
-			if err := u.stockRepo.CreateMovement(txCtx, movement); err != nil {
-				return err
+
+			// If remaining needed > 0 (e.g. legacy stock without lot records), record remaining movement
+			if needed > 0 {
+				movement := &domainStock.StockMovement{
+					SKUID:             vs.SKU.ID,
+					SKUCode:           vs.SKU.SKU,
+					WarehouseID:       warehouseID,
+					SourceFormulaCode: vs.Target.SourceFormulaCode,
+					Channel:           "ORDER",
+					Type:              domainStock.MovementOut,
+					Quantity:          needed,
+					BeforeQty:         currentStockQty,
+					AfterQty:          updatedStk.Quantity,
+					ReferenceType:     vs.Target.RefType,
+					ReferenceID:       orderItem.OrderNo,
+					Note:              vs.Target.Note,
+				}
+				if err := u.stockRepo.CreateMovement(txCtx, movement); err != nil {
+					return err
+				}
 			}
 		}
 

@@ -767,11 +767,12 @@ func (u *salesReturnUsecase) Complete(ctx context.Context, id uint, in CompleteR
 		if err := u.returnRepo.Update(txCtx, ret); err != nil {
 			return err
 		}
-		// Save lines condition/restock state
-		if u.db != nil {
-			for _, l := range ret.Lines {
-				_ = u.db.WithContext(txCtx).Save(&l).Error
-			}
+		// Save lines condition/restock state INSIDE the same transaction. Must go
+		// through the repository (GetDBFromContext resolves the tx from ctx);
+		// writing via u.db directly would run on a separate pooled connection,
+		// block on row locks held by this very transaction, and hang the request.
+		if err := u.returnRepo.UpdateLines(txCtx, ret.Lines); err != nil {
+			return err
 		}
 
 		// Post Accounting Journal Entries (idempotent, source: sales_return)

@@ -125,6 +125,25 @@ func (r *SalesReturnRepository) Update(ctx context.Context, ret *salesreturn.Sal
 	return r.getDB(ctx).Save(ret).Error
 }
 
+// UpdateLines persists per-line inspection results (condition/restock) within
+// the caller's transaction. It MUST run on the tx connection obtained from the
+// context: writing line rows from a pooled connection while the surrounding
+// transaction holds their row locks self-deadlocks the request (the outer tx
+// waits for the save and the save waits for the outer tx's locks), which is
+// exactly the POST /returns/:id/complete hang.
+func (r *SalesReturnRepository) UpdateLines(ctx context.Context, lines []salesreturn.SalesReturnLine) error {
+	if len(lines) == 0 {
+		return nil
+	}
+	db := r.getDB(ctx)
+	for i := range lines {
+		if err := db.Save(&lines[i]).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (r *SalesReturnRepository) DeleteLines(ctx context.Context, returnID uint) error {
 	return r.getDB(ctx).Where("return_id = ?", returnID).Delete(&salesreturn.SalesReturnLine{}).Error
 }

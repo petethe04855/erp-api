@@ -171,9 +171,21 @@ func (h *PurchasingHandler) ReceiveGoods(c *fiber.Ctx) error {
 		req.WarehouseID = 1
 	}
 
+	var lotItems []usecasePurchasing.ReceiveLotItem
+	for _, itm := range req.Items {
+		lotItems = append(lotItems, usecasePurchasing.ReceiveLotItem{
+			SKU:         itm.SKU,
+			Quantity:    itm.Quantity,
+			LotNumber:   itm.LotNumber,
+			SupplierLot: itm.SupplierLot,
+			ExpiryDate:  itm.ExpiryDate,
+		})
+	}
+
 	result, err := h.usecase.ReceiveGoods(c.Context(), usecasePurchasing.ReceiveGoodsInput{
 		POID:        uint(id),
 		WarehouseID: req.WarehouseID,
+		Items:       lotItems,
 	})
 	if err != nil {
 		return err

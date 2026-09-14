@@ -257,3 +257,62 @@ func (r *StockRepository) GetMovements(ctx context.Context, skuID uint, page, li
 
 	return movements, total, nil
 }
+
+func (r *StockRepository) CreateLot(ctx context.Context, lot *stock.StockLot) error {
+	if lot.AvailableQty == 0 && lot.Quantity > 0 {
+		lot.AvailableQty = lot.Quantity - lot.ReservedQty
+	}
+	return r.getDB(ctx).Create(lot).Error
+}
+
+// GetAvailableLotsForUpdate loads lots with available stock ordered by FEFO (expiry_date ASC, id ASC)
+// and locks rows with FOR UPDATE to prevent race conditions during allocation.
+func (r *StockRepository) GetAvailableLotsForUpdate(ctx context.Context, skuID, warehouseID uint) ([]stock.StockLot, error) {
+	var lots []stock.StockLot
+	err := r.getDB(ctx).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("sku_id = ? AND warehouse_id = ? AND (quantity - reserved_qty) > 0", skuID, warehouseID).
+		Order("expiry_date ASC, id ASC").
+		Find(&lots).Error
+	if err != nil {
+		return nil, err
+	}
+	return lots, nil
+}
+
+func (r *StockRepository) DeductLotQuantity(ctx context.Context, lotID uint, qty int) (*stock.StockLot, error) {
+	var item stock.StockLot
+	db := r.getDB(ctx)
+	deductFn := func(tx *gorm.DB) error {
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ?", lotID).
+			First(&item).Error
+		if err != nil {
+			return err
+		}
+		item.Quantity -= qty
+		if item.Quantity < 0 {
+			item.Quantity = 0
+		}
+		item.AvailableQty = item.Quantity - item.ReservedQty
+		return tx.Save(&item).Error
+	}
+	if err := db.Transaction(deductFn); err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
+func (r *StockRepository) FindLotsBySKU(ctx context.Context, skuID, warehouseID uint) ([]stock.StockLot, error) {
+	var lots []stock.StockLot
+	tx := r.getDB(ctx).Where("sku_id = ?", skuID)
+	if warehouseID != 0 {
+		tx = tx.Where("warehouse_id = ?", warehouseID)
+	}
+	err := tx.Order("expiry_date ASC, id ASC").Find(&lots).Error
+	if err != nil {
+		return nil, err
+	}
+	return lots, nil
+}
+

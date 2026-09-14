@@ -178,6 +178,22 @@ func (f *fakeStockRepoP) GetMovements(ctx context.Context, skuID uint, page, lim
 	return f.movements, int64(len(f.movements)), nil
 }
 
+func (f *fakeStockRepoP) CreateLot(ctx context.Context, lot *domainStock.StockLot) error {
+	return nil
+}
+
+func (f *fakeStockRepoP) GetAvailableLotsForUpdate(ctx context.Context, skuID, whID uint) ([]domainStock.StockLot, error) {
+	return nil, nil
+}
+
+func (f *fakeStockRepoP) DeductLotQuantity(ctx context.Context, lotID uint, qty int) (*domainStock.StockLot, error) {
+	return &domainStock.StockLot{}, nil
+}
+
+func (f *fakeStockRepoP) FindLotsBySKU(ctx context.Context, skuID, whID uint) ([]domainStock.StockLot, error) {
+	return nil, nil
+}
+
 type inlineTxMgrP struct{}
 
 func (inlineTxMgrP) Transaction(ctx context.Context, fn func(txCtx context.Context) error) error {

@@ -97,6 +97,22 @@ func (f *fakeStockRepo) GetMovements(ctx context.Context, skuID uint, page, limi
 	return f.movements, int64(len(f.movements)), nil
 }
 
+func (f *fakeStockRepo) CreateLot(ctx context.Context, lot *domainStock.StockLot) error {
+	return nil
+}
+
+func (f *fakeStockRepo) GetAvailableLotsForUpdate(ctx context.Context, skuID, warehouseID uint) ([]domainStock.StockLot, error) {
+	return nil, nil
+}
+
+func (f *fakeStockRepo) DeductLotQuantity(ctx context.Context, lotID uint, qty int) (*domainStock.StockLot, error) {
+	return &domainStock.StockLot{}, nil
+}
+
+func (f *fakeStockRepo) FindLotsBySKU(ctx context.Context, skuID, warehouseID uint) ([]domainStock.StockLot, error) {
+	return nil, nil
+}
+
 // Snapshot/Restore emulate DB rollback for tests.
 func (f *fakeStockRepo) Snapshot() (map[uint]domainStock.Stock, int) {
 	snap := make(map[uint]domainStock.Stock, len(f.stocks))

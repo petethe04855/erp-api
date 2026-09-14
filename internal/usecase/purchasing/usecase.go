@@ -3,6 +3,7 @@ package purchasing
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	domainPurchasing "chawy-erp-api/internal/domain/purchasing"
@@ -35,9 +36,18 @@ type CreatePOInput struct {
 	Items      []CreatePOItemInput `json:"items"`
 }
 
+type ReceiveLotItem struct {
+	SKU         string
+	Quantity    int
+	LotNumber   string
+	SupplierLot string
+	ExpiryDate  string
+}
+
 type ReceiveGoodsInput struct {
 	POID        uint
 	WarehouseID uint
+	Items       []ReceiveLotItem
 }
 
 type Usecase interface {
@@ -307,17 +317,50 @@ func (u *purchasingUsecase) ReceiveGoods(ctx context.Context, in ReceiveGoodsInp
 				return err
 			}
 
+			// Determine Lot Number, Supplier Lot, Expiry Date from input if provided
+			lotNumber := fmt.Sprintf("LOT-%s-%d", time.Now().Format("20060102"), line.ID)
+			supplierLot := ""
+			expiryDate := ""
+			for _, itemInput := range in.Items {
+				if strings.EqualFold(itemInput.SKU, line.SKU) {
+					if itemInput.LotNumber != "" {
+						lotNumber = itemInput.LotNumber
+					}
+					supplierLot = itemInput.SupplierLot
+					expiryDate = itemInput.ExpiryDate
+					break
+				}
+			}
+
+			// Create StockLot
+			stockLot := &domainStock.StockLot{
+				SKUID:        skuEntity.ID,
+				SKUCode:      skuEntity.SKU,
+				WarehouseID:  in.WarehouseID,
+				LotNumber:    lotNumber,
+				SupplierLot:  supplierLot,
+				ExpiryDate:   expiryDate,
+				Quantity:     remaining,
+				AvailableQty: remaining,
+				ReceivedAt:   time.Now(),
+			}
+			if err := u.stockRepo.CreateLot(txCtx, stockLot); err != nil {
+				return err
+			}
+
 			movement := &domainStock.StockMovement{
 				SKUID:         skuEntity.ID,
 				SKUCode:       skuEntity.SKU,
 				WarehouseID:   in.WarehouseID,
+				StockLotID:    &stockLot.ID,
+				Channel:       "PURCHASING",
 				Type:          domainStock.MovementIn,
 				Quantity:      remaining,
 				BeforeQty:     beforeQty,
 				AfterQty:      updatedStk.Quantity,
 				ReferenceType: "PO_RECEIVE",
 				ReferenceID:   gr.Code,
-				Note:          fmt.Sprintf("Goods receipt for PO %s", po.PONo),
+				Note:          fmt.Sprintf("Goods receipt for PO %s (Lot: %s)", po.PONo, lotNumber),
 			}
 			if err := u.stockRepo.CreateMovement(txCtx, movement); err != nil {
 				return err
@@ -329,11 +372,13 @@ func (u *purchasingUsecase) ReceiveGoods(ctx context.Context, in ReceiveGoodsInp
 			}
 
 			grItems = append(grItems, domainPurchasing.GoodsReceiveItem{
-				SKU:       skuEntity.SKU,
-				Name:      skuEntity.Name,
-				Quantity:  remaining,
-				QCStatus:  "Accepted",
-				CreatedAt: time.Now(),
+				SKU:         skuEntity.SKU,
+				Name:        skuEntity.Name,
+				Quantity:    remaining,
+				SupplierLot: supplierLot,
+				ExpiryDate:  expiryDate,
+				QCStatus:    "Accepted",
+				CreatedAt:   time.Now(),
 			})
 		}
 
