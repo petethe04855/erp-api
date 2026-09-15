@@ -235,6 +235,7 @@ func RegisterRoutes(cfg Config) {
 	protected.Delete("/products/:code", middleware.RequireRole("owner", "accountant"), cfg.WorkspaceHandler.DeleteProduct)
 	protected.Post("/sales-orders", middleware.RequireRole("owner", "sales"), cfg.WorkspaceHandler.CreateSalesOrder)
 	protected.Get("/sales-orders/:id", cfg.WorkspaceHandler.GetSalesOrderByID)
+	protected.Get("/sales-orders/:id/pdf", cfg.WorkspaceHandler.ExportSalesOrderPDF)
 	protected.Put("/sales-orders/:id/status", middleware.RequireRole("owner", "sales", "warehouse"), cfg.WorkspaceHandler.UpdateSalesOrderStatus)
 	protected.Post("/invoices/from-so/:soRef", middleware.RequireRole("owner", "accountant", "sales"), cfg.WorkspaceHandler.CreateInvoiceFromSO)
 	protected.Post("/stock-adjustments", middleware.RequireRole("owner", "warehouse"), cfg.WorkspaceHandler.AdjustStock)

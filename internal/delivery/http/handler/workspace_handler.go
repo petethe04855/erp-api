@@ -1684,6 +1684,115 @@ func (h *WorkspaceHandler) GetSalesOrderByID(c *fiber.Ctx) error {
 	return response.OK(c, result)
 }
 
+func (h *WorkspaceHandler) ExportSalesOrderPDF(c *fiber.Ctx) error {
+	param := c.Params("id")
+	var ord domainOrder.Order
+	query := h.db.WithContext(c.Context()).Preload("Items")
+	if id, err := strconv.ParseUint(param, 10, 32); err == nil {
+		if err := query.Where("id = ? OR order_no = ?", id, param).First(&ord).Error; err != nil {
+			return response.NotFound(c, "Sales order not found")
+		}
+	} else {
+		if err := query.Where("order_no = ?", param).First(&ord).Error; err != nil {
+			return response.NotFound(c, "Sales order not found")
+		}
+	}
+
+	// Company settings
+	companyName := "Chawy ERP"
+	companyAddress := "–"
+	companyTaxID := "–"
+	companyPhone := "–"
+	companyEmail := "–"
+
+	type CompanySettingsModel struct {
+		Name    string `gorm:"column:name"`
+		TaxID   string `gorm:"column:tax_id"`
+		Address string `gorm:"column:address"`
+		Phone   string `gorm:"column:phone"`
+		Email   string `gorm:"column:email"`
+		LogoURL string `gorm:"column:logo_url"`
+	}
+	var cs CompanySettingsModel
+	companyLogo := ""
+	if err := h.db.WithContext(c.Context()).Table("company_settings").First(&cs).Error; err == nil {
+		if cs.Name != "" {
+			companyName = cs.Name
+		}
+		if cs.Address != "" {
+			companyAddress = cs.Address
+		}
+		if cs.TaxID != "" {
+			companyTaxID = cs.TaxID
+		}
+		if cs.Phone != "" {
+			companyPhone = cs.Phone
+		}
+		if cs.Email != "" {
+			companyEmail = cs.Email
+		}
+		if cs.LogoURL != "" {
+			companyLogo = cs.LogoURL
+		}
+	}
+
+	var customerAddress string
+	var customerTaxID string
+	if ord.CustomerID > 0 {
+		var cust domainCustomer.Customer
+		if err := h.db.WithContext(c.Context()).First(&cust, ord.CustomerID).Error; err == nil {
+			customerAddress = cust.Address
+			customerTaxID = cust.TaxID
+		}
+	}
+
+	pdfLines := make([]pdf.SalesOrderPDFLine, 0, len(ord.Items))
+	for i, item := range ord.Items {
+		pdfLines = append(pdfLines, pdf.SalesOrderPDFLine{
+			Index:     i + 1,
+			Name:      item.Name,
+			SKU:       item.SKU,
+			Quantity:  item.Quantity,
+			UnitPrice: item.Price,
+			LineTotal: item.Subtotal,
+		})
+	}
+
+	includeVat := !strings.Contains(ord.Note, "VAT_INC:false")
+	noteForPdf := strings.TrimSpace(strings.ReplaceAll(ord.Note, "VAT_INC:false", ""))
+
+	pdfData := pdf.SalesOrderPDFData{
+		Code:            ord.OrderNo,
+		Date:            ord.CreatedAt.Format("02/01/2006"),
+		Channel:         ord.Channel,
+		CompanyName:     companyName,
+		CompanyAddress:  companyAddress,
+		CompanyTaxID:    companyTaxID,
+		CompanyPhone:    companyPhone,
+		CompanyEmail:    companyEmail,
+		CompanyLogo:     companyLogo,
+		CustomerName:    ord.CustomerName,
+		CustomerAddress: customerAddress,
+		CustomerTaxID:   customerTaxID,
+		Lines:           pdfLines,
+		TotalAmount:     ord.TotalAmount,
+		VatRate:         7.0,
+		IncludeVat:      includeVat,
+		Note:            noteForPdf,
+		Status:          string(ord.Status),
+	}
+
+	pdfBytes, err := pdf.GenerateSalesOrderPDF(pdfData)
+	if err != nil {
+		return response.InternalServerError(c, "Failed to generate sales order PDF: "+err.Error())
+	}
+
+	filename := fmt.Sprintf("SalesOrder-%s.pdf", ord.OrderNo)
+	c.Set("Content-Type", "application/pdf")
+	c.Set("Content-Disposition", fmt.Sprintf("inline; filename=\"%s\"", filename))
+	return c.Send(pdfBytes)
+}
+
 func (h *WorkspaceHandler) UpdateSalesOrderStatus(c *fiber.Ctx) error {
 	param := c.Params("id")
 	var req struct {
