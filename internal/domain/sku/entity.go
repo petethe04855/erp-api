@@ -29,6 +29,36 @@ type Query struct {
 	Limit    int
 }
 
+// SKUReceiptItem represents a unified receipt record for an SKU
+type SKUReceiptItem struct {
+	ID               uint      `json:"id"`
+	ReceivedAt       time.Time `json:"received_at"`
+	SourceType       string    `json:"source_type"` // INITIAL_STOCK, GOODS_RECEIVE, STOCK_ADJUSTMENT_IN
+	Quantity         int       `json:"quantity"`
+	WarehouseID      uint      `json:"warehouse_id"`
+	WarehouseName    string    `json:"warehouse_name"`
+	LotNumber        string    `json:"lot_number"`
+	SupplierLot      string    `json:"supplier_lot"`
+	ExpiryDate       string    `json:"expiry_date"`
+	ReferenceType    string    `json:"reference_type"`
+	ReferenceID      string    `json:"reference_id"`
+	PurchaseOrderRef string    `json:"purchase_order_ref"`
+	Note             string    `json:"note"`
+}
+
+type SKUReceiptQuery struct {
+	SKUID       uint
+	WarehouseID uint
+	Page        int
+	Limit       int
+}
+
+type SKUBatchReceiptStat struct {
+	SKUID          uint
+	LastReceivedAt *time.Time
+	ReceiptCount   int
+}
+
 type Repository interface {
 	Create(ctx context.Context, sku *SKU) error
 	FindByID(ctx context.Context, id uint) (*SKU, error)
@@ -37,4 +67,9 @@ type Repository interface {
 	Update(ctx context.Context, sku *SKU) error
 	Delete(ctx context.Context, id uint) error
 	ExistsBySKU(ctx context.Context, skuCode string) (bool, error)
+
+	// Receipt stats & history
+	GetReceiptStatsBatch(ctx context.Context, skuIDs []uint) (map[uint]SKUBatchReceiptStat, error)
+	GetReceiptHistory(ctx context.Context, query SKUReceiptQuery) ([]SKUReceiptItem, int64, error)
 }
+

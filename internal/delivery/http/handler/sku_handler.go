@@ -2,6 +2,7 @@ package handler
 
 import (
 	"strconv"
+	"time"
 
 	"chawy-erp-api/internal/delivery/http/dto"
 	domainSKU "chawy-erp-api/internal/domain/sku"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 )
+
 
 type SKUHandler struct {
 	usecase usecaseSKU.Usecase
@@ -82,7 +84,7 @@ func (h *SKUHandler) List(c *fiber.Ctx) error {
 	category := c.Query("category", "")
 	status := c.Query("status", "")
 
-	items, total, err := h.usecase.List(c.Context(), domainSKU.Query{
+	itemsWithStats, total, err := h.usecase.ListWithStats(c.Context(), domainSKU.Query{
 		Search:   search,
 		Category: category,
 		Status:   status,
@@ -93,12 +95,65 @@ func (h *SKUHandler) List(c *fiber.Ctx) error {
 		return err
 	}
 
-	responses := make([]dto.SKUResponse, len(items))
-	for i, item := range items {
-		responses[i] = toSKUResponse(&item)
+	responses := make([]dto.SKUResponse, len(itemsWithStats))
+	for i, it := range itemsWithStats {
+		res := toSKUResponse(&it.SKU)
+		res.ReceiptCount = it.ReceiptCount
+		if it.LastReceivedAt != nil {
+			formatted := it.LastReceivedAt.Format(time.RFC3339)
+			res.LastReceivedAt = &formatted
+		}
+		responses[i] = res
 	}
 
 	return response.List(c, responses, page, limit, total)
+}
+
+func (h *SKUHandler) GetReceiptHistory(c *fiber.Ctx) error {
+	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
+	if err != nil {
+		return response.BadRequest(c, "Invalid SKU ID")
+	}
+
+	page, _ := strconv.Atoi(c.Query("page", "1"))
+	limit, _ := strconv.Atoi(c.Query("limit", "10"))
+	warehouseID, _ := strconv.ParseUint(c.Query("warehouseId", "0"), 10, 32)
+
+	receipts, total, err := h.usecase.GetReceiptHistory(c.Context(), domainSKU.SKUReceiptQuery{
+		SKUID:       uint(id),
+		WarehouseID: uint(warehouseID),
+		Page:        page,
+		Limit:       limit,
+	})
+	if err != nil {
+		return err
+	}
+
+	data := make([]dto.SKUReceiptResponse, len(receipts))
+	for i, r := range receipts {
+		var expPtr *string
+		if r.ExpiryDate != "" {
+			expPtr = &r.ExpiryDate
+		}
+
+		data[i] = dto.SKUReceiptResponse{
+			ID:               r.ID,
+			ReceivedAt:       r.ReceivedAt.Format(time.RFC3339),
+			SourceType:       r.SourceType,
+			Quantity:         r.Quantity,
+			WarehouseID:      r.WarehouseID,
+			WarehouseName:    r.WarehouseName,
+			LotNumber:        r.LotNumber,
+			SupplierLot:      r.SupplierLot,
+			ExpiryDate:       expPtr,
+			ReferenceType:    r.ReferenceType,
+			ReferenceID:      r.ReferenceID,
+			PurchaseOrderRef: r.PurchaseOrderRef,
+			Note:             r.Note,
+		}
+	}
+
+	return response.List(c, data, page, limit, total)
 }
 
 func (h *SKUHandler) Update(c *fiber.Ctx) error {
@@ -155,5 +210,7 @@ func toSKUResponse(item *domainSKU.SKU) dto.SKUResponse {
 		IsBundle:  item.IsBundle,
 		Image:     item.Image,
 		Status:    item.Status,
+		CreatedAt: item.CreatedAt.Format(time.RFC3339),
 	}
 }
+

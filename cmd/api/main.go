@@ -23,6 +23,7 @@ import (
 	domainPurchasing "chawy-erp-api/internal/domain/purchasing"
 	domainQuotation "chawy-erp-api/internal/domain/quotation"
 	domainSalesReturn "chawy-erp-api/internal/domain/salesreturn"
+	domainSeq "chawy-erp-api/internal/domain/sequence"
 	domainSettings "chawy-erp-api/internal/domain/settings"
 	domainSKU "chawy-erp-api/internal/domain/sku"
 	domainStock "chawy-erp-api/internal/domain/stock"
@@ -40,11 +41,13 @@ import (
 	usecaseQuotation "chawy-erp-api/internal/usecase/quotation"
 	usecaseReport "chawy-erp-api/internal/usecase/report"
 	usecaseSalesReturn "chawy-erp-api/internal/usecase/salesreturn"
+	usecaseSeq "chawy-erp-api/internal/usecase/sequence"
 	usecaseSettings "chawy-erp-api/internal/usecase/settings"
 	usecaseSKU "chawy-erp-api/internal/usecase/sku"
 	usecaseStock "chawy-erp-api/internal/usecase/stock"
 	usecaseTikTok "chawy-erp-api/internal/usecase/tiktok"
 	"chawy-erp-api/pkg/database"
+
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
@@ -112,11 +115,13 @@ func main() {
 		&domainFormula.InventoryFormulaItem{},
 		&domainSalesReturn.SalesReturn{},
 		&domainSalesReturn.SalesReturnLine{},
+		&domainSeq.DocumentSequence{},
 	); err != nil {
 		// Fail-closed: running on an incompatible schema causes partial data
 		// failures at runtime; it is safer to refuse to start.
 		log.Fatalf("[FATAL] AutoMigrate failed: %v", err)
 	}
+
 
 	// 3.0 Migration: Reset SKU bundle flag to Finished Product and clear legacy bundle items
 	// according to the TikTok Order Inventory Deduction spec:
@@ -166,9 +171,11 @@ func main() {
 	tiktokRepo := postgres.NewTikTokRepository(db)
 	settingsRepo := postgres.NewSettingsRepository(db)
 	salesReturnRepo := postgres.NewSalesReturnRepository(db)
+	sequenceRepo := postgres.NewSequenceRepository(db)
 
 	// 5. Dependency Injection - Usecases
 	txManager := database.NewTxManager(db)
+	sequenceUsecase := usecaseSeq.NewSequenceUsecase(sequenceRepo)
 
 	authUsecase := usecaseAuth.NewAuthUsecase(authRepo, cfg.JWTSecret, cfg.JWTExpHours)
 	skuUsecase := usecaseSKU.NewSKUUsecaseWithStock(skuRepo, stockRepo)
@@ -176,19 +183,19 @@ func main() {
 	formulaUsecase := usecaseFormula.NewFormulaUsecase(formulaRepo, skuRepo, stockRepo)
 	stockUsecase := usecaseStock.NewStockUsecaseWithTx(stockRepo, txManager)
 	customerUsecase := usecaseCustomer.NewCustomerUsecase(customerRepo)
-	orderUsecase := usecaseOrder.NewOrderUsecase(db, orderRepo, skuRepo, bundleRepo, formulaRepo, stockRepo)
-	purchasingUsecase := usecasePurchasing.NewPurchasingUsecaseWithTx(db, purchasingRepo, skuRepo, stockRepo, txManager)
-	invoiceUsecase := usecaseInvoice.NewInvoiceUsecaseWithTx(invoiceRepo, orderRepo, txManager)
+	orderUsecase := usecaseOrder.NewOrderUsecase(db, orderRepo, skuRepo, bundleRepo, formulaRepo, stockRepo, sequenceUsecase)
+	purchasingUsecase := usecasePurchasing.NewPurchasingUsecaseWithTx(db, purchasingRepo, skuRepo, stockRepo, txManager, sequenceUsecase)
+	invoiceUsecase := usecaseInvoice.NewInvoiceUsecaseWithTx(invoiceRepo, orderRepo, txManager, sequenceUsecase)
 	reportUsecase := usecaseReport.NewReportUsecase(db)
 	tiktokUsecase := usecaseTikTok.NewTikTokUsecase(cfg, db, tiktokRepo, orderRepo, formulaRepo, skuRepo, bundleRepo, stockRepo)
 	settingsUsecase := usecaseSettings.NewSettingsUsecase(settingsRepo)
 	financeRepo := postgres.NewFinanceRepository(db)
 	financeUsecase := usecaseFinance.NewFinanceUsecase(financeRepo, txManager)
 	quotationRepo := postgres.NewQuotationRepository(db)
-	quotationUsecase := usecaseQuotation.NewQuotationUsecaseWithStock(quotationRepo, skuRepo, orderRepo, txManager, stockRepo, bundleRepo)
+	quotationUsecase := usecaseQuotation.NewQuotationUsecaseWithStock(quotationRepo, skuRepo, orderRepo, txManager, stockRepo, bundleRepo, sequenceUsecase)
 	liveRepo := postgres.NewLiveRepository(db)
 	liveUsecase := usecaseLive.NewLiveUsecase(db, liveRepo, settingsRepo, authRepo)
-	salesReturnUsecase := usecaseSalesReturn.NewSalesReturnUsecase(db, salesReturnRepo, orderRepo, invoiceRepo, skuRepo, stockRepo, formulaRepo, financeUsecase)
+	salesReturnUsecase := usecaseSalesReturn.NewSalesReturnUsecase(db, salesReturnRepo, orderRepo, invoiceRepo, skuRepo, stockRepo, formulaRepo, financeUsecase, sequenceUsecase)
 
 	// 6. Dependency Injection - Handlers
 	authHdl := handler.NewAuthHandler(authUsecase)
@@ -202,7 +209,8 @@ func main() {
 	invoiceHdl := handler.NewInvoiceHandler(invoiceUsecase, db, settingsUsecase)
 	reportHdl := handler.NewReportHandler(reportUsecase)
 	financeHdl := handler.NewFinanceHandler(financeUsecase)
-	workspaceHdl := handler.NewWorkspaceHandler(db, orderUsecase, quotationUsecase, stockUsecase, skuRepo)
+	workspaceHdl := handler.NewWorkspaceHandler(db, orderUsecase, quotationUsecase, stockUsecase, skuRepo, sequenceUsecase)
+
 	tiktokHdl := handler.NewTikTokHandler(tiktokUsecase)
 	settingsHdl := handler.NewSettingsHandler(settingsUsecase)
 	uploadHdl := handler.NewUploadHandler()

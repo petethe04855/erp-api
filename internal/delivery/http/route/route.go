@@ -69,8 +69,10 @@ func RegisterRoutes(cfg Config) {
 	skus.Post("/", middleware.RequireRole("owner", "warehouse", "sales"), cfg.SKUHandler.Create)
 	skus.Get("/code/:code", cfg.SKUHandler.GetBySKU)
 	skus.Get("/:id", cfg.SKUHandler.GetByID)
+	skus.Get("/:id/receipts", cfg.SKUHandler.GetReceiptHistory)
 	skus.Put("/:id", middleware.RequireRole("owner", "warehouse", "sales"), cfg.SKUHandler.Update)
 	skus.Delete("/:id", middleware.RequireRole("owner", "accountant"), cfg.SKUHandler.Delete)
+
 
 	// Inventory Formulas Routes (Replaces SKU-based bundles)
 	if cfg.FormulaHandler != nil {

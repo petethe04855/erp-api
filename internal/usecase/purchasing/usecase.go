@@ -7,8 +7,10 @@ import (
 	"time"
 
 	domainPurchasing "chawy-erp-api/internal/domain/purchasing"
+	domainSeq "chawy-erp-api/internal/domain/sequence"
 	domainSKU "chawy-erp-api/internal/domain/sku"
 	domainStock "chawy-erp-api/internal/domain/stock"
+	usecaseSeq "chawy-erp-api/internal/usecase/sequence"
 	"chawy-erp-api/pkg/database"
 	appErrors "chawy-erp-api/pkg/errors"
 
@@ -70,6 +72,7 @@ type purchasingUsecase struct {
 	purchasingRepo domainPurchasing.Repository
 	skuRepo        domainSKU.Repository
 	stockRepo      domainStock.Repository
+	seqUsecase     usecaseSeq.Usecase
 }
 
 func NewPurchasingUsecase(
@@ -77,12 +80,18 @@ func NewPurchasingUsecase(
 	purchasingRepo domainPurchasing.Repository,
 	skuRepo domainSKU.Repository,
 	stockRepo domainStock.Repository,
+	seqUsecase ...usecaseSeq.Usecase,
 ) Usecase {
+	var su usecaseSeq.Usecase
+	if len(seqUsecase) > 0 {
+		su = seqUsecase[0]
+	}
 	return &purchasingUsecase{
 		db:             db,
 		purchasingRepo: purchasingRepo,
 		skuRepo:        skuRepo,
 		stockRepo:      stockRepo,
+		seqUsecase:     su,
 	}
 }
 
@@ -94,15 +103,22 @@ func NewPurchasingUsecaseWithTx(
 	skuRepo domainSKU.Repository,
 	stockRepo domainStock.Repository,
 	txMgr database.TxManager,
+	seqUsecase ...usecaseSeq.Usecase,
 ) Usecase {
+	var su usecaseSeq.Usecase
+	if len(seqUsecase) > 0 {
+		su = seqUsecase[0]
+	}
 	return &purchasingUsecase{
 		db:             db,
 		txMgr:          txMgr,
 		purchasingRepo: purchasingRepo,
 		skuRepo:        skuRepo,
 		stockRepo:      stockRepo,
+		seqUsecase:     su,
 	}
 }
+
 
 func (u *purchasingUsecase) CreateSupplier(ctx context.Context, in CreateSupplierInput) (*domainPurchasing.Supplier, error) {
 	code := in.Code
@@ -161,8 +177,14 @@ func (u *purchasingUsecase) CreatePO(ctx context.Context, in CreatePOInput) (*do
 	}
 
 	poNo := fmt.Sprintf("PO-%s-%04d", time.Now().Format("2006/01/02"), time.Now().UnixNano()%10000)
+	if u.seqUsecase != nil {
+		if genNo, err := u.seqUsecase.Generate(ctx, string(domainSeq.TypePurchaseOrder), nil); err == nil && genNo != "" {
+			poNo = genNo
+		}
+	}
 	var totalCost float64
 	var items []domainPurchasing.POItem
+
 
 	for _, itm := range in.Items {
 		skuItem, err := u.skuRepo.FindBySKU(ctx, itm.SKU)
@@ -272,6 +294,11 @@ func (u *purchasingUsecase) ReceiveGoods(ctx context.Context, in ReceiveGoodsInp
 		}
 
 		grCode := fmt.Sprintf("GR-%s-%04d", time.Now().Format("2006/01/02"), time.Now().UnixNano()%10000)
+		if u.seqUsecase != nil {
+			if genCode, err := u.seqUsecase.Generate(txCtx, string(domainSeq.TypeGoodsReceive), nil); err == nil && genCode != "" {
+				grCode = genCode
+			}
+		}
 		gr := &domainPurchasing.GoodsReceive{
 			Code:         grCode,
 			POID:         &po.ID,
@@ -280,6 +307,7 @@ func (u *purchasingUsecase) ReceiveGoods(ctx context.Context, in ReceiveGoodsInp
 			ReceiveDate:  time.Now().Format("2006-01-02"),
 			Note:         fmt.Sprintf("Received via PO receive API for %s", po.PONo),
 		}
+
 
 		var grItems []domainPurchasing.GoodsReceiveItem
 		pendingGR := gr

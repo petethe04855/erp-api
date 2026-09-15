@@ -7,18 +7,20 @@ import (
 
 	domainInvoice "chawy-erp-api/internal/domain/invoice"
 	domainOrder "chawy-erp-api/internal/domain/order"
+	domainSeq "chawy-erp-api/internal/domain/sequence"
+	usecaseSeq "chawy-erp-api/internal/usecase/sequence"
 	"chawy-erp-api/pkg/database"
 	appErrors "chawy-erp-api/pkg/errors"
 )
 
 type CreateInvoiceFromOrderInput struct {
-	OrderID uint `json:"order_id"`
+	OrderID uint
 }
 
 type MarkPaidInput struct {
-	InvoiceID     uint    `json:"invoice_id"`
-	Amount        float64 `json:"amount"`
-	PaymentMethod string  `json:"payment_method"`
+	InvoiceID     uint
+	Amount        float64
+	PaymentMethod string
 }
 
 type Usecase interface {
@@ -29,25 +31,36 @@ type Usecase interface {
 }
 
 type invoiceUsecase struct {
-	invRepo   domainInvoice.Repository
-	orderRepo domainOrder.Repository
-	txMgr     database.TxManager
+	invRepo    domainInvoice.Repository
+	orderRepo  domainOrder.Repository
+	txMgr      database.TxManager
+	seqUsecase usecaseSeq.Usecase
 }
 
-func NewInvoiceUsecase(invRepo domainInvoice.Repository, orderRepo domainOrder.Repository) Usecase {
+func NewInvoiceUsecase(invRepo domainInvoice.Repository, orderRepo domainOrder.Repository, seqUsecase ...usecaseSeq.Usecase) Usecase {
+	var su usecaseSeq.Usecase
+	if len(seqUsecase) > 0 {
+		su = seqUsecase[0]
+	}
 	return &invoiceUsecase{
-		invRepo:   invRepo,
-		orderRepo: orderRepo,
+		invRepo:    invRepo,
+		orderRepo:  orderRepo,
+		seqUsecase: su,
 	}
 }
 
 // NewInvoiceUsecaseWithTx wires a transaction manager so payment reads and
 // writes are serialized per invoice row (FULL-18).
-func NewInvoiceUsecaseWithTx(invRepo domainInvoice.Repository, orderRepo domainOrder.Repository, txMgr database.TxManager) Usecase {
+func NewInvoiceUsecaseWithTx(invRepo domainInvoice.Repository, orderRepo domainOrder.Repository, txMgr database.TxManager, seqUsecase ...usecaseSeq.Usecase) Usecase {
+	var su usecaseSeq.Usecase
+	if len(seqUsecase) > 0 {
+		su = seqUsecase[0]
+	}
 	return &invoiceUsecase{
-		invRepo:   invRepo,
-		orderRepo: orderRepo,
-		txMgr:     txMgr,
+		invRepo:    invRepo,
+		orderRepo:  orderRepo,
+		txMgr:      txMgr,
+		seqUsecase: su,
 	}
 }
 
@@ -67,6 +80,11 @@ func (u *invoiceUsecase) CreateFromOrder(ctx context.Context, in CreateInvoiceFr
 	}
 
 	invNo := fmt.Sprintf("INV-%s-%04d", time.Now().Format("2006/01/02"), time.Now().UnixNano()%10000)
+	if u.seqUsecase != nil {
+		if genNo, err := u.seqUsecase.Generate(ctx, string(domainSeq.TypeInvoice), nil); err == nil && genNo != "" {
+			invNo = genNo
+		}
+	}
 	dueDate := time.Now().AddDate(0, 0, 30)
 
 	inv := &domainInvoice.Invoice{

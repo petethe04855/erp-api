@@ -18,9 +18,12 @@ import (
 	domainTikTok "chawy-erp-api/internal/domain/tiktok"
 	usecaseOrder "chawy-erp-api/internal/usecase/order"
 	usecaseQuotation "chawy-erp-api/internal/usecase/quotation"
+	usecaseSeq "chawy-erp-api/internal/usecase/sequence"
 	usecaseStock "chawy-erp-api/internal/usecase/stock"
+	"chawy-erp-api/pkg/database"
 	"chawy-erp-api/pkg/pdf"
 	"chawy-erp-api/pkg/response"
+
 
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
@@ -33,6 +36,7 @@ type WorkspaceHandler struct {
 	quotationUsecase usecaseQuotation.Usecase
 	stockUsecase     usecaseStock.Usecase
 	skuRepo          domainSKU.Repository
+	seqUsecase       usecaseSeq.Usecase
 }
 
 func NewWorkspaceHandler(
@@ -41,15 +45,22 @@ func NewWorkspaceHandler(
 	quotationUsecase usecaseQuotation.Usecase,
 	stockUsecase usecaseStock.Usecase,
 	skuRepo domainSKU.Repository,
+	seqUsecase ...usecaseSeq.Usecase,
 ) *WorkspaceHandler {
+	var su usecaseSeq.Usecase
+	if len(seqUsecase) > 0 {
+		su = seqUsecase[0]
+	}
 	return &WorkspaceHandler{
 		db:               db,
 		orderUsecase:     orderUsecase,
 		quotationUsecase: quotationUsecase,
 		stockUsecase:     stockUsecase,
 		skuRepo:          skuRepo,
+		seqUsecase:       su,
 	}
 }
+
 
 // ProductRecord matching erp-web-v2 features/erp/types/records.ts
 type SKUAccessoryRecord struct {
@@ -81,7 +92,11 @@ type ProductRecord struct {
 	BundleAvailable *int                 `json:"bundleAvailable,omitempty"`
 	Image           string               `json:"image"`
 	Accessories     []SKUAccessoryRecord `json:"accessories,omitempty"`
+	CreatedAt       string               `json:"createdAt"`
+	LastReceivedAt  *string              `json:"lastReceivedAt"`
+	ReceiptCount    int                  `json:"receiptCount"`
 }
+
 
 func (h *WorkspaceHandler) GetProducts(c *fiber.Ctx) error {
 	page, _ := strconv.Atoi(c.Query("page", "1"))
@@ -329,6 +344,9 @@ func (h *WorkspaceHandler) GetProducts(c *fiber.Ctx) error {
 		}
 	}
 
+	// Batch fetch receipt stats for candidate SKUs
+	receiptStatsMap, _ := h.skuRepo.GetReceiptStatsBatch(c.Context(), skuIDs)
+
 	records := make([]ProductRecord, len(skus))
 	for i, s := range skus {
 		stk := stockMap[s.ID]
@@ -383,6 +401,13 @@ func (h *WorkspaceHandler) GetProducts(c *fiber.Ctx) error {
 			usedTotal = alt
 		}
 
+		rcStat := receiptStatsMap[s.ID]
+		var lastRecDateStr *string
+		if rcStat.LastReceivedAt != nil {
+			formatted := rcStat.LastReceivedAt.Format(time.RFC3339)
+			lastRecDateStr = &formatted
+		}
+
 		records[i] = ProductRecord{
 			ID:              s.ID,
 			SKU:             s.SKU,
@@ -403,8 +428,12 @@ func (h *WorkspaceHandler) GetProducts(c *fiber.Ctx) error {
 			BundleAvailable: bundleAvail,
 			Image:           s.Image,
 			Accessories:     accessoriesMap[s.SKU],
+			CreatedAt:       s.CreatedAt.Format(time.RFC3339),
+			LastReceivedAt:  lastRecDateStr,
+			ReceiptCount:    rcStat.ReceiptCount,
 		}
 	}
+
 
 	return response.List(c, records, page, limit, total)
 }
@@ -1862,13 +1891,21 @@ func (h *WorkspaceHandler) CreateInvoiceFromSO(c *fiber.Ctx) error {
 		}, "Existing invoice retrieved")
 	}
 
+	invNo := fmt.Sprintf("INV-%s", time.Now().Format("20060102150405"))
+	if h.seqUsecase != nil {
+		if genNo, err := h.seqUsecase.Generate(c.Context(), "INV", nil); err == nil && genNo != "" {
+			invNo = genNo
+		}
+	}
+
 	inv := domainInvoice.Invoice{
-		InvoiceNo:    fmt.Sprintf("INV-%s", time.Now().Format("20060102150405")),
+		InvoiceNo:    invNo,
 		OrderID:      &orderID,
 		OrderNo:      order.OrderNo,
 		CustomerID:   order.CustomerID,
 		CustomerName: order.CustomerName,
 		Amount:       order.TotalAmount,
+
 		PaidAmount:   0,
 		Status:       domainInvoice.StatusUnpaid,
 		DueDate:      &dueDate,
@@ -3048,6 +3085,15 @@ func (h *WorkspaceHandler) CreateGoodsReceive(c *fiber.Ctx) error {
 		}
 
 		grCode := fmt.Sprintf("GR-%s-%04d", time.Now().Format("2006/01/02"), time.Now().UnixNano()%10000)
+		if h.seqUsecase != nil {
+			var docDate *time.Time
+			if parsed, err := time.Parse("2006-01-02", receiveDate); err == nil {
+				docDate = &parsed
+			}
+			if genCode, err := h.seqUsecase.Generate(database.WithTxContext(c.Context(), tx), "GR", docDate); err == nil && genCode != "" {
+				grCode = genCode
+			}
+		}
 		createdGR = domainPurchasing.GoodsReceive{
 			Code:         grCode,
 			POID:         poIDPtr,
@@ -3058,6 +3104,7 @@ func (h *WorkspaceHandler) CreateGoodsReceive(c *fiber.Ctx) error {
 			CreatedAt:    time.Now(),
 			UpdatedAt:    time.Now(),
 		}
+
 		if err := tx.Create(&createdGR).Error; err != nil {
 			return err
 		}

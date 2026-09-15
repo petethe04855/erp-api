@@ -10,14 +10,17 @@ import (
 	domainFinance "chawy-erp-api/internal/domain/finance"
 	domainFormula "chawy-erp-api/internal/domain/formula"
 	domainOrder "chawy-erp-api/internal/domain/order"
+	domainSeq "chawy-erp-api/internal/domain/sequence"
 	domainSKU "chawy-erp-api/internal/domain/sku"
 	domainStock "chawy-erp-api/internal/domain/stock"
+	usecaseSeq "chawy-erp-api/internal/usecase/sequence"
 	usecaseStock "chawy-erp-api/internal/usecase/stock"
 	"chawy-erp-api/pkg/database"
 	appErrors "chawy-erp-api/pkg/errors"
 
 	"gorm.io/gorm"
 )
+
 
 type CreateItemInput struct {
 	SKU      string  `json:"sku"`
@@ -52,6 +55,7 @@ type orderUsecase struct {
 	formulaRepo domainFormula.Repository
 	stockRepo   domainStock.Repository
 	txMgr       database.TxManager
+	seqUsecase  usecaseSeq.Usecase
 }
 
 func NewOrderUsecase(
@@ -61,10 +65,15 @@ func NewOrderUsecase(
 	bundleRepo domainBundle.Repository,
 	formulaRepo domainFormula.Repository,
 	stockRepo domainStock.Repository,
+	seqUsecase ...usecaseSeq.Usecase,
 ) Usecase {
 	var txMgr database.TxManager
 	if db != nil {
 		txMgr = database.NewTxManager(db)
+	}
+	var su usecaseSeq.Usecase
+	if len(seqUsecase) > 0 {
+		su = seqUsecase[0]
 	}
 	return &orderUsecase{
 		db:          db,
@@ -74,6 +83,7 @@ func NewOrderUsecase(
 		formulaRepo: formulaRepo,
 		stockRepo:   stockRepo,
 		txMgr:       txMgr,
+		seqUsecase:  su,
 	}
 }
 
@@ -85,7 +95,12 @@ func NewOrderUsecaseWithTx(
 	formulaRepo domainFormula.Repository,
 	stockRepo domainStock.Repository,
 	txMgr database.TxManager,
+	seqUsecase ...usecaseSeq.Usecase,
 ) Usecase {
+	var su usecaseSeq.Usecase
+	if len(seqUsecase) > 0 {
+		su = seqUsecase[0]
+	}
 	return &orderUsecase{
 		db:          db,
 		orderRepo:   orderRepo,
@@ -94,8 +109,10 @@ func NewOrderUsecaseWithTx(
 		formulaRepo: formulaRepo,
 		stockRepo:   stockRepo,
 		txMgr:       txMgr,
+		seqUsecase:  su,
 	}
 }
+
 
 func (u *orderUsecase) withTransaction(ctx context.Context, fn func(txCtx context.Context) error) error {
 	if u.txMgr != nil {
@@ -115,9 +132,15 @@ func (u *orderUsecase) Create(ctx context.Context, in CreateOrderInput) (*domain
 	}
 
 	orderNo := fmt.Sprintf("SO-%s-%04d", time.Now().Format("2006/01/02"), time.Now().UnixNano()%10000)
+	if u.seqUsecase != nil {
+		if genNo, err := u.seqUsecase.Generate(ctx, string(domainSeq.TypeSalesOrder), nil); err == nil && genNo != "" {
+			orderNo = genNo
+		}
+	}
 
 	var totalAmount float64
 	var items []domainOrder.OrderItem
+
 
 	for _, itemInput := range in.Items {
 		if itemInput.Quantity <= 0 {

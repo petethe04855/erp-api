@@ -10,14 +10,17 @@ import (
 	domainInvoice "chawy-erp-api/internal/domain/invoice"
 	domainOrder "chawy-erp-api/internal/domain/order"
 	domainReturn "chawy-erp-api/internal/domain/salesreturn"
+	domainSeq "chawy-erp-api/internal/domain/sequence"
 	domainSKU "chawy-erp-api/internal/domain/sku"
 	domainStock "chawy-erp-api/internal/domain/stock"
 	usecaseFinance "chawy-erp-api/internal/usecase/finance"
+	usecaseSeq "chawy-erp-api/internal/usecase/sequence"
 	"chawy-erp-api/pkg/database"
 	appErrors "chawy-erp-api/pkg/errors"
 
 	"gorm.io/gorm"
 )
+
 
 type CreateReturnLineInput struct {
 	SKU        string                    `json:"sku"`
@@ -80,6 +83,7 @@ type salesReturnUsecase struct {
 	stockRepo   domainStock.Repository
 	formulaRepo domainFormula.Repository
 	financeUC   usecaseFinance.Usecase
+	seqUsecase  usecaseSeq.Usecase
 }
 
 func NewSalesReturnUsecase(
@@ -91,7 +95,12 @@ func NewSalesReturnUsecase(
 	stockRepo domainStock.Repository,
 	formulaRepo domainFormula.Repository,
 	financeUC usecaseFinance.Usecase,
+	seqUsecase ...usecaseSeq.Usecase,
 ) Usecase {
+	var su usecaseSeq.Usecase
+	if len(seqUsecase) > 0 {
+		su = seqUsecase[0]
+	}
 	return &salesReturnUsecase{
 		db:          db,
 		returnRepo:  returnRepo,
@@ -101,8 +110,10 @@ func NewSalesReturnUsecase(
 		stockRepo:   stockRepo,
 		formulaRepo: formulaRepo,
 		financeUC:   financeUC,
+		seqUsecase:  su,
 	}
 }
+
 
 func (u *salesReturnUsecase) withTransaction(ctx context.Context, fn func(txCtx context.Context) error) error {
 	if u.db != nil {
@@ -215,10 +226,16 @@ func (u *salesReturnUsecase) Create(ctx context.Context, in CreateReturnInput) (
 	}
 
 	returnNo := fmt.Sprintf("RT-%s-%04d", time.Now().Format("2006/01/02"), time.Now().UnixNano()%10000)
+	if u.seqUsecase != nil {
+		if genNo, err := u.seqUsecase.Generate(ctx, string(domainSeq.TypeSalesReturn), &returnDate); err == nil && genNo != "" {
+			returnNo = genNo
+		}
+	}
 
 	var subtotal float64
 	var totalQty int
 	var lines []domainReturn.SalesReturnLine
+
 
 	for _, l := range in.Lines {
 		if l.Quantity <= 0 {

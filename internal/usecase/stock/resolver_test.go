@@ -89,6 +89,13 @@ func (m *mockSKURepo) ExistsBySKU(ctx context.Context, sku string) (bool, error)
 	_, ok := m.skus[sku]
 	return ok, nil
 }
+func (m *mockSKURepo) GetReceiptStatsBatch(ctx context.Context, skuIDs []uint) (map[uint]domainSKU.SKUBatchReceiptStat, error) {
+	return make(map[uint]domainSKU.SKUBatchReceiptStat), nil
+}
+func (m *mockSKURepo) GetReceiptHistory(ctx context.Context, query domainSKU.SKUReceiptQuery) ([]domainSKU.SKUReceiptItem, int64, error) {
+	return nil, 0, nil
+}
+
 
 func TestDeductionResolver_DirectSKU(t *testing.T) {
 	formulaRepo := &mockFormulaRepo{formulas: make(map[string]*domainFormula.InventoryFormula)}

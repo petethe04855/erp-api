@@ -11,10 +11,13 @@ import (
 	domainBundle "chawy-erp-api/internal/domain/bundle"
 	domainOrder "chawy-erp-api/internal/domain/order"
 	domainQuotation "chawy-erp-api/internal/domain/quotation"
+	domainSeq "chawy-erp-api/internal/domain/sequence"
 	domainSKU "chawy-erp-api/internal/domain/sku"
 	domainStock "chawy-erp-api/internal/domain/stock"
+	usecaseSeq "chawy-erp-api/internal/usecase/sequence"
 	appErrors "chawy-erp-api/pkg/errors"
 )
+
 
 // SKUFinder resolves SKU records during line validation.
 type SKUFinder interface {
@@ -58,15 +61,25 @@ type quotationUsecase struct {
 	txMgr      TxManager
 	stockRepo  StockReserver
 	bundleRepo BundleFinder
+	seqUsecase usecaseSeq.Usecase
 }
 
-func NewQuotationUsecase(repo domainQuotation.Repository, skuRepo SKUFinder, orderRepo OrderCreator, txMgr TxManager) Usecase {
-	return &quotationUsecase{repo: repo, skuRepo: skuRepo, orderRepo: orderRepo, txMgr: txMgr}
+func NewQuotationUsecase(repo domainQuotation.Repository, skuRepo SKUFinder, orderRepo OrderCreator, txMgr TxManager, seqUsecase ...usecaseSeq.Usecase) Usecase {
+	var su usecaseSeq.Usecase
+	if len(seqUsecase) > 0 {
+		su = seqUsecase[0]
+	}
+	return &quotationUsecase{repo: repo, skuRepo: skuRepo, orderRepo: orderRepo, txMgr: txMgr, seqUsecase: su}
 }
 
-func NewQuotationUsecaseWithStock(repo domainQuotation.Repository, skuRepo SKUFinder, orderRepo OrderCreator, txMgr TxManager, stockRepo StockReserver, bundleRepo BundleFinder) Usecase {
-	return &quotationUsecase{repo: repo, skuRepo: skuRepo, orderRepo: orderRepo, txMgr: txMgr, stockRepo: stockRepo, bundleRepo: bundleRepo}
+func NewQuotationUsecaseWithStock(repo domainQuotation.Repository, skuRepo SKUFinder, orderRepo OrderCreator, txMgr TxManager, stockRepo StockReserver, bundleRepo BundleFinder, seqUsecase ...usecaseSeq.Usecase) Usecase {
+	var su usecaseSeq.Usecase
+	if len(seqUsecase) > 0 {
+		su = seqUsecase[0]
+	}
+	return &quotationUsecase{repo: repo, skuRepo: skuRepo, orderRepo: orderRepo, txMgr: txMgr, stockRepo: stockRepo, bundleRepo: bundleRepo, seqUsecase: su}
 }
+
 
 func (u *quotationUsecase) List(ctx context.Context, page, limit int) ([]domainQuotation.Quotation, int64, error) {
 	if page < 1 {
@@ -158,7 +171,7 @@ func (u *quotationUsecase) Create(ctx context.Context, input CreateInput) (*doma
 		}
 	}
 
-	// API-TS-03: Generate collision-resistant unique code with nanosecond precision and cryptographic entropy.
+	// API-TS-03: Generate collision-resistant unique code with daily sequence
 	now := time.Now()
 	rnd, err := rand.Int(rand.Reader, big.NewInt(100000000))
 	var rndVal int64
@@ -168,6 +181,16 @@ func (u *quotationUsecase) Create(ctx context.Context, input CreateInput) (*doma
 		rndVal = rnd.Int64()
 	}
 	code := fmt.Sprintf("QT-%s-%09d-%08d", now.Format("2006/01/02"), now.UnixNano()%1000000000, rndVal)
+	if u.seqUsecase != nil {
+		var docDate *time.Time
+		if parsed, err := time.Parse("2006-01-02", dateStr); err == nil {
+			docDate = &parsed
+		}
+		if genCode, err := u.seqUsecase.Generate(ctx, string(domainSeq.TypeQuotation), docDate); err == nil && genCode != "" {
+			code = genCode
+		}
+	}
+
 
 	q := &domainQuotation.Quotation{
 		Code:         code,

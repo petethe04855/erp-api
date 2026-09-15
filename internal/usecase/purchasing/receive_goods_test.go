@@ -38,6 +38,13 @@ func (f *fakeSKURepo) Delete(ctx context.Context, id uint) error          { retu
 func (f *fakeSKURepo) ExistsBySKU(ctx context.Context, code string) (bool, error) {
 	return false, nil
 }
+func (f *fakeSKURepo) GetReceiptStatsBatch(ctx context.Context, skuIDs []uint) (map[uint]domainSKU.SKUBatchReceiptStat, error) {
+	return make(map[uint]domainSKU.SKUBatchReceiptStat), nil
+}
+func (f *fakeSKURepo) GetReceiptHistory(ctx context.Context, query domainSKU.SKUReceiptQuery) ([]domainSKU.SKUReceiptItem, int64, error) {
+	return nil, 0, nil
+}
+
 
 type fakePurchRepo struct {
 	pos       map[uint]*domainPurchasing.PurchaseOrder
