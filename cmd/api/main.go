@@ -236,11 +236,20 @@ func main() {
 		allowedOrigins += ",http://localhost:8082,http://127.0.0.1:8082"
 	}
 
+	// In development, allow any origin (e.g. access via LAN IP from other
+	// devices). Auth is Authorization-header based (no cookies), so credentials
+	// mode is not required and the strict whitelist applies only in production.
+	corsAllowCredentials := true
+	if cfg.Environment != "production" {
+		allowedOrigins = "*"
+		corsAllowCredentials = false
+	}
+
 	app.Use(cors.New(cors.Config{
 		AllowOrigins:     allowedOrigins,
 		AllowHeaders:     "Origin, Content-Type, Accept, Authorization, X-Requested-With, Cache-Control, Pragma",
 		AllowMethods:     "GET, POST, PUT, DELETE, OPTIONS, PATCH",
-		AllowCredentials: true,
+		AllowCredentials: corsAllowCredentials,
 	}))
 
 	// Serve uploaded files statically
@@ -274,6 +283,10 @@ func main() {
 	startTiktokSyncScheduler(cfg, tiktokUsecase)
 
 	// 10. Start Server
+	if cfg.Port == "" || cfg.Port == "0" {
+		log.Printf("[WARN] Invalid PORT (%q) from environment; falling back to 8084", cfg.Port)
+		cfg.Port = "8084"
+	}
 	log.Printf("[INFO] Server starting on port %s...", cfg.Port)
 	if err := app.Listen(":" + cfg.Port); err != nil {
 		log.Fatalf("[FATAL] Server terminated unexpectedly: %v", err)
