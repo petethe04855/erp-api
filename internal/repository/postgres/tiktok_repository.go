@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"chawy-erp-api/internal/domain/tiktok"
@@ -149,8 +150,54 @@ func (r *TikTokRepository) ListRecentOrders(ctx context.Context, limit int) ([]t
 		limit = 50
 	}
 	var orders []tiktok.TiktokOrder
-	err := r.handle(ctx).Preload("Items").Order("date DESC").Limit(limit).Find(&orders).Error
+	err := r.handle(ctx).Preload("Items").Order("date DESC, id DESC").Limit(limit).Find(&orders).Error
 	return orders, err
+}
+
+func (r *TikTokRepository) ListOrders(ctx context.Context, query tiktok.OrderQuery) ([]tiktok.TiktokOrder, int64, error) {
+	db := r.handle(ctx).Model(&tiktok.TiktokOrder{})
+
+	if query.Search != "" {
+		s := "%" + strings.TrimSpace(query.Search) + "%"
+		db = db.Where("id LIKE ? OR product LIKE ? OR sku LIKE ?", s, s, s)
+	}
+
+	if query.Status != "" && !strings.EqualFold(query.Status, "all") {
+		db = db.Where("UPPER(TRIM(status)) = ?", strings.ToUpper(strings.TrimSpace(query.Status)))
+	}
+
+	if query.StockStatus != "" && !strings.EqualFold(query.StockStatus, "all") {
+		st := strings.ToUpper(strings.TrimSpace(query.StockStatus))
+		if st == "DEDUCTED" {
+			db = db.Where("stock_deducted = ?", true)
+		} else if st == "PENDING" {
+			db = db.Where("stock_deducted = ? AND UPPER(TRIM(status)) NOT IN ?", false, []string{"CANCELLED", "UNPAID"})
+		} else if st == "FAILED" {
+			db = db.Where("stock_deducted = ?", false)
+		}
+	}
+
+	var total int64
+	if err := db.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	q := db.Preload("Items").Order("date DESC, id DESC")
+	if query.Limit > 0 {
+		page := query.Page
+		if page < 1 {
+			page = 1
+		}
+		offset := (page - 1) * query.Limit
+		q = q.Offset(offset).Limit(query.Limit)
+	}
+
+	var orders []tiktok.TiktokOrder
+	if err := q.Find(&orders).Error; err != nil {
+		return nil, 0, err
+	}
+
+	return orders, total, nil
 }
 
 func (r *TikTokRepository) CreateSyncRun(ctx context.Context, run *tiktok.TiktokSyncRun) error {

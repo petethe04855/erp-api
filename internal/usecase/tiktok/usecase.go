@@ -99,6 +99,7 @@ type Usecase interface {
 	SyncOrders(ctx context.Context, days int) (*SyncResultResponse, error)
 	GetSyncRuns(ctx context.Context, limit int) ([]domainTikTok.TiktokSyncRun, error)
 	GetOrders(ctx context.Context, limit int) ([]domainTikTok.TiktokOrder, error)
+	ListOrders(ctx context.Context, query domainTikTok.OrderQuery) ([]domainTikTok.TiktokOrder, int64, error)
 
 	// Products & Preview
 	GetProducts(ctx context.Context, pageToken string, pageSize int) (*pkgTikTok.ProductSearchResponse, error)
@@ -684,6 +685,10 @@ func (u *tiktokUsecase) GetSyncRuns(ctx context.Context, limit int) ([]domainTik
 
 func (u *tiktokUsecase) GetOrders(ctx context.Context, limit int) ([]domainTikTok.TiktokOrder, error) {
 	return u.tiktokRepo.ListRecentOrders(ctx, limit)
+}
+
+func (u *tiktokUsecase) ListOrders(ctx context.Context, query domainTikTok.OrderQuery) ([]domainTikTok.TiktokOrder, int64, error) {
+	return u.tiktokRepo.ListOrders(ctx, query)
 }
 
 func (u *tiktokUsecase) GetProducts(ctx context.Context, pageToken string, pageSize int) (*pkgTikTok.ProductSearchResponse, error) {

@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	domainTikTok "chawy-erp-api/internal/domain/tiktok"
 	usecaseTikTok "chawy-erp-api/internal/usecase/tiktok"
 	"chawy-erp-api/pkg/response"
 
@@ -90,14 +91,25 @@ func (h *TikTokHandler) GetSyncRuns(c *fiber.Ctx) error {
 	return response.OK(c, runs)
 }
 
-// GetOrders returns recent TikTok orders
+// GetOrders returns TikTok orders with filtering and pagination
 func (h *TikTokHandler) GetOrders(c *fiber.Ctx) error {
+	page, _ := strconv.Atoi(c.Query("page", "1"))
 	limit, _ := strconv.Atoi(c.Query("limit", "50"))
-	orders, err := h.usecase.GetOrders(c.Context(), limit)
+	search := c.Query("search", "")
+	status := c.Query("status", "")
+	stockStatus := c.Query("stockStatus", "")
+
+	orders, total, err := h.usecase.ListOrders(c.Context(), domainTikTok.OrderQuery{
+		Search:      search,
+		Status:      status,
+		StockStatus: stockStatus,
+		Page:        page,
+		Limit:       limit,
+	})
 	if err != nil {
 		return err
 	}
-	return response.OK(c, orders)
+	return response.List(c, orders, page, limit, total)
 }
 
 // GetProducts searches products on TikTok Shop

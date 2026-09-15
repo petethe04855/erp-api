@@ -114,6 +114,14 @@ type SyncLog struct {
 
 func (SyncLog) TableName() string { return "sync_logs" }
 
+type OrderQuery struct {
+	Search      string
+	Status      string
+	StockStatus string
+	Page        int
+	Limit       int
+}
+
 // Repository outlines database operations for TikTok integration
 type Repository interface {
 	// Connection operations
@@ -137,6 +145,7 @@ type Repository interface {
 	GetOrderByIDForUpdate(ctx context.Context, id string) (*TiktokOrder, error)
 	UpdateOrderStockDeducted(ctx context.Context, orderID string, deducted bool) error
 	ListRecentOrders(ctx context.Context, limit int) ([]TiktokOrder, error)
+	ListOrders(ctx context.Context, query OrderQuery) ([]TiktokOrder, int64, error)
 
 	// Sync Runs
 	CreateSyncRun(ctx context.Context, run *TiktokSyncRun) error

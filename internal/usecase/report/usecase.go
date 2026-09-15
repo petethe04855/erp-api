@@ -2,7 +2,7 @@ package report
 
 import (
 	"context"
-	"strings"
+	"sort"
 	"time"
 
 	domainCustomer "chawy-erp-api/internal/domain/customer"
@@ -11,6 +11,7 @@ import (
 	domainPurchasing "chawy-erp-api/internal/domain/purchasing"
 	domainReport "chawy-erp-api/internal/domain/report"
 	domainSKU "chawy-erp-api/internal/domain/sku"
+	domainTikTok "chawy-erp-api/internal/domain/tiktok"
 
 	"gorm.io/gorm"
 )
@@ -60,53 +61,94 @@ func (u *reportUsecase) GetDashboardSummary(ctx context.Context) (*domainReport.
 }
 
 func (u *reportUsecase) GetRevenueReport(ctx context.Context, month string) (*domainReport.RevenueReport, error) {
-	var orders []domainOrder.Order
-	// API-27: Only include fulfilled / shipped / completed orders in recognized revenue
-	query := u.db.WithContext(ctx).Model(&domainOrder.Order{}).
-		Where("status IN ?", []string{string(domainOrder.StatusShipped), "COMPLETED"})
+	// Manual revenue is recognized only from fully paid ERP invoices. An
+	// invoice without an order is treated as Manual; linked invoices are Manual
+	// only when the source order is direct/manual. TikTok revenue comes directly
+	// from the synced tiktok_orders table and is recognized only after TikTok
+	// reports COMPLETED. Shopee is intentionally excluded for now.
+	type manualRevenueRecord struct {
+		InvoiceNo    string
+		CustomerName string
+		Amount       float64
+		PaidAt       *time.Time
+		CreatedAt    time.Time
+	}
+
+	var manualInvoices []manualRevenueRecord
+	manualQuery := u.db.WithContext(ctx).
+		Table("invoices AS invoices").
+		Select(`invoices.invoice_no,
+			invoices.customer_name,
+			invoices.amount,
+			invoices.paid_at,
+			invoices.created_at`).
+		Joins("LEFT JOIN orders AS orders ON orders.id = invoices.order_id").
+		Where("invoices.status = ?", domainInvoice.StatusPaid).
+		Where("invoices.order_id IS NULL OR LOWER(TRIM(COALESCE(orders.channel, ''))) IN ?", []string{"", "direct", "manual"})
+
+	var tiktokOrders []domainTikTok.TiktokOrder
+	tiktokQuery := u.db.WithContext(ctx).Model(&domainTikTok.TiktokOrder{}).
+		Where("UPPER(TRIM(status)) = ?", "COMPLETED")
 
 	if month != "" {
 		startTime := month + "-01"
 		if parsed, err := time.Parse("2006-01-02", startTime); err == nil {
 			endTime := parsed.AddDate(0, 1, 0).Format("2006-01-02")
-			query = query.Where("created_at >= ? AND created_at < ?", startTime, endTime)
+			manualQuery = manualQuery.Where("COALESCE(invoices.paid_at, invoices.created_at) >= ? AND COALESCE(invoices.paid_at, invoices.created_at) < ?", startTime, endTime)
+			tiktokQuery = tiktokQuery.Where("date >= ? AND date < ?", startTime, endTime)
 		}
 	}
 
-	if err := query.Order("created_at DESC").Find(&orders).Error; err != nil {
+	if err := manualQuery.Order("COALESCE(invoices.paid_at, invoices.created_at) DESC, invoices.id DESC").Scan(&manualInvoices).Error; err != nil {
+		return nil, err
+	}
+	if err := tiktokQuery.Order("date DESC, id DESC").Find(&tiktokOrders).Error; err != nil {
 		return nil, err
 	}
 
 	report := &domainReport.RevenueReport{
-		Rows:      make([]domainReport.RevenueRow, 0, len(orders)),
+		Rows:      make([]domainReport.RevenueRow, 0, len(manualInvoices)+len(tiktokOrders)),
 		Total:     0,
-		ByChannel: map[string]float64{"Manual": 0, "Shopee": 0, "TikTok": 0},
+		ByChannel: map[string]float64{"Manual": 0, "TikTok": 0},
 	}
 
-	for _, o := range orders {
-		channel := "Manual"
-		raw := strings.ToLower(strings.TrimSpace(o.Channel))
-		if strings.Contains(raw, "tiktok") || strings.Contains(raw, "tik tok") {
-			channel = "TikTok"
-		} else if strings.Contains(raw, "shopee") {
-			channel = "Shopee"
-		} else if strings.Contains(raw, "manual") || raw == "direct" || raw == "" {
-			channel = "Manual"
-		} else {
-			channel = o.Channel
+	for _, inv := range manualInvoices {
+		revDate := inv.CreatedAt
+		if inv.PaidAt != nil {
+			revDate = *inv.PaidAt
 		}
-
-		dateStr := o.CreatedAt.Format("2006-01-02")
+		dateStr := revDate.Format("2006-01-02")
 		report.Rows = append(report.Rows, domainReport.RevenueRow{
 			Date:      dateStr,
-			Reference: o.OrderNo,
-			Customer:  o.CustomerName,
-			Channel:   channel,
-			Amount:    o.TotalAmount,
+			Reference: inv.InvoiceNo,
+			Customer:  inv.CustomerName,
+			Channel:   "Manual",
+			Amount:    inv.Amount,
 		})
-		report.Total += o.TotalAmount
-		report.ByChannel[channel] += o.TotalAmount
+		report.Total += inv.Amount
+		report.ByChannel["Manual"] += inv.Amount
 	}
+
+	for _, o := range tiktokOrders {
+		report.Rows = append(report.Rows, domainReport.RevenueRow{
+			Date:      o.Date,
+			Reference: o.ID,
+			Customer:  "—",
+			Channel:   "TikTok",
+			Amount:    o.Amount,
+		})
+		report.Total += o.Amount
+		report.ByChannel["TikTok"] += o.Amount
+	}
+
+	// Both sources are already sorted independently. Re-sort the combined rows
+	// so the dashboard's recent-sales table remains newest-first.
+	sort.SliceStable(report.Rows, func(i, j int) bool {
+		if report.Rows[i].Date == report.Rows[j].Date {
+			return report.Rows[i].Reference > report.Rows[j].Reference
+		}
+		return report.Rows[i].Date > report.Rows[j].Date
+	})
 
 	return report, nil
 }
