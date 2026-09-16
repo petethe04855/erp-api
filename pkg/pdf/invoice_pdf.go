@@ -52,18 +52,7 @@ func GenerateInvoicePDF(data InvoicePDFData) ([]byte, error) {
 	pdf.SetMargins(12, 12, 12)
 	pdf.SetAutoPageBreak(true, 12)
 
-	fontName := "Helvetica"
-	tahomaPath := `C:\Windows\Fonts\tahoma.ttf`
-	if _, err := os.Stat(tahomaPath); err == nil {
-		pdf.AddUTF8Font("Tahoma", "", tahomaPath)
-		tahomaBoldPath := `C:\Windows\Fonts\tahomabd.ttf`
-		if _, err := os.Stat(tahomaBoldPath); err == nil {
-			pdf.AddUTF8Font("Tahoma", "B", tahomaBoldPath)
-		} else {
-			pdf.AddUTF8Font("Tahoma", "B", tahomaPath)
-		}
-		fontName = "Tahoma"
-	}
+	fontName := SetupPDFFonts(pdf)
 
 	pdf.AddPage()
 
