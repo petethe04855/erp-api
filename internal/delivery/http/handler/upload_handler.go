@@ -83,8 +83,28 @@ func (h *UploadHandler) UploadImage(c *fiber.Ctx) error {
 		return response.InternalServerError(c, "ไม่สามารถอ่านไฟล์รูปภาพได้")
 	}
 
-	// 4. Ensure uploads/images directory exists
-	uploadDir := "./uploads/images"
+	// 4. Determine target subfolder (e.g. products, logos, customers, returns)
+	// Default to "images" if not provided or invalid to maintain backward compatibility.
+	folder := strings.TrimSpace(c.Query("folder"))
+	if folder == "" {
+		folder = strings.TrimSpace(c.FormValue("folder"))
+	}
+	folder = strings.ToLower(folder)
+
+	// Whitelist allowed subfolders to prevent path traversal
+	validFolders := map[string]bool{
+		"logos":     true,
+		"products":  true,
+		"customers": true,
+		"returns":   true,
+		"general":   true,
+		"images":    true,
+	}
+	if !validFolders[folder] {
+		folder = "images"
+	}
+
+	uploadDir := filepath.Join(".", "uploads", folder)
 	if err := os.MkdirAll(uploadDir, 0755); err != nil {
 		return response.InternalServerError(c, "ไม่สามารถสร้างโฟลเดอร์สำหรับเก็บรูปภาพได้: "+err.Error())
 	}
@@ -99,10 +119,11 @@ func (h *UploadHandler) UploadImage(c *fiber.Ctx) error {
 	}
 
 	// 7. Return relative URL path
-	imageURL := "/uploads/images/" + filename
+	imageURL := fmt.Sprintf("/uploads/%s/%s", folder, filename)
 	return response.Created(c, fiber.Map{
 		"url":      imageURL,
 		"filename": filename,
+		"folder":   folder,
 		"size":     file.Size,
 	}, "อัปโหลดรูปภาพสำเร็จ")
 }
