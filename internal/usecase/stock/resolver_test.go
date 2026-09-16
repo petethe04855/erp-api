@@ -35,6 +35,10 @@ func (m *mockFormulaRepo) Update(ctx context.Context, f *domainFormula.Inventory
 	m.formulas[f.Code] = f
 	return nil
 }
+func (m *mockFormulaRepo) Delete(ctx context.Context, code string) error {
+	delete(m.formulas, code)
+	return nil
+}
 func (m *mockFormulaRepo) Deactivate(ctx context.Context, code string) error {
 	if f, ok := m.formulas[code]; ok {
 		f.IsActive = false

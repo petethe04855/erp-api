@@ -82,7 +82,7 @@ func RegisterRoutes(cfg Config) {
 		formulas.Get("/:code", cfg.FormulaHandler.GetByCode)
 		formulas.Put("/:code", middleware.RequireRole("owner", "warehouse"), cfg.FormulaHandler.Update)
 		formulas.Patch("/:code/status", middleware.RequireRole("owner", "warehouse"), cfg.FormulaHandler.ToggleStatus)
-		formulas.Delete("/:code", middleware.RequireRole("owner", "warehouse"), cfg.FormulaHandler.Deactivate)
+		formulas.Delete("/:code", middleware.RequireRole("owner", "warehouse"), cfg.FormulaHandler.Delete)
 
 		// Root aliases matching /api/inventory-formulas
 		rootFormulas := cfg.App.Group("/api/inventory-formulas", middleware.AuthMiddleware(cfg.JWTSecret, cfg.UserStatusLoader))
@@ -91,7 +91,7 @@ func RegisterRoutes(cfg Config) {
 		rootFormulas.Get("/:code", cfg.FormulaHandler.GetByCode)
 		rootFormulas.Put("/:code", middleware.RequireRole("owner", "warehouse"), cfg.FormulaHandler.Update)
 		rootFormulas.Patch("/:code/status", middleware.RequireRole("owner", "warehouse"), cfg.FormulaHandler.ToggleStatus)
-		rootFormulas.Delete("/:code", middleware.RequireRole("owner", "warehouse"), cfg.FormulaHandler.Deactivate)
+		rootFormulas.Delete("/:code", middleware.RequireRole("owner", "warehouse"), cfg.FormulaHandler.Delete)
 	}
 
 	// Bundle Routes (Legacy support)

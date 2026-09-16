@@ -60,9 +60,25 @@ func (r *FormulaRepository) Update(ctx context.Context, formula *domainFormula.I
 	})
 }
 
+func (r *FormulaRepository) Delete(ctx context.Context, code string) error {
+	normCode := strings.ToUpper(strings.TrimSpace(code))
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Delete items associated with formula
+		if err := tx.Where("UPPER(formula_code) = ?", normCode).Delete(&domainFormula.InventoryFormulaItem{}).Error; err != nil {
+			return err
+		}
+		// Delete formula header
+		if err := tx.Where("UPPER(code) = ?", normCode).Delete(&domainFormula.InventoryFormula{}).Error; err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
 func (r *FormulaRepository) Deactivate(ctx context.Context, code string) error {
 	return r.ToggleStatus(ctx, code, false)
 }
+
 
 func (r *FormulaRepository) ToggleStatus(ctx context.Context, code string, isActive bool) error {
 	return r.db.WithContext(ctx).Model(&domainFormula.InventoryFormula{}).

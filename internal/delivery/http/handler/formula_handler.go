@@ -99,6 +99,19 @@ func (h *FormulaHandler) ToggleStatus(c *fiber.Ctx) error {
 	return response.OK(c, result, "อัปเดตสถานะสูตรตัดสต็อกเรียบร้อยแล้ว")
 }
 
+func (h *FormulaHandler) Delete(c *fiber.Ctx) error {
+	code := c.Params("code")
+	if strings.TrimSpace(code) == "" {
+		return response.BadRequest(c, "Formula code is required")
+	}
+
+	if err := h.usecase.Delete(c.Context(), code); err != nil {
+		return err
+	}
+
+	return response.OK(c, nil, "ลบสูตรตัดสต็อกเรียบร้อยแล้ว")
+}
+
 func (h *FormulaHandler) Deactivate(c *fiber.Ctx) error {
 	code := c.Params("code")
 	if strings.TrimSpace(code) == "" {
@@ -111,6 +124,7 @@ func (h *FormulaHandler) Deactivate(c *fiber.Ctx) error {
 
 	return response.OK(c, nil, "ปิดใช้งานสูตรตัดสต็อกเรียบร้อยแล้ว")
 }
+
 
 func (h *FormulaHandler) GetByCode(c *fiber.Ctx) error {
 	code := c.Params("code")

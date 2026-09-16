@@ -59,12 +59,14 @@ type FormulaResponse struct {
 type Usecase interface {
 	Create(ctx context.Context, in CreateFormulaInput) (*FormulaResponse, error)
 	Update(ctx context.Context, code string, in UpdateFormulaInput) (*FormulaResponse, error)
+	Delete(ctx context.Context, code string) error
 	Deactivate(ctx context.Context, code string) error
 	ToggleStatus(ctx context.Context, code string, isActive bool) (*FormulaResponse, error)
 	GetByCode(ctx context.Context, code string) (*FormulaResponse, error)
 	List(ctx context.Context, query domainFormula.Query) ([]FormulaResponse, int64, error)
 	ResolveFormulaItems(ctx context.Context, sku string, quantity int) ([]ItemInput, bool, error)
 }
+
 
 type formulaUsecase struct {
 	formulaRepo domainFormula.Repository
@@ -286,6 +288,18 @@ func (u *formulaUsecase) Update(ctx context.Context, code string, in UpdateFormu
 	}, nil
 }
 
+func (u *formulaUsecase) Delete(ctx context.Context, code string) error {
+	normCode := strings.ToUpper(strings.TrimSpace(code))
+	existing, err := u.formulaRepo.FindByCode(ctx, normCode)
+	if err != nil {
+		return err
+	}
+	if existing == nil {
+		return appErrors.NewAppError("FORMULA_NOT_FOUND", fmt.Sprintf("ไม่พบสูตรตัดสต็อก %s", normCode), 404)
+	}
+	return u.formulaRepo.Delete(ctx, normCode)
+}
+
 func (u *formulaUsecase) Deactivate(ctx context.Context, code string) error {
 	normCode := strings.ToUpper(strings.TrimSpace(code))
 	existing, err := u.formulaRepo.FindByCode(ctx, normCode)
@@ -297,6 +311,7 @@ func (u *formulaUsecase) Deactivate(ctx context.Context, code string) error {
 	}
 	return u.formulaRepo.Deactivate(ctx, normCode)
 }
+
 
 func (u *formulaUsecase) ToggleStatus(ctx context.Context, code string, isActive bool) (*FormulaResponse, error) {
 	normCode := strings.ToUpper(strings.TrimSpace(code))

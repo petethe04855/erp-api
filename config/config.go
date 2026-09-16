@@ -33,7 +33,15 @@ type Config struct {
 	TikTokTokenEncryptionKey  string
 	TikTokSyncIntervalMinutes string
 	TikTokSyncToken           string
+
+	// SMTP Email Configuration
+	SMTPHost     string
+	SMTPPort     string
+	SMTPUsername string
+	SMTPPassword string
+	EmailSend    string
 }
+
 
 func LoadConfig() *Config {
 	if err := godotenv.Load(); err != nil {
@@ -99,8 +107,15 @@ func LoadConfig() *Config {
 		TikTokTokenEncryptionKey:  getEnv("TIKTOK_TOKEN_ENCRYPTION_KEY", ""),
 		TikTokSyncIntervalMinutes: getEnv("TIKTOK_SYNC_INTERVAL_MINUTES", "30"),
 		TikTokSyncToken:           getEnv("TIKTOK_SYNC_TOKEN", ""),
+
+		SMTPHost:     getEnv("SMTP_HOST", ""),
+		SMTPPort:     getEnv("SMTP_PORT", "587"),
+		SMTPUsername: getEnv("SMTP_USERNAME", ""),
+		SMTPPassword: getEnv("SMTP_PASSWORD", ""),
+		EmailSend:    getEnv("EMAIL_SEND", ""),
 	}
 }
+
 
 func getEnv(key, fallback string) string {
 	if value, ok := os.LookupEnv(key); ok && value != "" {
