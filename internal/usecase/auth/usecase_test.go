@@ -109,7 +109,7 @@ func (m *mockAuthRepo) FindActiveUserRole(ctx context.Context, userID uint) (str
 
 func TestRegister_FirstUserBecomesOwner(t *testing.T) {
 	repo := newMockAuthRepo()
-	uc := usecaseAuth.NewAuthUsecase(repo, "test-secret", "24")
+	uc := usecaseAuth.NewAuthUsecase(repo, "test-secret", "24", nil)
 
 	res, err := uc.Register(context.Background(), usecaseAuth.RegisterInput{
 		Email:    "first@erp.local",
@@ -126,7 +126,7 @@ func TestRegister_FirstUserBecomesOwner(t *testing.T) {
 
 func TestRegister_SubsequentUserDefaultsToSales(t *testing.T) {
 	repo := newMockAuthRepo()
-	uc := usecaseAuth.NewAuthUsecase(repo, "test-secret", "24")
+	uc := usecaseAuth.NewAuthUsecase(repo, "test-secret", "24", nil)
 
 	// First user
 	_, err := uc.Register(context.Background(), usecaseAuth.RegisterInput{
@@ -151,7 +151,7 @@ func TestRegister_SubsequentUserDefaultsToSales(t *testing.T) {
 
 func TestLogin_DisabledAccountRejected(t *testing.T) {
 	repo := newMockAuthRepo()
-	uc := usecaseAuth.NewAuthUsecase(repo, "test-secret", "24")
+	uc := usecaseAuth.NewAuthUsecase(repo, "test-secret", "24", nil)
 
 	hash, _ := bcrypt.GenerateFromPassword([]byte("password123"), bcrypt.DefaultCost)
 	disabledUser := &domainAuth.User{
@@ -172,7 +172,7 @@ func TestLogin_DisabledAccountRejected(t *testing.T) {
 
 func TestUpdateUserStatus_PreventSelfDeactivation(t *testing.T) {
 	repo := newMockAuthRepo()
-	uc := usecaseAuth.NewAuthUsecase(repo, "test-secret", "24")
+	uc := usecaseAuth.NewAuthUsecase(repo, "test-secret", "24", nil)
 
 	owner := &domainAuth.User{
 		Email:    "owner@erp.local",
@@ -188,7 +188,7 @@ func TestUpdateUserStatus_PreventSelfDeactivation(t *testing.T) {
 
 func TestDeleteUser_PreventSelfDeletion(t *testing.T) {
 	repo := newMockAuthRepo()
-	uc := usecaseAuth.NewAuthUsecase(repo, "test-secret", "24")
+	uc := usecaseAuth.NewAuthUsecase(repo, "test-secret", "24", nil)
 
 	owner := &domainAuth.User{
 		Email:    "owner@erp.local",
@@ -204,7 +204,7 @@ func TestDeleteUser_PreventSelfDeletion(t *testing.T) {
 
 func TestGetProfile_DisabledAccountRejected(t *testing.T) {
 	repo := newMockAuthRepo()
-	uc := usecaseAuth.NewAuthUsecase(repo, "test-secret", "24")
+	uc := usecaseAuth.NewAuthUsecase(repo, "test-secret", "24", nil)
 
 	disabledUser := &domainAuth.User{
 		Email:    "disabled@erp.local",
@@ -219,7 +219,7 @@ func TestGetProfile_DisabledAccountRejected(t *testing.T) {
 
 func TestUpdateUser_PreventSelfDeactivationOrRoleChange(t *testing.T) {
 	repo := newMockAuthRepo()
-	uc := usecaseAuth.NewAuthUsecase(repo, "test-secret", "24")
+	uc := usecaseAuth.NewAuthUsecase(repo, "test-secret", "24", nil)
 
 	owner := &domainAuth.User{
 		Email:    "owner@erp.local",

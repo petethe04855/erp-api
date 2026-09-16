@@ -9,6 +9,7 @@ import (
 
 	domainBundle "chawy-erp-api/internal/domain/bundle"
 	domainCustomer "chawy-erp-api/internal/domain/customer"
+	domainFormula "chawy-erp-api/internal/domain/formula"
 	domainInvoice "chawy-erp-api/internal/domain/invoice"
 	domainOrder "chawy-erp-api/internal/domain/order"
 	domainPurchasing "chawy-erp-api/internal/domain/purchasing"
@@ -2634,6 +2635,26 @@ func (h *WorkspaceHandler) ResolveSKUs(c *fiber.Ctx) error {
 		found[strings.ToUpper(strings.TrimSpace(s.SKU))] = s
 	}
 
+	// For codes not found in SKU master, check active Inventory Formulas (e.g. FI-01)
+	var missingCodes []string
+	for _, code := range normalized {
+		if _, ok := found[code]; !ok {
+			missingCodes = append(missingCodes, code)
+		}
+	}
+
+	foundFormulas := make(map[string]domainFormula.InventoryFormula)
+	if len(missingCodes) > 0 {
+		var formulas []domainFormula.InventoryFormula
+		if err := h.db.WithContext(c.Context()).
+			Where("UPPER(TRIM(code)) IN ? AND is_active = ?", missingCodes, true).
+			Find(&formulas).Error; err == nil {
+			for _, f := range formulas {
+				foundFormulas[strings.ToUpper(strings.TrimSpace(f.Code))] = f
+			}
+		}
+	}
+
 	type ResolvedSKU struct {
 		Sku   string `json:"sku"`
 		Id    uint   `json:"id"`
@@ -2642,12 +2663,13 @@ func (h *WorkspaceHandler) ResolveSKUs(c *fiber.Ctx) error {
 	}
 	records := make([]ResolvedSKU, 0, len(normalized))
 	for _, code := range normalized {
-		s, ok := found[code]
-		if !ok {
+		if s, ok := found[code]; ok {
+			records = append(records, ResolvedSKU{Sku: s.SKU, Id: s.ID, Name: s.Name, Found: true})
+		} else if f, ok := foundFormulas[code]; ok {
+			records = append(records, ResolvedSKU{Sku: f.Code, Id: f.ID, Name: f.Name, Found: true})
+		} else {
 			records = append(records, ResolvedSKU{Sku: code, Found: false})
-			continue
 		}
-		records = append(records, ResolvedSKU{Sku: s.SKU, Id: s.ID, Name: s.Name, Found: true})
 	}
 
 	return response.OK(c, records)

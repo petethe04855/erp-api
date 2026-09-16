@@ -116,8 +116,9 @@ func (m *mockRepo) ExistsByEmail(ctx context.Context, email string) (bool, error
 
 func setupTestApp(repo domainAuth.Repository, secret string) *fiber.App {
 	app := fiber.New()
-	uc := usecaseAuth.NewAuthUsecase(repo, secret, "24")
+	uc := usecaseAuth.NewAuthUsecase(repo, secret, "24", nil)
 	authH := handler.NewAuthHandler(uc)
+
 
 	route.RegisterRoutes(route.Config{
 		App:              app,

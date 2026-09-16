@@ -47,6 +47,8 @@ import (
 	usecaseStock "chawy-erp-api/internal/usecase/stock"
 	usecaseTikTok "chawy-erp-api/internal/usecase/tiktok"
 	"chawy-erp-api/pkg/database"
+	"chawy-erp-api/pkg/mailer"
+
 
 
 	"github.com/gofiber/fiber/v2"
@@ -177,8 +179,10 @@ func main() {
 	txManager := database.NewTxManager(db)
 	sequenceUsecase := usecaseSeq.NewSequenceUsecase(sequenceRepo)
 
-	authUsecase := usecaseAuth.NewAuthUsecase(authRepo, cfg.JWTSecret, cfg.JWTExpHours)
+	appMailer := mailer.NewMailer(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword, cfg.EmailSend)
+	authUsecase := usecaseAuth.NewAuthUsecase(authRepo, cfg.JWTSecret, cfg.JWTExpHours, appMailer)
 	skuUsecase := usecaseSKU.NewSKUUsecaseWithStock(skuRepo, stockRepo)
+
 	bundleUsecase := usecaseBundle.NewBundleUsecase(bundleRepo, skuRepo, stockRepo)
 	formulaUsecase := usecaseFormula.NewFormulaUsecase(formulaRepo, skuRepo, stockRepo)
 	stockUsecase := usecaseStock.NewStockUsecaseWithTx(stockRepo, txManager)
@@ -192,7 +196,7 @@ func main() {
 	financeRepo := postgres.NewFinanceRepository(db)
 	financeUsecase := usecaseFinance.NewFinanceUsecase(financeRepo, txManager)
 	quotationRepo := postgres.NewQuotationRepository(db)
-	quotationUsecase := usecaseQuotation.NewQuotationUsecaseWithStock(quotationRepo, skuRepo, orderRepo, txManager, stockRepo, bundleRepo, sequenceUsecase)
+	quotationUsecase := usecaseQuotation.NewQuotationUsecaseFull(quotationRepo, skuRepo, orderRepo, txManager, stockRepo, bundleRepo, formulaRepo, sequenceUsecase)
 	liveRepo := postgres.NewLiveRepository(db)
 	liveUsecase := usecaseLive.NewLiveUsecase(db, liveRepo, settingsRepo, authRepo)
 	salesReturnUsecase := usecaseSalesReturn.NewSalesReturnUsecase(db, salesReturnRepo, orderRepo, invoiceRepo, skuRepo, stockRepo, formulaRepo, financeUsecase, sequenceUsecase)

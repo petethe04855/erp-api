@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	domainFormula "chawy-erp-api/internal/domain/formula"
 	domainOrder "chawy-erp-api/internal/domain/order"
 	domainQuotation "chawy-erp-api/internal/domain/quotation"
 	domainSKU "chawy-erp-api/internal/domain/sku"
@@ -391,5 +392,92 @@ func TestConvert_RejectsWhenInsufficientStock(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Stock XYZ ไม่พอ")
 	assert.Nil(t, orderRepo.created)
+}
+
+type fakeFormulaRepo struct {
+	formula *domainFormula.InventoryFormula
+}
+
+func (f *fakeFormulaRepo) FindByCode(ctx context.Context, code string) (*domainFormula.InventoryFormula, error) {
+	if f.formula != nil && strings.EqualFold(strings.TrimSpace(f.formula.Code), code) {
+		cp := *f.formula
+		return &cp, nil
+	}
+	return nil, nil
+}
+
+func TestCreate_AllowsInventoryFormula(t *testing.T) {
+	repo := &fakeQuotationRepo{}
+	skuRepo := &fakeSKURepo{}
+	orderRepo := &fakeOrderRepo{}
+	formulaRepo := &fakeFormulaRepo{
+		formula: &domainFormula.InventoryFormula{
+			ID:       10,
+			Code:     "FI-01",
+			Name:     "Formula Set 01",
+			IsActive: true,
+		},
+	}
+
+	uc := usecaseQuotation.NewQuotationUsecaseFull(repo, skuRepo, orderRepo, repo, nil, nil, formulaRepo)
+
+	q, err := uc.Create(context.Background(), usecaseQuotation.CreateInput{
+		Customer: "Acme",
+		Lines: []usecaseQuotation.LineInput{
+			{SKU: "FI-01", Price: 250, Qty: 2},
+		},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, q)
+	assert.Equal(t, 500.0, q.TotalAmount)
+	assert.Len(t, q.Lines, 1)
+	assert.Equal(t, "FI-01", q.Lines[0].SKU)
+	assert.Equal(t, "Formula Set 01", q.Lines[0].Name)
+	assert.Equal(t, uint(0), q.Lines[0].ProductID)
+}
+
+func TestConvert_ReservesStockForInventoryFormula(t *testing.T) {
+	orderRepo := &fakeOrderRepo{}
+	repo := &fakeQuotationRepo{
+		quotation: &domainQuotation.Quotation{
+			ID:           1,
+			Code:         "QT-2026-0004",
+			CustomerName: "Beta Corp",
+			Status:       domainQuotation.StatusApproved,
+			ValidUntil:   "2099-01-01",
+			TotalAmount:  300,
+			Lines: []domainQuotation.QuotationLine{
+				{SKU: "FI-01", Price: 150, Quantity: 2, Subtotal: 300},
+			},
+		},
+	}
+	skuRepo := &fakeSKURepo{sku: &domainSKU.SKU{ID: 101, SKU: "RAW-01", Name: "Raw Material 01"}}
+	stockRepo := &fakeStockRepo{stocks: map[uint]*domainStock.Stock{
+		101: {ID: 1, SKUID: 101, Quantity: 20, ReservedQty: 0, AvailableQty: 20},
+	}}
+	formulaRepo := &fakeFormulaRepo{
+		formula: &domainFormula.InventoryFormula{
+			ID:       10,
+			Code:     "FI-01",
+			Name:     "Formula Set 01",
+			IsActive: true,
+			Items: []domainFormula.InventoryFormulaItem{
+				{FormulaCode: "FI-01", ComponentSKU: "RAW-01", Qty: 3},
+			},
+		},
+	}
+
+	uc := usecaseQuotation.NewQuotationUsecaseFull(repo, skuRepo, orderRepo, repo, stockRepo, nil, formulaRepo)
+
+	res, err := uc.ConvertToSalesOrder(context.Background(), 1)
+	require.NoError(t, err)
+	assert.Equal(t, uint(99), res.OrderID)
+
+	// 2 * 3 = 6 should be reserved on RAW-01
+	stk := stockRepo.stocks[101]
+	assert.Equal(t, 6, stk.ReservedQty)
+	assert.Equal(t, 14, stk.AvailableQty)
+	assert.Len(t, stockRepo.movements, 1)
 }
 

@@ -163,9 +163,10 @@ func (h *AuthHandler) CreateUser(c *fiber.Ctx) error {
 		return response.BadRequest(c, "Invalid request body")
 	}
 
-	if req.Email == "" || req.Password == "" {
-		return response.BadRequest(c, "Email and password are required")
+	if req.Email == "" {
+		return response.BadRequest(c, "Email is required")
 	}
+
 
 	user, err := h.usecase.CreateUser(c.Context(), usecaseAuth.CreateUserInput{
 		Email:     req.Email,

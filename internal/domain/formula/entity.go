@@ -37,9 +37,11 @@ type Query struct {
 type Repository interface {
 	Create(ctx context.Context, formula *InventoryFormula) error
 	Update(ctx context.Context, formula *InventoryFormula) error
+	Delete(ctx context.Context, code string) error
 	Deactivate(ctx context.Context, code string) error
 	ToggleStatus(ctx context.Context, code string, isActive bool) error
 	FindByCode(ctx context.Context, code string) (*InventoryFormula, error)
 	FindAll(ctx context.Context, query Query) ([]InventoryFormula, int64, error)
 	ExistsByCode(ctx context.Context, code string) (bool, error)
 }
+

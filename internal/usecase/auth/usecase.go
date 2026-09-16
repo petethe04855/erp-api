@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"crypto/rand"
+	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -9,9 +11,11 @@ import (
 	domainAuth "chawy-erp-api/internal/domain/auth"
 	appErrors "chawy-erp-api/pkg/errors"
 	"chawy-erp-api/pkg/jwt"
+	"chawy-erp-api/pkg/mailer"
 
 	"golang.org/x/crypto/bcrypt"
 )
+
 
 type RegisterInput struct {
 	Email     string
@@ -67,21 +71,24 @@ type Usecase interface {
 
 type authUsecase struct {
 	repo        domainAuth.Repository
+	mailer      mailer.Mailer
 	jwtSecret   string
 	jwtExpHours int
 }
 
-func NewAuthUsecase(repo domainAuth.Repository, jwtSecret, jwtExpHours string) Usecase {
+func NewAuthUsecase(repo domainAuth.Repository, jwtSecret, jwtExpHours string, mailer mailer.Mailer) Usecase {
 	exp, err := strconv.Atoi(jwtExpHours)
 	if err != nil || exp <= 0 {
 		exp = 24
 	}
 	return &authUsecase{
 		repo:        repo,
+		mailer:      mailer,
 		jwtSecret:   jwtSecret,
 		jwtExpHours: exp,
 	}
 }
+
 
 func isValidRole(role string) bool {
 	switch role {
@@ -218,6 +225,18 @@ func (u *authUsecase) GetUserByID(ctx context.Context, id uint) (*domainAuth.Use
 	return user, nil
 }
 
+func generateRandomPassword(length int) (string, error) {
+	const charset = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%&*"
+	bytes := make([]byte, length)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	for i, b := range bytes {
+		bytes[i] = charset[b%byte(len(charset))]
+	}
+	return string(bytes), nil
+}
+
 func (u *authUsecase) CreateUser(ctx context.Context, input CreateUserInput) (*domainAuth.User, error) {
 	email := strings.ToLower(strings.TrimSpace(input.Email))
 	exists, err := u.repo.ExistsByEmail(ctx, email)
@@ -236,11 +255,19 @@ func (u *authUsecase) CreateUser(ctx context.Context, input CreateUserInput) (*d
 		return nil, appErrors.ErrInvalidRole
 	}
 
-	if len(input.Password) < 6 {
+	rawPassword := strings.TrimSpace(input.Password)
+	if rawPassword == "" {
+		// Generate random 10-character password
+		genPass, err := generateRandomPassword(10)
+		if err != nil {
+			return nil, err
+		}
+		rawPassword = genPass
+	} else if len(rawPassword) < 6 {
 		return nil, appErrors.ErrValidation
 	}
 
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(rawPassword), bcrypt.DefaultCost)
 	if err != nil {
 		return nil, err
 	}
@@ -260,8 +287,23 @@ func (u *authUsecase) CreateUser(ctx context.Context, input CreateUserInput) (*d
 	if err := u.repo.Create(ctx, user); err != nil {
 		return nil, err
 	}
+
+	// Send temporary password to user's email asynchronously via mailer
+	if u.mailer != nil {
+		displayName := name
+		if displayName == "" {
+			displayName = fn
+		}
+		go func(m mailer.Mailer, toEmail, toName, pass, r string) {
+			if err := m.SendUserCredentials(toEmail, toName, pass, r); err != nil {
+				log.Printf("[ERROR] Failed to send credentials email to %s: %v", toEmail, err)
+			}
+		}(u.mailer, email, displayName, rawPassword, role)
+	}
+
 	return user, nil
 }
+
 
 func (u *authUsecase) UpdateUser(ctx context.Context, currentUserID, id uint, input UpdateUserInput) (*domainAuth.User, error) {
 	user, err := u.repo.FindByID(ctx, id)
