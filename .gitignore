@@ -4,28 +4,28 @@
 *.dll
 *.so
 *.dylib
+bin/
+dist/
 
 # Test binary, built with `go test -c`
 *.test
 
-# Output of the go build command
-/server
-main
-.gocache/
+# Output of the go coverage tool
+*.out
 
-# Environment files
+# Environment variables
 .env
-.env*.local
-.env.local
+.env.*
 .env.example
-tokens.json
 
-
-# IDEs and editors
+# IDE files
 .idea/
 .vscode/
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+.gitkeep
