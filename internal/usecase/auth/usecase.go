@@ -297,6 +297,8 @@ func (u *authUsecase) CreateUser(ctx context.Context, input CreateUserInput) (*d
 		go func(m mailer.Mailer, toEmail, toName, pass, r string) {
 			if err := m.SendUserCredentials(toEmail, toName, pass, r); err != nil {
 				log.Printf("[ERROR] Failed to send credentials email to %s: %v", toEmail, err)
+			} else {
+				log.Printf("[INFO] Credentials email sent successfully to %s", toEmail)
 			}
 		}(u.mailer, email, displayName, rawPassword, role)
 	}

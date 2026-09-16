@@ -181,6 +181,7 @@ func (m *smtpMailer) SendUserCredentials(recipientEmail, recipientName, generate
 		if err != nil {
 			return fmt.Errorf("SMTP close data failed: %w", err)
 		}
+		log.Printf("[INFO] Credentials email sent successfully to %s (via SSL/TLS port 465)", recipientEmail)
 		return nil
 	}
 
