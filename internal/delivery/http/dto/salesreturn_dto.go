@@ -10,7 +10,9 @@ type CreateReturnLineRequest struct {
 	Condition  domainReturn.ItemCondition `json:"condition"`
 	Restock    *bool                      `json:"restock"`
 	ReasonCode domainReturn.ReasonCode    `json:"reason_code"`
-	LotRef     string                     `json:"lot_ref"`
+	// EvidenceImages = URLs รูปยืนยันสภาพสินค้า (จาก POST /upload/image)
+	EvidenceImages []string `json:"evidence_images"`
+	LotRef         string   `json:"lot_ref"`
 }
 
 type CreateReturnRequest struct {
@@ -35,6 +37,8 @@ type CompleteReturnLineRequest struct {
 	LineID    uint                       `json:"line_id" validate:"required"`
 	Condition domainReturn.ItemCondition `json:"condition" validate:"required"`
 	Restock   bool                       `json:"restock"`
+	// AddEvidenceImages = รูปเพิ่มเติมจากคลังตอนตรวจรับ (ผลการตรวจสภาพจริง)
+	AddEvidenceImages []string `json:"add_evidence_images"`
 }
 
 type CompleteReturnRequest struct {

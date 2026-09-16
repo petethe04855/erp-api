@@ -42,6 +42,23 @@ const (
 	ReasonOther          ReasonCode = "OTHER"
 )
 
+// IsRestockable returns true when returned items may go back into sellable
+// stock: GOOD (สภาพดี) and WRONG_ITEM (ส่งผิด — ตัวสินค้ายังสมบูรณ์).
+// DAMAGED and EXPIRED items must never re-enter available stock.
+func IsRestockable(c ItemCondition) bool {
+	return c == ConditionGood || c == ConditionWrongItem
+}
+
+// DefaultReasonCodeFor maps a condition to a sensible reason code when the
+// client does not supply one (the return form derives everything from
+// condition alone: สภาพดี/ส่งผิด → restock, หมดอายุ/เสียหาย → ไม่เข้าสต็อก).
+func DefaultReasonCodeFor(c ItemCondition) ReasonCode {
+	if c == ConditionWrongItem {
+		return ReasonWrongItem
+	}
+	return ReasonCustomerChange
+}
+
 func IsValidStatus(s Status) bool {
 	switch s {
 	case StatusDraft, StatusSubmitted, StatusApproved, StatusRejected, StatusCompleted, StatusCancelled:
@@ -111,9 +128,13 @@ type SalesReturnLine struct {
 	Condition  ItemCondition `json:"condition" gorm:"size:50;default:'GOOD'"`
 	Restock    bool          `json:"restock" gorm:"default:true"`
 	ReasonCode ReasonCode    `json:"reason_code" gorm:"size:50;default:'CUSTOMER_CHANGE'"`
-	LotRef     string        `json:"lot_ref" gorm:"size:100"`
-	CreatedAt  time.Time     `json:"created_at"`
-	UpdatedAt  time.Time     `json:"updated_at"`
+	// EvidenceImages holds URLs of photos uploaded as proof of the item's
+	// condition (e.g. รูปถ่ายสินค้าเสียหาย). Serialized as a JSON array in a
+	// single text column; empty slice = no evidence.
+	EvidenceImages []string  `json:"evidence_images" gorm:"serializer:json;type:text"`
+	LotRef         string    `json:"lot_ref" gorm:"size:100"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 type Query struct {

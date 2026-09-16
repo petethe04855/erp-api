@@ -94,12 +94,13 @@ func (h *SalesReturnHandler) Create(c *fiber.Ctx) error {
 	var lines []usecaseReturn.CreateReturnLineInput
 	for _, l := range req.Lines {
 		lines = append(lines, usecaseReturn.CreateReturnLineInput{
-			SKU:        l.SKU,
-			Quantity:   l.Quantity,
-			Condition:  l.Condition,
-			Restock:    l.Restock,
-			ReasonCode: l.ReasonCode,
-			LotRef:     l.LotRef,
+			SKU:            l.SKU,
+			Quantity:       l.Quantity,
+			Condition:      l.Condition,
+			Restock:        l.Restock,
+			ReasonCode:     l.ReasonCode,
+			EvidenceImages: l.EvidenceImages,
+			LotRef:         l.LotRef,
 		})
 	}
 
@@ -143,12 +144,13 @@ func (h *SalesReturnHandler) Update(c *fiber.Ctx) error {
 	var lines []usecaseReturn.CreateReturnLineInput
 	for _, l := range req.Lines {
 		lines = append(lines, usecaseReturn.CreateReturnLineInput{
-			SKU:        l.SKU,
-			Quantity:   l.Quantity,
-			Condition:  l.Condition,
-			Restock:    l.Restock,
-			ReasonCode: l.ReasonCode,
-			LotRef:     l.LotRef,
+			SKU:            l.SKU,
+			Quantity:       l.Quantity,
+			Condition:      l.Condition,
+			Restock:        l.Restock,
+			ReasonCode:     l.ReasonCode,
+			EvidenceImages: l.EvidenceImages,
+			LotRef:         l.LotRef,
 		})
 	}
 
@@ -248,9 +250,10 @@ func (h *SalesReturnHandler) Complete(c *fiber.Ctx) error {
 	var lines []usecaseReturn.CompleteReturnLineInput
 	for _, l := range req.Lines {
 		lines = append(lines, usecaseReturn.CompleteReturnLineInput{
-			LineID:    l.LineID,
-			Condition: l.Condition,
-			Restock:   l.Restock,
+			LineID:            l.LineID,
+			Condition:         l.Condition,
+			Restock:           l.Restock,
+			AddEvidenceImages: l.AddEvidenceImages,
 		})
 	}
 

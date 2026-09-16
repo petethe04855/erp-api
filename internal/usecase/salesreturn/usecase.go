@@ -28,7 +28,9 @@ type CreateReturnLineInput struct {
 	Condition  domainReturn.ItemCondition `json:"condition"`
 	Restock    *bool                     `json:"restock"`
 	ReasonCode domainReturn.ReasonCode   `json:"reason_code"`
-	LotRef     string                    `json:"lot_ref"`
+	// EvidenceImages = URLs ของรูปยืนยันสภาพสินค้า (อัปโหลดแล้วผ่าน /upload/image)
+	EvidenceImages []string `json:"evidence_images"`
+	LotRef         string   `json:"lot_ref"`
 }
 
 type CreateReturnInput struct {
@@ -54,6 +56,40 @@ type CompleteReturnLineInput struct {
 	LineID    uint                       `json:"line_id"`
 	Condition domainReturn.ItemCondition `json:"condition"`
 	Restock   bool                       `json:"restock"`
+	// AddEvidenceImages = รูปยืนยันเพิ่มเติมจากผลตรวจรับของคลัง (append เข้าเดิม)
+	AddEvidenceImages []string `json:"add_evidence_images"`
+}
+
+// validateEvidenceImages ensures non-empty, unique upload URLs. Full URL
+// validation is not attempted here (uploads live under /uploads/images via
+// POST /upload/image); the goal is to block junk/empty entries.
+func validateEvidenceImages(images []string) error {
+	seen := make(map[string]bool, len(images))
+	for _, img := range images {
+		img = strings.TrimSpace(img)
+		if img == "" {
+			return appErrors.NewAppError("INVALID_EVIDENCE", "รูปยืนยัน (evidence image) ต้องไม่เป็นค่าว่าง", 400)
+		}
+		if seen[img] {
+			return appErrors.NewAppError("INVALID_EVIDENCE", fmt.Sprintf("รูปยืนยันซ้ำ: %s", img), 400)
+		}
+		seen[img] = true
+	}
+	return nil
+}
+
+// requireEvidenceForCondition enforces: DAMAGED / EXPIRED must have at least
+// one photo as proof (รูปยืนยันว่าสินค้าเสียหายจริง) before the return is
+// accepted.
+func requireEvidenceForCondition(cond domainReturn.ItemCondition, images []string, sku string) error {
+	if (cond == domainReturn.ConditionDamaged || cond == domainReturn.ConditionExpired) && len(images) == 0 {
+		return appErrors.NewAppError(
+			"EVIDENCE_REQUIRED",
+			fmt.Sprintf("สินค้า %s มีสภาพเสียหาย/หมดอายุ กรุณาแนบรูปถ่ายยืนยันอย่างน้อย 1 รูป", sku),
+			400,
+		)
+	}
+	return nil
 }
 
 type CompleteReturnInput struct {
@@ -277,18 +313,27 @@ func (u *salesReturnUsecase) Create(ctx context.Context, in CreateReturnInput) (
 			cond = domainReturn.ConditionGood
 		}
 
-		// Enforce business rule: if condition != GOOD, restock is forced to false
+		// รูปยืนยันสภาพสินค้า: บังคับแนบสำหรับสินค้าเสียหาย/หมดอายุ
+		if err := validateEvidenceImages(l.EvidenceImages); err != nil {
+			return nil, err
+		}
+		if err := requireEvidenceForCondition(cond, l.EvidenceImages, l.SKU); err != nil {
+			return nil, err
+		}
+
+		// Restock is derived from condition: GOOD and WRONG_ITEM go back to
+		// sellable stock; DAMAGED/EXPIRED never re-enter available stock.
 		restock := true
 		if l.Restock != nil {
-			restock = *l.Restock
+			restock = *l.Restock && domainReturn.IsRestockable(cond)
 		}
-		if cond != domainReturn.ConditionGood {
+		if !domainReturn.IsRestockable(cond) {
 			restock = false
 		}
 
 		reasonCode := l.ReasonCode
 		if reasonCode == "" {
-			reasonCode = domainReturn.ReasonCustomerChange
+			reasonCode = domainReturn.DefaultReasonCodeFor(cond)
 		}
 
 		lineAmount := float64(l.Quantity) * unitPrice
@@ -296,17 +341,18 @@ func (u *salesReturnUsecase) Create(ctx context.Context, in CreateReturnInput) (
 		totalQty += l.Quantity
 
 		lines = append(lines, domainReturn.SalesReturnLine{
-			SKU:        cleanSKU,
-			Name:       itemName,
-			OrderedQty: orderedQty,
-			Quantity:   l.Quantity,
-			UnitPrice:  unitPrice,
-			LineAmount: lineAmount,
-			Condition:  cond,
-			Restock:    restock,
-			ReasonCode: reasonCode,
-			LotRef:     l.LotRef,
-		})
+			SKU:            cleanSKU,
+				Name:           itemName,
+				OrderedQty:     orderedQty,
+				Quantity:       l.Quantity,
+				UnitPrice:      unitPrice,
+				LineAmount:     lineAmount,
+				Condition:      cond,
+				Restock:        restock,
+				ReasonCode:     reasonCode,
+				EvidenceImages: l.EvidenceImages,
+				LotRef:         l.LotRef,
+			})
 	}
 
 	netAmount := subtotal // In MVP netAmount mirrors subtotal (with in-vat inclusive)
@@ -462,11 +508,20 @@ func (u *salesReturnUsecase) Update(ctx context.Context, id uint, in UpdateRetur
 			if cond == "" {
 				cond = domainReturn.ConditionGood
 			}
+
+			// รูปยืนยันสภาพสินค้า: บังคับแนบสำหรับสินค้าเสียหาย/หมดอายุ
+			if err := validateEvidenceImages(l.EvidenceImages); err != nil {
+				return err
+			}
+			if err := requireEvidenceForCondition(cond, l.EvidenceImages, l.SKU); err != nil {
+				return err
+			}
+
 			restock := true
 			if l.Restock != nil {
-				restock = *l.Restock
+				restock = *l.Restock && domainReturn.IsRestockable(cond)
 			}
-			if cond != domainReturn.ConditionGood {
+			if !domainReturn.IsRestockable(cond) {
 				restock = false
 			}
 
@@ -475,17 +530,18 @@ func (u *salesReturnUsecase) Update(ctx context.Context, id uint, in UpdateRetur
 			totalQty += l.Quantity
 
 			newLines = append(newLines, domainReturn.SalesReturnLine{
-				ReturnID:   ret.ID,
-				SKU:        cleanSKU,
-				Name:       itemName,
-				OrderedQty: orderedQty,
-				Quantity:   l.Quantity,
-				UnitPrice:  unitPrice,
-				LineAmount: lineAmount,
-				Condition:  cond,
-				Restock:    restock,
-				ReasonCode: l.ReasonCode,
-				LotRef:     l.LotRef,
+				ReturnID:       ret.ID,
+				SKU:            cleanSKU,
+				Name:           itemName,
+				OrderedQty:     orderedQty,
+				Quantity:       l.Quantity,
+				UnitPrice:      unitPrice,
+				LineAmount:     lineAmount,
+				Condition:      cond,
+				Restock:        restock,
+				ReasonCode:     l.ReasonCode,
+				EvidenceImages: l.EvidenceImages,
+				LotRef:         l.LotRef,
 			})
 		}
 
@@ -671,10 +727,21 @@ func (u *salesReturnUsecase) Complete(ctx context.Context, id uint, in CompleteR
 			if ov, ok := overrideMap[line.ID]; ok {
 				line.Condition = ov.Condition
 				line.Restock = ov.Restock
+				if len(ov.AddEvidenceImages) > 0 {
+					if err := validateEvidenceImages(ov.AddEvidenceImages); err != nil {
+						return err
+					}
+					line.EvidenceImages = append(line.EvidenceImages, ov.AddEvidenceImages...)
+				}
 			}
-			// Enforce rule: condition != GOOD cannot restock
-			if line.Condition != domainReturn.ConditionGood {
+			// Enforce rule: only restockable conditions (GOOD, WRONG_ITEM) may
+			// re-enter sellable stock; DAMAGED/EXPIRED cannot.
+			if !domainReturn.IsRestockable(line.Condition) {
 				line.Restock = false
+			}
+			// สภาพเสียหาย/หมดอายุ (รวมเคสที่คลังเปลี่ยนสภาพตอนตรวจรับ) ต้องมีรูปยืนยัน
+			if err := requireEvidenceForCondition(line.Condition, line.EvidenceImages, line.SKU); err != nil {
+				return err
 			}
 		}
 
@@ -750,7 +817,7 @@ func (u *salesReturnUsecase) Complete(ctx context.Context, id uint, in CompleteR
 					AfterQty:      updatedStk.Quantity,
 					ReferenceType: "return",
 					ReferenceID:   ret.ReturnNo,
-					Note:          fmt.Sprintf("รับคืนสินค้าสภาพดีเข้าคลัง (Restock: %s)", line.Condition),
+					Note:          fmt.Sprintf("รับคืนสินค้าเข้าคลัง (Restock: %s)", line.Condition),
 				})
 
 				if skuEntity.CostPrice > 0 {

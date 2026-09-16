@@ -322,12 +322,13 @@ func TestSalesReturn_CompleteRestocksGoodConditionOnly(t *testing.T) {
 				Restock:   true,
 			},
 			{
-				ID:        2,
-				ReturnID:  returnID,
-				SKU:       "SKU-DAMAGED",
-				Quantity:  1,
-				Condition: domainReturn.ConditionDamaged,
-				Restock:   false,
+				ID:             2,
+				ReturnID:       returnID,
+				SKU:            "SKU-DAMAGED",
+				Quantity:       1,
+				Condition:      domainReturn.ConditionDamaged,
+				Restock:        false,
+				EvidenceImages: []string{"/uploads/images/damaged-proof.jpg"},
 			},
 		},
 	}
@@ -363,4 +364,233 @@ func TestSalesReturn_CompleteRestocksGoodConditionOnly(t *testing.T) {
 	assert.NotNil(t, completed)
 	assert.Equal(t, domainReturn.StatusCompleted, completed.Status)
 	assert.Equal(t, "WarehouseOfficer", completed.CompletedBy)
+}
+
+func TestSalesReturn_CreateWrongItemRestocks(t *testing.T) {
+	mockRet := new(MockReturnRepository)
+	mockOrder := new(MockOrderRepository)
+	mockSKU := new(MockSKURepository)
+	mockStock := new(MockStockRepository)
+
+	uc := usecaseReturn.NewSalesReturnUsecase(
+		nil,
+		mockRet,
+		mockOrder,
+		nil,
+		mockSKU,
+		mockStock,
+		nil,
+		nil,
+	)
+
+	orderID := uint(60)
+	order := &domainOrder.Order{
+		ID:           orderID,
+		OrderNo:      "SO-2026-0002",
+		CustomerID:   10,
+		CustomerName: "Customer B",
+		Status:       domainOrder.StatusShipped,
+		Items: []domainOrder.OrderItem{
+			{SKU: "SKU-B", Quantity: 4, Price: 25},
+		},
+	}
+
+	mockOrder.On("FindByID", mock.Anything, orderID).Return(order, nil)
+	mockRet.On("CountReturnedQtyByOrderAndSKU", mock.Anything, orderID, uint(0)).Return(map[string]int{}, nil)
+	mockRet.On("Create", mock.Anything, mock.Anything).Return(nil)
+
+	// WRONG_ITEM (ส่งผิด) is restockable — restock must stay true
+	ret, err := uc.Create(context.Background(), usecaseReturn.CreateReturnInput{
+		ReturnType:  domainReturn.ReturnTypeCustomer,
+		OrderID:     &orderID,
+		WarehouseID: 1,
+		Lines: []usecaseReturn.CreateReturnLineInput{
+			{SKU: "SKU-B", Quantity: 1, Condition: domainReturn.ConditionWrongItem},
+		},
+	})
+	assert.NoError(t, err)
+	assert.NotNil(t, ret)
+	assert.Len(t, ret.Lines, 1)
+	assert.True(t, ret.Lines[0].Restock, "WRONG_ITEM should be restockable")
+	assert.Equal(t, domainReturn.ReasonWrongItem, ret.Lines[0].ReasonCode)
+}
+
+func TestSalesReturn_CreateDamagedNeverRestocks(t *testing.T) {
+	mockRet := new(MockReturnRepository)
+	mockOrder := new(MockOrderRepository)
+	mockSKU := new(MockSKURepository)
+	mockStock := new(MockStockRepository)
+
+	uc := usecaseReturn.NewSalesReturnUsecase(
+		nil,
+		mockRet,
+		mockOrder,
+		nil,
+		mockSKU,
+		mockStock,
+		nil,
+		nil,
+	)
+
+	orderID := uint(61)
+	order := &domainOrder.Order{
+		ID:           orderID,
+		OrderNo:      "SO-2026-0003",
+		CustomerID:   10,
+		CustomerName: "Customer C",
+		Status:       domainOrder.StatusShipped,
+		Items: []domainOrder.OrderItem{
+			{SKU: "SKU-C", Quantity: 4, Price: 25},
+		},
+	}
+
+	mockOrder.On("FindByID", mock.Anything, orderID).Return(order, nil)
+	mockRet.On("CountReturnedQtyByOrderAndSKU", mock.Anything, orderID, uint(0)).Return(map[string]int{}, nil)
+	mockRet.On("Create", mock.Anything, mock.Anything).Return(nil)
+
+	// Even if the client explicitly asks for restock, DAMAGED/EXPIRED must not
+	// restock. Evidence photos are mandatory for these conditions.
+	restockTrue := true
+	ret, err := uc.Create(context.Background(), usecaseReturn.CreateReturnInput{
+		ReturnType:  domainReturn.ReturnTypeCustomer,
+		OrderID:     &orderID,
+		WarehouseID: 1,
+		Lines: []usecaseReturn.CreateReturnLineInput{
+			{SKU: "SKU-C", Quantity: 1, Condition: domainReturn.ConditionDamaged, Restock: &restockTrue, EvidenceImages: []string{"/uploads/images/damaged.jpg"}},
+			{SKU: "SKU-C", Quantity: 1, Condition: domainReturn.ConditionExpired, Restock: &restockTrue, EvidenceImages: []string{"/uploads/images/expired.jpg"}},
+		},
+	})
+	assert.NoError(t, err)
+	assert.NotNil(t, ret)
+	assert.Len(t, ret.Lines, 2)
+	assert.False(t, ret.Lines[0].Restock, "DAMAGED must never restock")
+	assert.False(t, ret.Lines[1].Restock, "EXPIRED must never restock")
+}
+
+func TestSalesReturn_CreateDamagedWithoutEvidenceRejected(t *testing.T) {
+	mockRet := new(MockReturnRepository)
+	mockOrder := new(MockOrderRepository)
+	mockSKU := new(MockSKURepository)
+	mockStock := new(MockStockRepository)
+
+	uc := usecaseReturn.NewSalesReturnUsecase(
+		nil,
+		mockRet,
+		mockOrder,
+		nil,
+		mockSKU,
+		mockStock,
+		nil,
+		nil,
+	)
+
+	orderID := uint(62)
+	order := &domainOrder.Order{
+		ID:           orderID,
+		OrderNo:      "SO-2026-0004",
+		CustomerID:   10,
+		CustomerName: "Customer D",
+		Status:       domainOrder.StatusShipped,
+		Items: []domainOrder.OrderItem{
+			{SKU: "SKU-D", Quantity: 4, Price: 25},
+		},
+	}
+
+	mockOrder.On("FindByID", mock.Anything, orderID).Return(order, nil)
+	mockRet.On("CountReturnedQtyByOrderAndSKU", mock.Anything, orderID, uint(0)).Return(map[string]int{}, nil)
+
+	// DAMAGED without any evidence photo -> rejected
+	_, err := uc.Create(context.Background(), usecaseReturn.CreateReturnInput{
+		ReturnType:  domainReturn.ReturnTypeCustomer,
+		OrderID:     &orderID,
+		WarehouseID: 1,
+		Lines: []usecaseReturn.CreateReturnLineInput{
+			{SKU: "SKU-D", Quantity: 1, Condition: domainReturn.ConditionDamaged},
+		},
+	})
+	assert.Error(t, err, "DAMAGED line without evidence photo must be rejected")
+	assert.Contains(t, err.Error(), "กรุณาแนบรูปถ่ายยืนยัน")
+
+	// EXPIRED without evidence -> also rejected
+	_, err = uc.Create(context.Background(), usecaseReturn.CreateReturnInput{
+		ReturnType:  domainReturn.ReturnTypeCustomer,
+		OrderID:     &orderID,
+		WarehouseID: 1,
+		Lines: []usecaseReturn.CreateReturnLineInput{
+			{SKU: "SKU-D", Quantity: 1, Condition: domainReturn.ConditionExpired},
+		},
+	})
+	assert.Error(t, err, "EXPIRED line without evidence photo must be rejected")
+
+	// With evidence attached -> passes validation (Create mock succeeds)
+	mockRet.On("Create", mock.Anything, mock.Anything).Return(nil)
+	ret, err := uc.Create(context.Background(), usecaseReturn.CreateReturnInput{
+		ReturnType:  domainReturn.ReturnTypeCustomer,
+		OrderID:     &orderID,
+		WarehouseID: 1,
+		Lines: []usecaseReturn.CreateReturnLineInput{
+			{SKU: "SKU-D", Quantity: 1, Condition: domainReturn.ConditionDamaged, EvidenceImages: []string{"/uploads/images/proof-1.jpg"}},
+		},
+	})
+	assert.NoError(t, err)
+	assert.NotNil(t, ret)
+	assert.Equal(t, []string{"/uploads/images/proof-1.jpg"}, ret.Lines[0].EvidenceImages)
+}
+
+func TestSalesReturn_CompleteWrongItemRestocksStock(t *testing.T) {
+	mockRet := new(MockReturnRepository)
+	mockOrder := new(MockOrderRepository)
+	mockSKU := new(MockSKURepository)
+	mockStock := new(MockStockRepository)
+
+	uc := usecaseReturn.NewSalesReturnUsecase(
+		nil,
+		mockRet,
+		mockOrder,
+		nil,
+		mockSKU,
+		mockStock,
+		nil,
+		nil,
+	)
+
+	returnID := uint(102)
+	retDoc := &domainReturn.SalesReturn{
+		ID:          returnID,
+		ReturnNo:    "RT-2026-0002",
+		Status:      domainReturn.StatusApproved,
+		WarehouseID: 1,
+		Lines: []domainReturn.SalesReturnLine{
+			{
+				ID:        1,
+				ReturnID:  returnID,
+				SKU:       "SKU-WRONG",
+				Quantity:  3,
+				Condition: domainReturn.ConditionWrongItem,
+				Restock:   true,
+			},
+		},
+	}
+
+	mockRet.On("FindByIDForUpdate", mock.Anything, returnID).Return(retDoc, nil)
+	mockRet.On("Update", mock.Anything, mock.Anything).Return(nil)
+	mockRet.On("UpdateLines", mock.Anything, mock.Anything).Return(nil)
+
+	skuWrong := &domainSKU.SKU{ID: 3, SKU: "SKU-WRONG", CostPrice: 40}
+	mockSKU.On("FindBySKU", mock.Anything, "SKU-WRONG").Return(skuWrong, nil)
+
+	// WRONG_ITEM restocks: quantity added is 3, movement type is MovementIn
+	mockStock.On("GetBySKUIDForUpdate", mock.Anything, uint(3), uint(1)).Return(&domainStock.Stock{Quantity: 7}, nil)
+	mockStock.On("UpdateQuantity", mock.Anything, uint(3), uint(1), 3).Return(&domainStock.Stock{Quantity: 10}, nil)
+	mockStock.On("CreateMovement", mock.Anything, mock.MatchedBy(func(m *domainStock.StockMovement) bool {
+		return m.SKUCode == "SKU-WRONG" && m.Type == domainStock.MovementIn && m.Quantity == 3
+	})).Return(nil)
+
+	completed, err := uc.Complete(context.Background(), returnID, usecaseReturn.CompleteReturnInput{
+		CompletedBy: "WarehouseOfficer",
+	})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, completed)
+	assert.Equal(t, domainReturn.StatusCompleted, completed.Status)
 }
