@@ -54,6 +54,22 @@ func TestUploadHandler_UploadImage(t *testing.T) {
 		assert.Equal(t, http.StatusCreated, resp.StatusCode)
 	})
 
+	t.Run("success upload with folder parameter", func(t *testing.T) {
+		body := &bytes.Buffer{}
+		writer := multipart.NewWriter(body)
+		part, err := writer.CreateFormFile("image", "logo.png")
+		assert.NoError(t, err)
+		_, _ = part.Write(pngBytes())
+		_ = writer.Close()
+
+		req := httptest.NewRequest(http.MethodPost, "/upload/image?folder=logos", body)
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+
+		resp, err := app.Test(req)
+		assert.NoError(t, err)
+		assert.Equal(t, http.StatusCreated, resp.StatusCode)
+	})
+
 	t.Run("reject invalid file extension", func(t *testing.T) {
 		body := &bytes.Buffer{}
 		writer := multipart.NewWriter(body)

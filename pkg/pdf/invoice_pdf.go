@@ -465,6 +465,7 @@ func resolveLocalImagePath(logoPath string) string {
 	candidates := []string{
 		clean,
 		filepath.Join(".", clean),
+		filepath.Join("uploads", "logos", filepath.Base(clean)),
 		filepath.Join("uploads", "images", filepath.Base(clean)),
 		filepath.Join("erp-api", clean),
 	}
