@@ -88,7 +88,7 @@ func (u *reportUsecase) GetRevenueReport(ctx context.Context, month string) (*do
 
 	var tiktokOrders []domainTikTok.TiktokOrder
 	tiktokQuery := u.db.WithContext(ctx).Model(&domainTikTok.TiktokOrder{}).
-		Where("UPPER(TRIM(status)) = ?", "COMPLETED")
+		Where("UPPER(TRIM(status)) IN ?", []string{"COMPLETED", "DELIVERED", "IN_TRANSIT", "AWAITING_SHIPMENT"})
 
 	if month != "" {
 		startTime := month + "-01"
