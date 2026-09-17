@@ -3,6 +3,8 @@ package postgres
 import (
 	"context"
 	"errors"
+	"strings"
+	"time"
 
 	"chawy-erp-api/internal/domain/stock"
 	"chawy-erp-api/pkg/database"
@@ -233,14 +235,55 @@ func (r *StockRepository) CreateMovement(ctx context.Context, movement *stock.St
 }
 
 func (r *StockRepository) GetMovements(ctx context.Context, skuID uint, page, limit int) ([]stock.StockMovement, int64, error) {
-	var movements []stock.StockMovement
-	var total int64
-
-	tx := r.db.WithContext(ctx).Model(&stock.StockMovement{})
-	if skuID != 0 {
-		tx = tx.Where("sku_id = ?", skuID)
+	type rawMovement struct {
+		ID                uint               `gorm:"column:id"`
+		SKUID             uint               `gorm:"column:sku_id"`
+		SKUCode           string             `gorm:"column:sku_code"`
+		WarehouseID       uint               `gorm:"column:warehouse_id"`
+		StockLotID        *uint              `gorm:"column:stock_lot_id"`
+		SourceFormulaCode string             `gorm:"column:source_formula_code"`
+		Channel           string             `gorm:"column:channel"`
+		Type              stock.MovementType `gorm:"column:type"`
+		Quantity          int                `gorm:"column:quantity"`
+		BeforeQty         int                `gorm:"column:before_qty"`
+		AfterQty          int                `gorm:"column:after_qty"`
+		ReferenceType     string             `gorm:"column:reference_type"`
+		ReferenceID       string             `gorm:"column:reference_id"`
+		Note              string             `gorm:"column:note"`
+		CreatedAt         time.Time          `gorm:"column:created_at"`
+		LotNumber         *string            `gorm:"column:lot_number"`
+		SupplierLot       *string            `gorm:"column:supplier_lot"`
+		ExpiryDate        *string            `gorm:"column:expiry_date"`
 	}
 
+	tx := r.db.WithContext(ctx).Table("stock_movements sm").
+		Select(`
+			sm.id,
+			sm.sku_id,
+			sm.sku_code,
+			sm.warehouse_id,
+			sm.stock_lot_id,
+			sm.source_formula_code,
+			sm.channel,
+			sm.type,
+			sm.quantity,
+			sm.before_qty,
+			sm.after_qty,
+			sm.reference_type,
+			sm.reference_id,
+			sm.note,
+			sm.created_at,
+			sl.lot_number,
+			sl.supplier_lot,
+			sl.expiry_date
+		`).
+		Joins("LEFT JOIN stock_lots sl ON sm.stock_lot_id = sl.id")
+
+	if skuID != 0 {
+		tx = tx.Where("sm.sku_id = ?", skuID)
+	}
+
+	var total int64
 	if err := tx.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
@@ -250,9 +293,56 @@ func (r *StockRepository) GetMovements(ctx context.Context, skuID uint, page, li
 		offset = 0
 	}
 
-	err := tx.Offset(offset).Limit(limit).Order("id DESC").Find(&movements).Error
+	var raws []rawMovement
+	err := tx.Offset(offset).Limit(limit).Order("sm.id DESC").Scan(&raws).Error
 	if err != nil {
 		return nil, 0, err
+	}
+
+	movements := make([]stock.StockMovement, len(raws))
+	for i, row := range raws {
+		lotNum := ""
+		if row.LotNumber != nil {
+			lotNum = *row.LotNumber
+		}
+		suppLot := ""
+		if row.SupplierLot != nil {
+			suppLot = *row.SupplierLot
+		}
+		expDate := ""
+		if row.ExpiryDate != nil {
+			expDate = *row.ExpiryDate
+		}
+
+		// Fallback: extract lot from Note if not linked to stock_lot_id directly (e.g. "(Lot: LOT-xxx)")
+		if lotNum == "" && strings.Contains(row.Note, "(Lot:") {
+			parts := strings.Split(row.Note, "(Lot:")
+			if len(parts) > 1 {
+				extracted := strings.TrimRight(strings.TrimSpace(parts[1]), ")")
+				lotNum = extracted
+			}
+		}
+
+		movements[i] = stock.StockMovement{
+			ID:                row.ID,
+			SKUID:             row.SKUID,
+			SKUCode:           row.SKUCode,
+			WarehouseID:       row.WarehouseID,
+			StockLotID:        row.StockLotID,
+			SourceFormulaCode: row.SourceFormulaCode,
+			Channel:           row.Channel,
+			Type:              row.Type,
+			Quantity:          row.Quantity,
+			BeforeQty:         row.BeforeQty,
+			AfterQty:          row.AfterQty,
+			ReferenceType:     row.ReferenceType,
+			ReferenceID:       row.ReferenceID,
+			Note:              row.Note,
+			CreatedAt:         row.CreatedAt,
+			LotNumber:         lotNum,
+			SupplierLot:       suppLot,
+			ExpiryDate:        expDate,
+		}
 	}
 
 	return movements, total, nil

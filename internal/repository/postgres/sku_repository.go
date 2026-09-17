@@ -243,7 +243,7 @@ func (r *SKURepository) GetReceiptHistory(ctx context.Context, q sku.SKUReceiptQ
 	}
 
 	var raws []rawReceipt
-	if err := tx.Offset(offset).Limit(q.Limit).Order("sm.created_at DESC, sm.id DESC").Scan(&raws).Error; err != nil {
+	if err := tx.Offset(offset).Limit(q.Limit).Order("sm.created_at ASC, sm.id ASC").Scan(&raws).Error; err != nil {
 		return nil, 0, err
 	}
 

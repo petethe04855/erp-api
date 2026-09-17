@@ -57,6 +57,9 @@ type StockMovement struct {
 	ReferenceType     string       `json:"reference_type" gorm:"size:50"`
 	ReferenceID       string       `json:"reference_id" gorm:"size:100"`
 	Note              string       `json:"note" gorm:"size:255"`
+	LotNumber         string       `json:"lot_number,omitempty" gorm:"-"`
+	SupplierLot       string       `json:"supplier_lot,omitempty" gorm:"-"`
+	ExpiryDate        string       `json:"expiry_date,omitempty" gorm:"-"`
 	CreatedAt         time.Time    `json:"created_at"`
 }
 
