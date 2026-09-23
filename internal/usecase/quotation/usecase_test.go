@@ -217,25 +217,25 @@ func TestCreate_ComputesTotalFromValidatedLines(t *testing.T) {
 	assert.Equal(t, 250.0, q.TotalAmount)
 	assert.Equal(t, uint(1), q.Lines[0].ProductID)
 	assert.Equal(t, "ABC", q.Lines[0].SKU)
-	assert.Equal(t, domainQuotation.StatusDraft, q.Status)
+	assert.Equal(t, domainQuotation.StatusPending, q.Status)
 }
 
 func TestUpdateStatus_EnforcesStateMachine(t *testing.T) {
 	repo := &fakeQuotationRepo{quotation: &domainQuotation.Quotation{
 		ID:     1,
-		Status: domainQuotation.StatusDraft,
+		Status: domainQuotation.StatusPending,
 	}}
 	uc := newUsecase(repo, &fakeSKURepo{})
 
-	// Draft -> Approved is not a permitted transition.
-	_, err := uc.UpdateStatus(context.Background(), 1, domainQuotation.StatusApproved)
+	// Pending -> Draft is not an allowed transition in state machine
+	_, err := uc.UpdateStatus(context.Background(), 1, domainQuotation.StatusDraft)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Cannot change quotation status")
 
-	// Draft -> Sent is permitted.
-	updated, err := uc.UpdateStatus(context.Background(), 1, domainQuotation.StatusSent)
+	// Pending -> Converted is permitted.
+	updated, err := uc.UpdateStatus(context.Background(), 1, domainQuotation.StatusConverted)
 	require.NoError(t, err)
-	assert.Equal(t, domainQuotation.StatusSent, updated.Status)
+	assert.Equal(t, domainQuotation.StatusConverted, updated.Status)
 }
 
 func TestConvert_OnlyApprovedQuotationsConvert(t *testing.T) {
@@ -243,7 +243,7 @@ func TestConvert_OnlyApprovedQuotationsConvert(t *testing.T) {
 	repo := &fakeQuotationRepo{
 		quotation: &domainQuotation.Quotation{
 			ID:         1,
-			Status:     domainQuotation.StatusDraft,
+			Status:     domainQuotation.StatusRejected,
 			ValidUntil: "2099-01-01",
 			Lines: []domainQuotation.QuotationLine{
 				{SKU: "ABC", Price: 100, Quantity: 1, Subtotal: 100},
@@ -254,7 +254,7 @@ func TestConvert_OnlyApprovedQuotationsConvert(t *testing.T) {
 
 	_, err := uc.ConvertToSalesOrder(context.Background(), 1)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "Only Approved quotations")
+	assert.Contains(t, err.Error(), "Only Pending or Approved quotations")
 	assert.Nil(t, orderRepo.created)
 }
 

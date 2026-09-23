@@ -2574,8 +2574,8 @@ func (h *WorkspaceHandler) GetQuotations(c *fiber.Ctx) error {
 
 	if statusQuery != "" && !strings.EqualFold(statusQuery, "all") {
 		if strings.EqualFold(statusQuery, "expired") {
-			// Expired: valid_until < today AND status IN ('Draft', 'Sent', 'Approved')
-			query = query.Where("valid_until != '' AND valid_until < ? AND status IN ('Draft', 'Sent', 'Approved')", today)
+			// Expired: valid_until < today AND status IN ('Pending', 'Draft', 'Sent', 'Approved')
+			query = query.Where("valid_until != '' AND valid_until < ? AND status IN ('Pending', 'Draft', 'Sent', 'Approved')", today)
 		} else {
 			query = query.Where("LOWER(status) = ?", strings.ToLower(statusQuery))
 		}
@@ -2587,7 +2587,7 @@ func (h *WorkspaceHandler) GetQuotations(c *fiber.Ctx) error {
 	records := make([]QuotationRecord, len(quotations))
 	for i, q := range quotations {
 		isExpired := false
-		if (q.Status == domainQuotation.StatusDraft || q.Status == domainQuotation.StatusSent || q.Status == domainQuotation.StatusApproved) && q.ValidUntil != "" && q.ValidUntil < today {
+		if (q.Status == domainQuotation.StatusPending || q.Status == domainQuotation.StatusDraft || q.Status == domainQuotation.StatusSent || q.Status == domainQuotation.StatusApproved) && q.ValidUntil != "" && q.ValidUntil < today {
 			isExpired = true
 		}
 		records[i] = QuotationRecord{
@@ -2770,7 +2770,7 @@ func (h *WorkspaceHandler) GetQuotationByID(c *fiber.Ctx) error {
 
 	today := time.Now().Format("2006-01-02")
 	isExpired := false
-	if (q.Status == domainQuotation.StatusDraft || q.Status == domainQuotation.StatusSent || q.Status == domainQuotation.StatusApproved) && q.ValidUntil != "" && q.ValidUntil < today {
+	if (q.Status == domainQuotation.StatusPending || q.Status == domainQuotation.StatusDraft || q.Status == domainQuotation.StatusSent || q.Status == domainQuotation.StatusApproved) && q.ValidUntil != "" && q.ValidUntil < today {
 		isExpired = true
 	}
 
