@@ -370,10 +370,20 @@ func (u *purchasingUsecase) ReceiveGoods(ctx context.Context, in ReceiveGoodsInp
 				ExpiryDate:   expiryDate,
 				Quantity:     remaining,
 				AvailableQty: remaining,
+				UnitCost:     line.UnitCost,
 				ReceivedAt:   time.Now(),
 			}
 			if err := u.stockRepo.CreateLot(txCtx, stockLot); err != nil {
 				return err
+			}
+
+			// Update SKU Master latest cost price if available
+			if line.UnitCost > 0 {
+				_ = u.skuRepo.Update(txCtx, &domainSKU.SKU{
+					ID:        skuEntity.ID,
+					CostPrice: line.UnitCost,
+					UpdatedAt: time.Now(),
+				})
 			}
 
 			movement := &domainStock.StockMovement{

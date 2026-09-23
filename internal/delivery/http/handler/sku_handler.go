@@ -141,6 +141,8 @@ func (h *SKUHandler) GetReceiptHistory(c *fiber.Ctx) error {
 			ReceivedAt:       r.ReceivedAt.Format(time.RFC3339),
 			SourceType:       r.SourceType,
 			Quantity:         r.Quantity,
+			UnitCost:         r.UnitCost,
+			RetailPrice:      r.RetailPrice,
 			WarehouseID:      r.WarehouseID,
 			WarehouseName:    r.WarehouseName,
 			LotNumber:        r.LotNumber,
