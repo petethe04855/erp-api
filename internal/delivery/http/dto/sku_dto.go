@@ -46,6 +46,8 @@ type SKUReceiptResponse struct {
 	ReceivedAt       string  `json:"receivedAt"`
 	SourceType       string  `json:"sourceType"`
 	Quantity         int     `json:"quantity"`
+	UnitCost         float64 `json:"unitCost"`
+	RetailPrice      float64 `json:"retailPrice"`
 	WarehouseID      uint    `json:"warehouseId"`
 	WarehouseName    string  `json:"warehouseName"`
 	LotNumber        string  `json:"lotNumber,omitempty"`

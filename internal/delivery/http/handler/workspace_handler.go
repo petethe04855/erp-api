@@ -2302,6 +2302,18 @@ func (h *WorkspaceHandler) GetPurchaseOrders(c *fiber.Ctx) error {
 	var pos []domainPurchasing.PurchaseOrder
 	var total int64
 	query := h.db.WithContext(c.Context()).Model(&domainPurchasing.PurchaseOrder{})
+
+	search := strings.TrimSpace(c.Query("search", ""))
+	if search != "" {
+		s := "%" + search + "%"
+		query = query.Where("po_no ILIKE ? OR supplier_name ILIKE ?", s, s)
+	}
+
+	statusQuery := strings.TrimSpace(c.Query("status", ""))
+	if statusQuery != "" && !strings.EqualFold(statusQuery, "all") {
+		query = query.Where("LOWER(status) = ?", strings.ToLower(statusQuery))
+	}
+
 	query.Count(&total)
 	query.Offset((page - 1) * limit).Limit(limit).Order("id DESC").Find(&pos)
 
@@ -2562,8 +2574,8 @@ func (h *WorkspaceHandler) GetQuotations(c *fiber.Ctx) error {
 
 	if statusQuery != "" && !strings.EqualFold(statusQuery, "all") {
 		if strings.EqualFold(statusQuery, "expired") {
-			// Expired: valid_until < today AND status IN ('Draft', 'Sent', 'Approved')
-			query = query.Where("valid_until != '' AND valid_until < ? AND status IN ('Draft', 'Sent', 'Approved')", today)
+			// Expired: valid_until < today AND status IN ('Pending', 'Draft', 'Sent', 'Approved')
+			query = query.Where("valid_until != '' AND valid_until < ? AND status IN ('Pending', 'Draft', 'Sent', 'Approved')", today)
 		} else {
 			query = query.Where("LOWER(status) = ?", strings.ToLower(statusQuery))
 		}
@@ -2575,7 +2587,7 @@ func (h *WorkspaceHandler) GetQuotations(c *fiber.Ctx) error {
 	records := make([]QuotationRecord, len(quotations))
 	for i, q := range quotations {
 		isExpired := false
-		if (q.Status == domainQuotation.StatusDraft || q.Status == domainQuotation.StatusSent || q.Status == domainQuotation.StatusApproved) && q.ValidUntil != "" && q.ValidUntil < today {
+		if (q.Status == domainQuotation.StatusPending || q.Status == domainQuotation.StatusDraft || q.Status == domainQuotation.StatusSent || q.Status == domainQuotation.StatusApproved) && q.ValidUntil != "" && q.ValidUntil < today {
 			isExpired = true
 		}
 		records[i] = QuotationRecord{
@@ -2758,7 +2770,7 @@ func (h *WorkspaceHandler) GetQuotationByID(c *fiber.Ctx) error {
 
 	today := time.Now().Format("2006-01-02")
 	isExpired := false
-	if (q.Status == domainQuotation.StatusDraft || q.Status == domainQuotation.StatusSent || q.Status == domainQuotation.StatusApproved) && q.ValidUntil != "" && q.ValidUntil < today {
+	if (q.Status == domainQuotation.StatusPending || q.Status == domainQuotation.StatusDraft || q.Status == domainQuotation.StatusSent || q.Status == domainQuotation.StatusApproved) && q.ValidUntil != "" && q.ValidUntil < today {
 		isExpired = true
 	}
 
@@ -2983,6 +2995,8 @@ func (h *WorkspaceHandler) GetGoodsReceiveByID(c *fiber.Ctx) error {
 			"name":        item.Name,
 			"qty":         item.Quantity,
 			"receivedQty": item.Quantity,
+			"unitCost":    item.UnitCost,
+			"retailPrice": item.RetailPrice,
 			"supplierLot": item.SupplierLot,
 			"expiryDate":  item.ExpiryDate,
 			"qcStatus":    item.QCStatus,
@@ -3012,12 +3026,14 @@ func (h *WorkspaceHandler) CreateGoodsReceive(c *fiber.Ctx) error {
 		ReceiveDate string `json:"receiveDate"`
 		Note        string `json:"note"`
 		Items       []struct {
-			SKU         string `json:"sku"`
-			QtyReceived int    `json:"qtyReceived"`
-			Quantity    int    `json:"quantity"`
-			ExpiryDate  string `json:"expiryDate"`
-			SupplierLot string `json:"supplierLot"`
-			QCStatus    string `json:"qcStatus"`
+			SKU         string   `json:"sku"`
+			QtyReceived int      `json:"qtyReceived"`
+			Quantity    int      `json:"quantity"`
+			UnitCost    *float64 `json:"unitCost"`
+			RetailPrice *float64 `json:"retailPrice"`
+			ExpiryDate  string   `json:"expiryDate"`
+			SupplierLot string   `json:"supplierLot"`
+			QCStatus    string   `json:"qcStatus"`
 		} `json:"items"`
 	}
 	if err := c.BodyParser(&req); err != nil {
@@ -3047,6 +3063,8 @@ func (h *WorkspaceHandler) CreateGoodsReceive(c *fiber.Ctx) error {
 	type receiveItem struct {
 		SKU         string
 		Quantity    int
+		UnitCost    float64
+		RetailPrice float64
 		SupplierLot string
 		ExpiryDate  string
 		QCStatus    string
@@ -3072,9 +3090,30 @@ func (h *WorkspaceHandler) CreateGoodsReceive(c *fiber.Ctx) error {
 						expiry = time.Now().AddDate(1, 6, 0).Format("2006-01-02")
 					}
 				}
+
+				unitCost := 0.0
+				if it.UnitCost != nil {
+					unitCost = *it.UnitCost
+				} else if hasPO {
+					// Fallback to PO unit cost if not explicitly passed
+					for _, poi := range po.Items {
+						if strings.EqualFold(poi.SKU, it.SKU) && poi.UnitCost > 0 {
+							unitCost = poi.UnitCost
+							break
+						}
+					}
+				}
+
+				retailPrice := 0.0
+				if it.RetailPrice != nil {
+					retailPrice = *it.RetailPrice
+				}
+
 				itemsToReceive = append(itemsToReceive, receiveItem{
 					SKU:         strings.ToUpper(strings.TrimSpace(it.SKU)),
 					Quantity:    qty,
+					UnitCost:    unitCost,
+					RetailPrice: retailPrice,
 					SupplierLot: it.SupplierLot,
 					ExpiryDate:  expiry,
 					QCStatus:    qc,
@@ -3090,10 +3129,12 @@ func (h *WorkspaceHandler) CreateGoodsReceive(c *fiber.Ctx) error {
 			remaining := it.Quantity - it.ReceivedQty
 			if remaining > 0 {
 				itemsToReceive = append(itemsToReceive, receiveItem{
-					SKU:        strings.ToUpper(strings.TrimSpace(it.SKU)),
-					Quantity:   remaining,
-					ExpiryDate: defaultExpiry,
-					QCStatus:   "Accepted",
+					SKU:         strings.ToUpper(strings.TrimSpace(it.SKU)),
+					Quantity:    remaining,
+					UnitCost:    it.UnitCost,
+					RetailPrice: 0,
+					ExpiryDate:  defaultExpiry,
+					QCStatus:    "Accepted",
 				})
 			}
 		}
@@ -3251,6 +3292,8 @@ func (h *WorkspaceHandler) CreateGoodsReceive(c *fiber.Ctx) error {
 				SKU:         s.SKU,
 				Name:        s.Name,
 				Quantity:    it.Quantity,
+				UnitCost:    it.UnitCost,
+				RetailPrice: it.RetailPrice,
 				SupplierLot: it.SupplierLot,
 				ExpiryDate:  it.ExpiryDate,
 				QCStatus:    it.QCStatus,
@@ -3294,9 +3337,55 @@ func (h *WorkspaceHandler) CreateGoodsReceive(c *fiber.Ctx) error {
 				}
 			}
 
+			var stockLotID *uint
+			if qcAccepted {
+				// Generate Lot Number if not provided
+				lotNumber := it.SupplierLot
+				if lotNumber == "" {
+					lotNumber = fmt.Sprintf("LOT-%s-%d", time.Now().Format("20060102"), grItem.ID)
+				}
+
+				stockLot := domainStock.StockLot{
+					SKUID:        s.ID,
+					SKUCode:      s.SKU,
+					WarehouseID:  1,
+					LotNumber:    lotNumber,
+					SupplierLot:  it.SupplierLot,
+					ExpiryDate:   it.ExpiryDate,
+					Quantity:     it.Quantity,
+					AvailableQty: it.Quantity,
+					UnitCost:     it.UnitCost,
+					RetailPrice:  it.RetailPrice,
+					ReceivedAt:   time.Now(),
+					CreatedAt:    time.Now(),
+					UpdatedAt:    time.Now(),
+				}
+				if err := tx.Create(&stockLot).Error; err != nil {
+					return err
+				}
+				stockLotID = &stockLot.ID
+
+				// Update SKU Master with latest unit cost and selling price
+				skuUpdates := map[string]interface{}{
+					"updated_at": time.Now(),
+				}
+				if it.UnitCost > 0 {
+					skuUpdates["cost_price"] = it.UnitCost
+				}
+				if it.RetailPrice > 0 {
+					skuUpdates["price"] = it.RetailPrice
+				}
+				if err := tx.Model(&domainSKU.SKU{}).Where("id = ?", s.ID).Updates(skuUpdates).Error; err != nil {
+					return err
+				}
+			}
+
 			note := req.Note
 			if it.SupplierLot != "" || it.ExpiryDate != "" {
 				note = fmt.Sprintf("%s [Lot: %s, Exp: %s]", note, it.SupplierLot, it.ExpiryDate)
+			}
+			if it.UnitCost > 0 || it.RetailPrice > 0 {
+				note = fmt.Sprintf("%s [Cost: %.2f, Price: %.2f]", note, it.UnitCost, it.RetailPrice)
 			}
 			if !qcAccepted {
 				if note != "" {
@@ -3318,6 +3407,7 @@ func (h *WorkspaceHandler) CreateGoodsReceive(c *fiber.Ctx) error {
 				SKUID:         s.ID,
 				SKUCode:       s.SKU,
 				WarehouseID:   1,
+				StockLotID:    stockLotID,
 				Type:          movementType,
 				Quantity:      movementQty,
 				BeforeQty:     stk.Quantity,

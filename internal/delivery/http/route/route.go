@@ -301,17 +301,17 @@ func RegisterRoutes(cfg Config) {
 	// Live & Content Routes
 	liveGroup := protected.Group("/live")
 	liveGroup.Get("/sessions", cfg.LiveHandler.ListSessions)
-	liveGroup.Post("/sessions", middleware.RequireRole("owner", "sales", "warehouse"), cfg.LiveHandler.CreateSession)
+	liveGroup.Post("/sessions", middleware.RequireRole("owner", "sales", "warehouse", "live"), cfg.LiveHandler.CreateSession)
 	liveGroup.Get("/sessions/:id", cfg.LiveHandler.GetSessionByID)
-	liveGroup.Put("/sessions/:id", middleware.RequireRole("owner", "sales"), cfg.LiveHandler.UpdateSession)
+	liveGroup.Put("/sessions/:id", middleware.RequireRole("owner", "sales", "live"), cfg.LiveHandler.UpdateSession)
 	liveGroup.Post("/sessions/:id/approve", middleware.RequireRole("owner"), cfg.LiveHandler.ApproveSession)
 	liveGroup.Post("/sessions/:id/reject", middleware.RequireRole("owner"), cfg.LiveHandler.RejectSession)
 	liveGroup.Get("/payroll", middleware.RequireRole("owner", "accountant"), cfg.LiveHandler.GetPayrollSummary)
 
 	// Content Items (Schedule + Performance)
 	liveGroup.Get("/content", cfg.LiveHandler.ListContentItems)
-	liveGroup.Post("/content", middleware.RequireRole("owner", "sales"), cfg.LiveHandler.CreateContentItem)
-	liveGroup.Put("/content/:id", middleware.RequireRole("owner", "sales"), cfg.LiveHandler.UpdateContentItem)
+	liveGroup.Post("/content", middleware.RequireRole("owner", "sales", "live"), cfg.LiveHandler.CreateContentItem)
+	liveGroup.Put("/content/:id", middleware.RequireRole("owner", "sales", "live"), cfg.LiveHandler.UpdateContentItem)
 	liveGroup.Delete("/content/:id", middleware.RequireRole("owner", "sales"), cfg.LiveHandler.DeleteContentItem)
 }
 

@@ -92,7 +92,7 @@ func NewAuthUsecase(repo domainAuth.Repository, jwtSecret, jwtExpHours string, m
 
 func isValidRole(role string) bool {
 	switch role {
-	case "owner", "sales", "warehouse", "accountant":
+	case "owner", "sales", "warehouse", "accountant", "live":
 		return true
 	default:
 		return false

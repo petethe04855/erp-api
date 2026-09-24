@@ -58,6 +58,8 @@ func (m *smtpMailer) SendUserCredentials(recipientEmail, recipientName, generate
 		roleName = "ฝ่ายขาย (Sales)"
 	case "warehouse":
 		roleName = "ฝ่ายคลังสินค้า (Warehouse)"
+	case "live":
+		roleName = "พนักงานไลฟ์ (Live Streamer)"
 	}
 
 	htmlBody := fmt.Sprintf(`<!DOCTYPE html>

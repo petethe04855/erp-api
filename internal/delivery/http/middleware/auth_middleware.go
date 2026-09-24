@@ -98,9 +98,9 @@ func RequireRole(allowedRoles ...string) fiber.Handler {
 // Valid roles: owner, sales, warehouse, accountant (see usecase/auth.isValidRole
 // and features/users/types/user.ts on the frontend — there is no "admin" role).
 var PermissionMatrix = map[string][]string{
-	"View":    {"owner", "sales", "warehouse", "accountant"},
-	"Create":  {"owner", "sales", "warehouse", "accountant"},
-	"Edit":    {"owner", "sales", "warehouse", "accountant"},
+	"View":    {"owner", "sales", "warehouse", "accountant", "live"},
+	"Create":  {"owner", "sales", "warehouse", "accountant", "live"},
+	"Edit":    {"owner", "sales", "warehouse", "accountant", "live"},
 	"Delete":  {"owner", "accountant"},
 	"Approve": {"owner", "accountant", "warehouse"},
 	"Post":    {"owner", "accountant"},

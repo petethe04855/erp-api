@@ -76,6 +76,8 @@ type GoodsReceiveItem struct {
 	SKU         string    `json:"sku" gorm:"size:100;not null"`
 	Name        string    `json:"name" gorm:"size:255"`
 	Quantity    int       `json:"qty" gorm:"not null"`
+	UnitCost    float64   `json:"unit_cost" gorm:"type:numeric(12,2);default:0"`
+	RetailPrice float64   `json:"retail_price" gorm:"type:numeric(12,2);default:0"`
 	SupplierLot string    `json:"supplier_lot" gorm:"size:100"`
 	ExpiryDate  string    `json:"expiry_date" gorm:"size:50"`
 	QCStatus    string    `json:"qc_status" gorm:"size:50"`

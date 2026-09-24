@@ -172,14 +172,15 @@ func (u *quotationUsecase) Create(ctx context.Context, input CreateInput) (*doma
 		// but the total is always recomputed below from validated lines.
 	}
 
-	// API-TS-02: Quotations MUST always start in Draft status.
-	// Reject any attempt to create a quotation in non-Draft status (such as Approved or Converted)
-	// to prevent bypassing the domain state machine. Transitions must go through UpdateStatus.
-	if input.Status != "" && domainQuotation.Status(input.Status) != domainQuotation.StatusDraft {
+	// Quotations start in Pending (or Draft) status.
+	if input.Status != "" && domainQuotation.Status(input.Status) != domainQuotation.StatusPending && domainQuotation.Status(input.Status) != domainQuotation.StatusDraft {
 		return nil, appErrors.NewAppError("QUOTATION_INVALID_STATUS",
-			fmt.Sprintf("New quotations must be created with status '%s'", domainQuotation.StatusDraft), 400)
+			fmt.Sprintf("New quotations must be created with status '%s'", domainQuotation.StatusPending), 400)
 	}
-	status := domainQuotation.StatusDraft
+	status := domainQuotation.StatusPending
+	if input.Status != "" {
+		status = domainQuotation.Status(input.Status)
+	}
 
 	dateStr := input.Date
 	if dateStr == "" {
@@ -313,10 +314,9 @@ func (u *quotationUsecase) ConvertToSalesOrder(ctx context.Context, id uint) (*C
 		if q == nil {
 			return appErrors.NewAppError("QUOTATION_NOT_FOUND", "Quotation not found", 404)
 		}
-		// Business rule: only Approved quotations can be converted (state
-		// machine in domain/quotation — Draft/Rejected/Sent cannot convert).
-		if q.Status != domainQuotation.StatusApproved {
-			return appErrors.NewAppError("QUOTATION_NOT_APPROVED", "Only Approved quotations can be converted to a Sales Order", 400)
+		// Business rule: Pending (or legacy Approved) quotations can be converted to SO.
+		if q.Status != domainQuotation.StatusPending && q.Status != domainQuotation.StatusApproved {
+			return appErrors.NewAppError("QUOTATION_NOT_APPROVED", "Only Pending or Approved quotations can be converted to a Sales Order", 400)
 		}
 		// Block expired quotations.
 		if domainQuotation.IsValidDate(q.ValidUntil) {

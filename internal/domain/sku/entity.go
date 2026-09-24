@@ -35,6 +35,8 @@ type SKUReceiptItem struct {
 	ReceivedAt       time.Time `json:"received_at"`
 	SourceType       string    `json:"source_type"` // INITIAL_STOCK, GOODS_RECEIVE, STOCK_ADJUSTMENT_IN
 	Quantity         int       `json:"quantity"`
+	UnitCost         float64   `json:"unit_cost"`
+	RetailPrice      float64   `json:"retail_price"`
 	WarehouseID      uint      `json:"warehouse_id"`
 	WarehouseName    string    `json:"warehouse_name"`
 	LotNumber        string    `json:"lot_number"`

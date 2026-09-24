@@ -27,6 +27,8 @@ type StockLot struct {
 	Quantity     int       `json:"quantity" gorm:"default:0"`
 	ReservedQty  int       `json:"reserved_qty" gorm:"default:0"`
 	AvailableQty int       `json:"available_qty" gorm:"default:0"`
+	UnitCost     float64   `json:"unit_cost" gorm:"type:numeric(12,2);default:0"`
+	RetailPrice  float64   `json:"retail_price" gorm:"type:numeric(12,2);default:0"`
 	ReceivedAt   time.Time `json:"received_at"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`

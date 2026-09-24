@@ -196,6 +196,8 @@ func (r *SKURepository) GetReceiptHistory(ctx context.Context, q sku.SKUReceiptQ
 		ID               uint       `gorm:"column:id"`
 		CreatedAt        time.Time  `gorm:"column:created_at"`
 		Quantity         int        `gorm:"column:quantity"`
+		UnitCost         float64    `gorm:"column:unit_cost"`
+		RetailPrice      float64    `gorm:"column:retail_price"`
 		WarehouseID      uint       `gorm:"column:warehouse_id"`
 		ReferenceType    string     `gorm:"column:reference_type"`
 		ReferenceID      string     `gorm:"column:reference_id"`
@@ -213,6 +215,8 @@ func (r *SKURepository) GetReceiptHistory(ctx context.Context, q sku.SKUReceiptQ
 			sm.id,
 			sm.created_at,
 			sm.quantity,
+			COALESCE(sl.unit_cost, 0) AS unit_cost,
+			COALESCE(sl.retail_price, 0) AS retail_price,
 			sm.warehouse_id,
 			sm.reference_type,
 			sm.reference_id,
@@ -295,6 +299,8 @@ func (r *SKURepository) GetReceiptHistory(ctx context.Context, q sku.SKUReceiptQ
 			ReceivedAt:       receivedAt,
 			SourceType:       sourceType,
 			Quantity:         row.Quantity,
+			UnitCost:         row.UnitCost,
+			RetailPrice:      row.RetailPrice,
 			WarehouseID:      row.WarehouseID,
 			WarehouseName:    whName,
 			LotNumber:        lotNum,

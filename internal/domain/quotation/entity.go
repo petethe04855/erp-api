@@ -7,7 +7,7 @@ import (
 // IsValidStatus reports whether s is one of the allowed quotation statuses.
 func IsValidStatus(s Status) bool {
 	switch s {
-	case StatusDraft, StatusSent, StatusApproved, StatusRejected, StatusConverted:
+	case StatusPending, StatusConverted, StatusDraft, StatusSent, StatusApproved, StatusRejected:
 		return true
 	}
 	return false
@@ -15,10 +15,11 @@ func IsValidStatus(s Status) bool {
 
 // allowedTransitions defines the state machine for quotation status changes.
 var allowedTransitions = map[Status][]Status{
-	StatusDraft:     {StatusSent, StatusRejected},
-	StatusSent:      {StatusApproved, StatusRejected},
-	StatusApproved:  {StatusConverted},
-	StatusRejected:  {},
+	StatusPending:   {StatusConverted, StatusRejected},
+	StatusDraft:     {StatusPending, StatusSent, StatusApproved, StatusConverted, StatusRejected},
+	StatusSent:      {StatusPending, StatusApproved, StatusConverted, StatusRejected},
+	StatusApproved:  {StatusConverted, StatusPending},
+	StatusRejected:  {StatusPending},
 	StatusConverted: {},
 }
 
@@ -43,11 +44,14 @@ func IsValidDate(value string) bool {
 type Status string
 
 const (
-	StatusDraft     Status = "Draft"
-	StatusSent      Status = "Sent"
-	StatusApproved  Status = "Approved"
-	StatusRejected  Status = "Rejected"
+	StatusPending   Status = "Pending"
 	StatusConverted Status = "Converted"
+
+	// Legacy statuses retained for backward compatibility
+	StatusDraft    Status = "Draft"
+	StatusSent     Status = "Sent"
+	StatusApproved Status = "Approved"
+	StatusRejected Status = "Rejected"
 )
 
 type Quotation struct {
