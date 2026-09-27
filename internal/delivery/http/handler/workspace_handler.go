@@ -25,8 +25,8 @@ import (
 	"chawy-erp-api/pkg/pdf"
 	"chawy-erp-api/pkg/response"
 
-
 	"github.com/gofiber/fiber/v2"
+	"github.com/xuri/excelize/v2"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -62,7 +62,6 @@ func NewWorkspaceHandler(
 	}
 }
 
-
 // ProductRecord matching erp-web-v2 features/erp/types/records.ts
 type SKUAccessoryRecord struct {
 	ID           uint   `json:"id"`
@@ -97,7 +96,6 @@ type ProductRecord struct {
 	LastReceivedAt  *string              `json:"lastReceivedAt"`
 	ReceiptCount    int                  `json:"receiptCount"`
 }
-
 
 func (h *WorkspaceHandler) GetProducts(c *fiber.Ctx) error {
 	page, _ := strconv.Atoi(c.Query("page", "1"))
@@ -434,7 +432,6 @@ func (h *WorkspaceHandler) GetProducts(c *fiber.Ctx) error {
 			ReceiptCount:    rcStat.ReceiptCount,
 		}
 	}
-
 
 	return response.List(c, records, page, limit, total)
 }
@@ -2016,11 +2013,11 @@ func (h *WorkspaceHandler) CreateInvoiceFromSO(c *fiber.Ctx) error {
 		CustomerName: order.CustomerName,
 		Amount:       order.TotalAmount,
 
-		PaidAmount:   0,
-		Status:       domainInvoice.StatusUnpaid,
-		DueDate:      &dueDate,
-		CreatedAt:    time.Now(),
-		UpdatedAt:    time.Now(),
+		PaidAmount: 0,
+		Status:     domainInvoice.StatusUnpaid,
+		DueDate:    &dueDate,
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
 	}
 
 	if err := h.db.WithContext(c.Context()).Create(&inv).Error; err != nil {
@@ -3614,4 +3611,308 @@ func (h *WorkspaceHandler) GetSKUAccessories(c *fiber.Ctx) error {
 	}
 
 	return response.OK(c, records)
+}
+
+// DownloadProductTemplate generates and downloads an Excel (.xlsx) template for importing SKUs
+func (h *WorkspaceHandler) DownloadProductTemplate(c *fiber.Ctx) error {
+	f := excelize.NewFile()
+	defer f.Close()
+
+	sheet := "SKU_Import"
+	f.SetSheetName("Sheet1", sheet)
+
+	headers := []string{
+		"รหัส SKU (จำเป็น)*",
+		"ชื่อสินค้า (จำเป็น)*",
+		"บาร์โค้ด",
+		"หมวดหมู่",
+		"ราคาขาย (บาท)",
+		"ราคาต้นทุน (บาท)",
+		"จำนวนสต็อกเริ่มต้น",
+		"จุดสั่งซื้อซ้ำ (Reorder Point)",
+	}
+
+	for colIdx, header := range headers {
+		cell, _ := excelize.CoordinatesToCellName(colIdx+1, 1)
+		f.SetCellValue(sheet, cell, header)
+	}
+
+	// Sample rows
+	sampleData := [][]interface{}{
+		{"SAMPLE-SKU-001", "สินค้าตัวอย่าง 1", "885000000001", "Finished Product", 299.00, 150.00, 50, 10},
+		{"SAMPLE-SKU-002", "สินค้าตัวอย่าง 2", "885000000002", "Finished Product", 590.00, 300.00, 20, 5},
+	}
+
+	for rowIdx, row := range sampleData {
+		for colIdx, val := range row {
+			cell, _ := excelize.CoordinatesToCellName(colIdx+1, rowIdx+2)
+			f.SetCellValue(sheet, cell, val)
+		}
+	}
+
+	// Styling: Header style
+	headerStyle, err := f.NewStyle(&excelize.Style{
+		Font:      &excelize.Font{Bold: true, Color: "#FFFFFF"},
+		Fill:      excelize.Fill{Type: "pattern", Color: []string{"#2563EB"}, Pattern: 1},
+		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
+	})
+	if err == nil {
+		_ = f.SetRowStyle(sheet, 1, 1, headerStyle)
+	}
+
+	// Auto column widths
+	f.SetColWidth(sheet, "A", "A", 22)
+	f.SetColWidth(sheet, "B", "B", 35)
+	f.SetColWidth(sheet, "C", "C", 20)
+	f.SetColWidth(sheet, "D", "D", 20)
+	f.SetColWidth(sheet, "E", "F", 18)
+	f.SetColWidth(sheet, "G", "H", 25)
+
+	c.Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	c.Set("Content-Disposition", "attachment; filename=sku_import_template.xlsx")
+	return f.Write(c.Response().BodyWriter())
+}
+
+// ImportProductsXLSX handles bulk importing SKUs from an uploaded .xlsx file
+func (h *WorkspaceHandler) ImportProductsXLSX(c *fiber.Ctx) error {
+	file, err := c.FormFile("file")
+	if err != nil {
+		return response.BadRequest(c, "กรุณาเลือกไฟล์ Excel (.xlsx) ที่ต้องการอัปโหลด")
+	}
+
+	// Validate extension
+	ext := strings.ToLower(file.Filename)
+	if !strings.HasSuffix(ext, ".xlsx") {
+		return response.BadRequest(c, "รองรับเฉพาะไฟล์ Excel นามสกุล .xlsx เท่านั้น")
+	}
+
+	src, err := file.Open()
+	if err != nil {
+		return response.BadRequest(c, "ไม่สามารถเปิดไฟล์ Excel ได้: "+err.Error())
+	}
+	defer src.Close()
+
+	excelFile, err := excelize.OpenReader(src)
+	if err != nil {
+		return response.BadRequest(c, "โครงสร้างไฟล์ Excel ไม่ถูกต้อง: "+err.Error())
+	}
+	defer excelFile.Close()
+
+	sheets := excelFile.GetSheetList()
+	if len(sheets) == 0 {
+		return response.BadRequest(c, "ไม่พบ Sheet ในไฟล์ Excel")
+	}
+
+	sheetName := sheets[0]
+	rows, err := excelFile.GetRows(sheetName)
+	if err != nil {
+		return response.BadRequest(c, "ไม่สามารถอ่านแถวข้อมูลในไฟล์ Excel ได้: "+err.Error())
+	}
+
+	if len(rows) <= 1 {
+		return response.BadRequest(c, "ไฟล์ไม่มีข้อมูลสำหรับนำเข้า (พบเฉพาะหัวตารางหรือว่างเปล่า)")
+	}
+
+	type RowError struct {
+		Row   int    `json:"row"`
+		SKU   string `json:"sku"`
+		Error string `json:"error"`
+	}
+
+	type ImportSummary struct {
+		TotalRows int        `json:"totalRows"`
+		Created   int        `json:"created"`
+		Updated   int        `json:"updated"`
+		Failed    int        `json:"failed"`
+		Errors    []RowError `json:"errors"`
+	}
+
+	summary := ImportSummary{
+		TotalRows: len(rows) - 1,
+		Errors:    make([]RowError, 0),
+	}
+
+	// Check column count
+	if len(rows[0]) < 8 {
+		return response.BadRequest(c, "ไฟล์ Excel ไม่ถูกต้อง: ต้องมีอย่างน้อย 8 คอลัมน์")
+	}
+
+	// Track SKUs to prevent duplicates within the Excel file
+	seenSKU := make(map[string]int)
+
+	// Process each row inside a safe single-pass flow
+	for i := 1; i < len(rows); i++ {
+		rowNum := i + 1
+		row := rows[i]
+
+		if len(row) == 0 {
+			summary.TotalRows--
+			continue
+		}
+
+		getCol := func(idx int) string {
+			if idx < len(row) {
+				return strings.TrimSpace(row[idx])
+			}
+			return ""
+		}
+
+		skuCode := strings.ToUpper(getCol(0))
+		name := getCol(1)
+		barcode := getCol(2)
+		category := getCol(3)
+		priceStr := getCol(4)
+		costStr := getCol(5)
+		stockStr := getCol(6)
+		reorderStr := getCol(7)
+
+		// If entire row is blank, skip
+		if skuCode == "" && name == "" && barcode == "" {
+			summary.TotalRows--
+			continue
+		}
+
+		// 1. Check SKU is not empty
+		if skuCode == "" {
+			summary.Failed++
+			summary.Errors = append(summary.Errors, RowError{
+				Row:   rowNum,
+				SKU:   skuCode,
+				Error: "รหัส SKU ไม่สามารถเป็นค่าว่างได้",
+			})
+			continue
+		}
+
+		// 2. Check SKU is not duplicate within Excel file
+		if firstRow, exists := seenSKU[skuCode]; exists {
+			summary.Failed++
+			summary.Errors = append(summary.Errors, RowError{
+				Row:   rowNum,
+				SKU:   skuCode,
+				Error: fmt.Sprintf("รหัส SKU ซ้ำกับแถวที่ %d ในไฟล์ Excel", firstRow),
+			})
+			continue
+		}
+		seenSKU[skuCode] = rowNum
+
+		// 3. Check SKU does not already exist in database (ห้ามซ้ำกับในระบบ)
+		var dbCount int64
+		_ = h.db.WithContext(c.Context()).Model(&domainSKU.SKU{}).
+			Where("UPPER(sku) = ?", skuCode).
+			Count(&dbCount).Error
+		if dbCount > 0 {
+			summary.Failed++
+			summary.Errors = append(summary.Errors, RowError{
+				Row:   rowNum,
+				SKU:   skuCode,
+				Error: fmt.Sprintf("รหัส SKU '%s' มีอยู่ในระบบแล้ว (ห้ามซ้ำ)", skuCode),
+			})
+			continue
+		}
+
+		// 4. Check Product Name is not empty
+		if name == "" {
+			summary.Failed++
+			summary.Errors = append(summary.Errors, RowError{
+				Row:   rowNum,
+				SKU:   skuCode,
+				Error: "ชื่อสินค้าไม่สามารถเป็นค่าว่างได้",
+			})
+			continue
+		}
+
+		if category == "" {
+			category = "Finished Product"
+		}
+
+		price, _ := strconv.ParseFloat(priceStr, 64)
+		cost, _ := strconv.ParseFloat(costStr, 64)
+		initialStock, _ := strconv.Atoi(stockStr)
+		if initialStock < 0 {
+			initialStock = 0
+		}
+		reorder, _ := strconv.Atoi(reorderStr)
+		if reorder < 0 {
+			reorder = 10
+		}
+
+		// Perform Creation inside transaction
+		txErr := h.db.WithContext(c.Context()).Transaction(func(tx *gorm.DB) error {
+			// Double check uniqueness with lock
+			var existing domainSKU.SKU
+			if err := tx.Where("UPPER(sku) = ?", skuCode).First(&existing).Error; err == nil {
+				return fmt.Errorf("รหัส SKU '%s' มีอยู่ในระบบแล้ว", skuCode)
+			}
+
+			// New SKU -> Create SKU + Stock + Movement (if stock > 0)
+			newSKU := domainSKU.SKU{
+				SKU:          skuCode,
+				Name:         name,
+				Barcode:      barcode,
+				Category:     category,
+				Price:        price,
+				CostPrice:    cost,
+				IsBundle:     false,
+				Status:       "active",
+				ReorderPoint: reorder,
+				CreatedAt:    time.Now(),
+				UpdatedAt:    time.Now(),
+			}
+
+			if err := tx.Create(&newSKU).Error; err != nil {
+				return err
+			}
+
+			// Initial Stock
+			stockEntity := domainStock.Stock{
+				SKUID:        newSKU.ID,
+				SKUCode:      newSKU.SKU,
+				WarehouseID:  1,
+				Quantity:     initialStock,
+				AvailableQty: initialStock,
+				UpdatedAt:    time.Now(),
+			}
+			if err := tx.Create(&stockEntity).Error; err != nil {
+				return err
+			}
+
+			if initialStock > 0 {
+				movement := domainStock.StockMovement{
+					SKUID:         newSKU.ID,
+					SKUCode:       newSKU.SKU,
+					WarehouseID:   1,
+					Type:          domainStock.MovementIn,
+					Quantity:      initialStock,
+					BeforeQty:     0,
+					AfterQty:      initialStock,
+					ReferenceType: "opening_stock",
+					ReferenceID:   newSKU.SKU,
+					Note:          "Initial stock from XLSX import",
+					CreatedAt:     time.Now(),
+				}
+				if err := tx.Create(&movement).Error; err != nil {
+					return err
+				}
+			}
+
+			summary.Created++
+			return nil
+		})
+
+		if txErr != nil {
+			summary.Failed++
+			summary.Errors = append(summary.Errors, RowError{
+				Row:   rowNum,
+				SKU:   skuCode,
+				Error: txErr.Error(),
+			})
+		}
+	}
+
+	msg := fmt.Sprintf("นำเข้าข้อมูลสำเร็จ: สร้างใหม่ %d รายการ, อัปเดต %d รายการ", summary.Created, summary.Updated)
+	if summary.Failed > 0 {
+		msg += fmt.Sprintf(", ไม่สำเร็จ %d รายการ", summary.Failed)
+	}
+
+	return response.OK(c, summary, msg)
 }
