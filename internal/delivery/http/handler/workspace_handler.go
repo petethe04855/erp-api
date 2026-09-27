@@ -568,6 +568,7 @@ func (h *WorkspaceHandler) CreateProduct(c *fiber.Ctx) error {
 	var req struct {
 		SKU             string  `json:"sku"`
 		Name            string  `json:"name"`
+		Barcode         string  `json:"barcode"`
 		Type            string  `json:"type"`
 		BaseUnit        string  `json:"baseUnit"`
 		RetailPrice     float64 `json:"retailPrice"`
@@ -648,6 +649,7 @@ func (h *WorkspaceHandler) CreateProduct(c *fiber.Ctx) error {
 		skuEntity = domainSKU.SKU{
 			SKU:       skuCode,
 			Name:      req.Name,
+			Barcode:   strings.TrimSpace(req.Barcode),
 			Category:  req.Type,
 			Price:     req.RetailPrice,
 			CostPrice: req.Cost,
@@ -786,6 +788,7 @@ func (h *WorkspaceHandler) CreateProduct(c *fiber.Ctx) error {
 		SKU:         skuEntity.SKU,
 		Name:        skuEntity.Name,
 		Type:        skuEntity.Category,
+		Barcode:     skuEntity.Barcode,
 		BaseUnit:    req.BaseUnit,
 		RetailPrice: skuEntity.Price,
 		Cost:        skuEntity.CostPrice,
@@ -834,6 +837,7 @@ func (h *WorkspaceHandler) UpdateProductByID(c *fiber.Ctx) error {
 	var req struct {
 		SKU         *string  `json:"sku"`
 		Name        *string  `json:"name"`
+		Barcode     *string  `json:"barcode"`
 		Type        *string  `json:"type"`
 		RetailPrice *float64 `json:"retailPrice"`
 		Cost        *float64 `json:"cost"`
@@ -867,6 +871,9 @@ func (h *WorkspaceHandler) UpdateProductByID(c *fiber.Ctx) error {
 
 	if req.Name != nil && *req.Name != "" {
 		s.Name = *req.Name
+	}
+	if req.Barcode != nil {
+		s.Barcode = strings.TrimSpace(*req.Barcode)
 	}
 	if req.Type != nil {
 		s.Category = *req.Type
@@ -1051,6 +1058,7 @@ func (h *WorkspaceHandler) UpdateProduct(c *fiber.Ctx) error {
 	var req struct {
 		SKU         *string  `json:"sku"`
 		Name        *string  `json:"name"`
+		Barcode     *string  `json:"barcode"`
 		Type        *string  `json:"type"`
 		RetailPrice *float64 `json:"retailPrice"`
 		Cost        *float64 `json:"cost"`
@@ -1102,6 +1110,9 @@ func (h *WorkspaceHandler) UpdateProduct(c *fiber.Ctx) error {
 	// keep their stored values (cost, bundle flag, image survive partial updates).
 	if req.Name != nil && *req.Name != "" {
 		s.Name = *req.Name
+	}
+	if req.Barcode != nil {
+		s.Barcode = strings.TrimSpace(*req.Barcode)
 	}
 	if req.Type != nil {
 		s.Category = *req.Type
