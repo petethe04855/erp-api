@@ -106,7 +106,7 @@ var PermissionMatrix = map[string][]string{
 	"Post":    {"owner", "accountant"},
 	"Cancel":  {"owner", "accountant", "warehouse"},
 	"Reverse": {"owner", "accountant"},
-	"Export":  {"owner", "sales", "warehouse", "accountant"},
+	"Export":  {"owner", "sales", "warehouse", "accountant", "live"},
 }
 
 func RequirePermission(permission string) fiber.Handler {

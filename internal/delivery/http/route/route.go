@@ -228,6 +228,11 @@ func RegisterRoutes(cfg Config) {
 	protected.Put("/products/id/:id/status", middleware.RequireRole("owner", "warehouse", "sales"), cfg.WorkspaceHandler.UpdateProductStatusByID)
 	protected.Put("/products/id/:id/reorder", middleware.RequireRole("owner", "warehouse"), cfg.WorkspaceHandler.UpdateProductReorderByID)
 	protected.Delete("/products/id/:id", middleware.RequireRole("owner", "accountant"), cfg.WorkspaceHandler.DeleteProductByID)
+	protected.Get("/products/template/download", cfg.WorkspaceHandler.DownloadProductTemplate)
+	protected.Post("/products/import", middleware.RequireRole("owner", "warehouse", "sales"), cfg.WorkspaceHandler.ImportProductsXLSX)
+	// Compatibility aliases under /skus
+	protected.Get("/skus/template/download", cfg.WorkspaceHandler.DownloadProductTemplate)
+	protected.Post("/skus/import", middleware.RequireRole("owner", "warehouse", "sales"), cfg.WorkspaceHandler.ImportProductsXLSX)
 	protected.Post("/products", middleware.RequireRole("owner", "warehouse", "sales"), cfg.WorkspaceHandler.CreateProduct)
 	protected.Put("/products/:code", middleware.RequireRole("owner", "warehouse", "sales"), cfg.WorkspaceHandler.UpdateProduct)
 	protected.Put("/products/:code/status", middleware.RequireRole("owner", "warehouse", "sales"), cfg.WorkspaceHandler.UpdateProductStatus)
