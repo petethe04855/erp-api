@@ -62,11 +62,13 @@ func AuthMiddleware(secret string, users UserStatusLoader) fiber.Handler {
 		}
 
 		c.Locals("userID", claims.UserID)
+		c.Locals("user_id", claims.UserID)
 		c.Locals("email", claims.Email)
 		// "username" is the display/audit identity consumed by handlers that
 		// record created_by / approved_by / completed_by. The JWT carries no
 		// display name, so the account email is used as the stable identifier.
 		c.Locals("username", claims.Email)
+		c.Locals("user_name", claims.Email)
 
 		return c.Next()
 	}

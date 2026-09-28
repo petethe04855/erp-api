@@ -311,7 +311,7 @@ func RegisterRoutes(cfg Config) {
 	liveGroup.Put("/sessions/:id", middleware.RequireRole("owner", "sales", "live"), cfg.LiveHandler.UpdateSession)
 	liveGroup.Post("/sessions/:id/approve", middleware.RequireRole("owner"), cfg.LiveHandler.ApproveSession)
 	liveGroup.Post("/sessions/:id/reject", middleware.RequireRole("owner"), cfg.LiveHandler.RejectSession)
-	liveGroup.Get("/payroll", middleware.RequireRole("owner", "accountant"), cfg.LiveHandler.GetPayrollSummary)
+	liveGroup.Get("/payroll", middleware.RequireRole("owner", "accountant", "live"), cfg.LiveHandler.GetPayrollSummary)
 
 	// Content Items (Schedule + Performance)
 	liveGroup.Get("/content", cfg.LiveHandler.ListContentItems)
