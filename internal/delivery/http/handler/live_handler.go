@@ -2,6 +2,7 @@ package handler
 
 import (
 	"strconv"
+	"strings"
 
 	"chawy-erp-api/internal/delivery/http/dto"
 	domainLive "chawy-erp-api/internal/domain/live"
@@ -196,6 +197,45 @@ func (h *LiveHandler) GetPayrollSummary(c *fiber.Ctx) error {
 	result, err := h.usecase.GetPayrollSummary(c.Context(), month, rounding)
 	if err != nil {
 		return err
+	}
+
+	role, _ := c.Locals("role").(string)
+	if strings.EqualFold(role, "live") {
+		// Live streamer should only see their own payroll row and their own total
+		userIDVal := c.Locals("userID")
+		if userIDVal == nil {
+			userIDVal = c.Locals("user_id")
+		}
+		var currentUserID uint
+		switch v := userIDVal.(type) {
+		case uint:
+			currentUserID = v
+		case int:
+			currentUserID = uint(v)
+		case float64:
+			currentUserID = uint(v)
+		}
+
+		filteredRows := make([]domainLive.PayrollRow, 0)
+		for _, row := range result.StaffPayroll {
+			if row.StaffID == currentUserID {
+				filteredRows = append(filteredRows, row)
+			}
+		}
+
+		var myTotalHours float64
+		var myTotalPay float64
+		var myTotalClips int
+		for _, r := range filteredRows {
+			myTotalHours += r.DecimalHours
+			myTotalPay += r.TotalPay
+			myTotalClips += r.ClipBonusCount
+		}
+
+		result.StaffPayroll = filteredRows
+		result.TotalHours = myTotalHours
+		result.TotalPay = myTotalPay
+		result.TotalClips = myTotalClips
 	}
 
 	return response.OK(c, result)
