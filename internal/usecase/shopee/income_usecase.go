@@ -24,16 +24,22 @@ var (
 )
 
 type IncomePreviewResult struct {
-	TotalRows       int                         `json:"total_rows"`
-	TotalNetAmount  float64                     `json:"total_net_amount"`
-	SampleRows      []domainShopee.ShopeeIncome `json:"sample_rows"`
+	TotalRows        int                         `json:"total_rows"`
+	TotalNetAmount   float64                     `json:"total_net_amount"`
+	DuplicateCount   int                         `json:"duplicate_count"`
+	DuplicateOrders  []string                    `json:"duplicate_orders"`
+	DuplicateDetails []DuplicateDetail           `json:"duplicate_details"`
+	SampleRows       []domainShopee.ShopeeIncome `json:"sample_rows"`
 }
 
 type IncomeImportResult struct {
-	InsertedCount int     `json:"inserted_count"`
-	SkippedCount  int     `json:"skipped_count"`
-	TotalRows     int     `json:"total_rows"`
-	TotalAmount   float64 `json:"total_amount"`
+	InsertedCount    int               `json:"inserted_count"`
+	SkippedCount     int               `json:"skipped_count"`
+	TotalRows        int               `json:"total_rows"`
+	TotalAmount      float64           `json:"total_amount"`
+	DuplicateCount   int               `json:"duplicate_count"`
+	DuplicateOrders  []string          `json:"duplicate_orders"`
+	DuplicateDetails []DuplicateDetail `json:"duplicate_details"`
 }
 
 type IncomeListItem struct {
@@ -104,7 +110,12 @@ func readIncomeGrid(reader io.Reader, filename string) ([][]string, error) {
 	return nil, ErrUnsupportedFormat
 }
 
-func parseIncomeGrid(grid [][]string) ([]domainShopee.ShopeeIncome, error) {
+type parsedIncomeRow struct {
+	domainShopee.ShopeeIncome
+	LineIndex int
+}
+
+func parseIncomeGrid(grid [][]string) ([]parsedIncomeRow, error) {
 	if len(grid) == 0 {
 		return nil, errors.New("empty income file")
 	}
@@ -156,7 +167,7 @@ func parseIncomeGrid(grid [][]string) ([]domainShopee.ShopeeIncome, error) {
 		return ""
 	}
 
-	var records []domainShopee.ShopeeIncome
+	var records []parsedIncomeRow
 	for r := headerRowIdx + 1; r < len(grid); r++ {
 		row := grid[r]
 		orderID := getCell(row, "order_id")
@@ -181,16 +192,65 @@ func parseIncomeGrid(grid [][]string) ([]domainShopee.ShopeeIncome, error) {
 
 		hash := computeIncomeRowHash(orderID, transferDate, netAmount)
 
-		records = append(records, domainShopee.ShopeeIncome{
-			OrderID:      orderID,
-			OrderDate:    orderDate,
-			TransferDate: transferDate,
-			NetAmount:    netAmount,
-			RowHash:      hash,
+		records = append(records, parsedIncomeRow{
+			ShopeeIncome: domainShopee.ShopeeIncome{
+				OrderID:      orderID,
+				OrderDate:    orderDate,
+				TransferDate: transferDate,
+				NetAmount:    netAmount,
+				RowHash:      hash,
+			},
+			LineIndex: r + 1,
 		})
 	}
 
 	return records, nil
+}
+
+func detectIncomeDuplicates(ctx context.Context, incomeRepo domainShopee.IncomeRepository, records []parsedIncomeRow) (int, []string, []DuplicateDetail) {
+	var details []DuplicateDetail
+	dupOrderMap := make(map[string]bool)
+
+	// 1. Check internal file duplicates
+	seenHashes := make(map[string]int)
+	var hashes []string
+	for _, r := range records {
+		hashes = append(hashes, r.RowHash)
+		if firstLine, exists := seenHashes[r.RowHash]; exists {
+			dupOrderMap[r.OrderID] = true
+			details = append(details, DuplicateDetail{
+				Identifier:    r.OrderID,
+				RowIndex:      r.LineIndex,
+				DuplicateType: "FILE_DUPLICATE",
+				Message:       fmt.Sprintf("รายงานเงินโอนของคำสั่งซื้อ %s (ยอด ฿%.2f) ซ้ำกับแถวที่ %d ในไฟล์เดียวกัน", r.OrderID, r.NetAmount, firstLine),
+			})
+		} else {
+			seenHashes[r.RowHash] = r.LineIndex
+		}
+	}
+
+	// 2. Check existing incomes in DB
+	if incomeRepo != nil && len(hashes) > 0 {
+		existingIncomes, err := incomeRepo.FindByRowHashes(ctx, hashes)
+		if err == nil && len(existingIncomes) > 0 {
+			for _, exist := range existingIncomes {
+				dupOrderMap[exist.OrderID] = true
+				details = append(details, DuplicateDetail{
+					Identifier:    exist.OrderID,
+					RowIndex:      0,
+					DuplicateType: "DB_EXISTING",
+					Message:       fmt.Sprintf("รายงานเงินโอนของคำสั่งซื้อ %s (ยอด ฿%.2f วันที่ %s) มีอยู่ในฐานข้อมูลแล้ว (จะถูกข้าม)", exist.OrderID, exist.NetAmount, exist.TransferDate.Format("02/01/2006")),
+				})
+			}
+		}
+	}
+
+	var duplicateOrders []string
+	for id := range dupOrderMap {
+		duplicateOrders = append(duplicateOrders, id)
+	}
+
+	return len(details), duplicateOrders, details
 }
 
 func (u *incomeUsecase) PreviewIncomeFile(ctx context.Context, reader io.Reader, filename string) (*IncomePreviewResult, error) {
@@ -199,25 +259,32 @@ func (u *incomeUsecase) PreviewIncomeFile(ctx context.Context, reader io.Reader,
 		return nil, err
 	}
 
-	records, err := parseIncomeGrid(grid)
+	parsed, err := parseIncomeGrid(grid)
 	if err != nil {
 		return nil, err
 	}
 
 	var totalAmount float64
-	for _, r := range records {
+	var domainRecords []domainShopee.ShopeeIncome
+	for _, r := range parsed {
 		totalAmount += r.NetAmount
+		domainRecords = append(domainRecords, r.ShopeeIncome)
 	}
 
+	dupCount, dupOrders, dupDetails := detectIncomeDuplicates(ctx, u.incomeRepo, parsed)
+
 	sampleLimit := 50
-	if len(records) < sampleLimit {
-		sampleLimit = len(records)
+	if len(domainRecords) < sampleLimit {
+		sampleLimit = len(domainRecords)
 	}
 
 	return &IncomePreviewResult{
-		TotalRows:      len(records),
-		TotalNetAmount: totalAmount,
-		SampleRows:     records[:sampleLimit],
+		TotalRows:        len(domainRecords),
+		TotalNetAmount:   totalAmount,
+		DuplicateCount:   dupCount,
+		DuplicateOrders:  dupOrders,
+		DuplicateDetails: dupDetails,
+		SampleRows:       domainRecords[:sampleLimit],
 	}, nil
 }
 
@@ -227,26 +294,33 @@ func (u *incomeUsecase) ImportIncomeFile(ctx context.Context, reader io.Reader, 
 		return nil, err
 	}
 
-	records, err := parseIncomeGrid(grid)
+	parsed, err := parseIncomeGrid(grid)
 	if err != nil {
 		return nil, err
 	}
 
 	var totalAmount float64
-	for _, r := range records {
+	var domainRecords []domainShopee.ShopeeIncome
+	for _, r := range parsed {
 		totalAmount += r.NetAmount
+		domainRecords = append(domainRecords, r.ShopeeIncome)
 	}
 
-	inserted, skipped, err := u.incomeRepo.BulkInsert(ctx, records)
+	dupCount, dupOrders, dupDetails := detectIncomeDuplicates(ctx, u.incomeRepo, parsed)
+
+	inserted, skipped, err := u.incomeRepo.BulkInsert(ctx, domainRecords)
 	if err != nil {
 		return nil, err
 	}
 
 	return &IncomeImportResult{
-		InsertedCount: inserted,
-		SkippedCount:  skipped,
-		TotalRows:     len(records),
-		TotalAmount:   totalAmount,
+		InsertedCount:    inserted,
+		SkippedCount:     skipped,
+		TotalRows:        len(domainRecords),
+		TotalAmount:      totalAmount,
+		DuplicateCount:   dupCount,
+		DuplicateOrders:  dupOrders,
+		DuplicateDetails: dupDetails,
 	}, nil
 }
 

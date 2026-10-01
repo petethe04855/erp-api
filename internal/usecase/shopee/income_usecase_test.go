@@ -42,6 +42,14 @@ func (m *mockShopeeIncomeRepo) GetMatchedOrderIDs(ctx context.Context, orderIDs 
 	return args.Get(0).(map[string]bool), args.Error(1)
 }
 
+func (m *mockShopeeIncomeRepo) FindByRowHashes(ctx context.Context, hashes []string) ([]domainShopee.ShopeeIncome, error) {
+	args := m.Called(ctx, hashes)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]domainShopee.ShopeeIncome), args.Error(1)
+}
+
 func TestIncomeUsecase_PreviewAndImport(t *testing.T) {
 	ctx := context.Background()
 	incomeRepo := new(mockShopeeIncomeRepo)
@@ -51,6 +59,8 @@ func TestIncomeUsecase_PreviewAndImport(t *testing.T) {
 260301ABC01,2026-03-01 10:30:00,2026-03-05 16:00:00,135.50
 260301ABC02,2026-03-02 14:15:00,2026-03-06 17:30:00,180.00
 `
+
+	incomeRepo.On("FindByRowHashes", ctx, mock.Anything).Return([]domainShopee.ShopeeIncome{}, nil)
 
 	// 1. Preview
 	preview, err := uc.PreviewIncomeFile(ctx, strings.NewReader(csvContent), "income.csv")
@@ -73,4 +83,31 @@ func TestIncomeUsecase_PreviewAndImport(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 2, importRes.InsertedCount)
 	assert.Equal(t, 315.50, importRes.TotalAmount)
+}
+
+func TestIncomeUsecase_DuplicateDetection(t *testing.T) {
+	ctx := context.Background()
+	incomeRepo := new(mockShopeeIncomeRepo)
+	uc := usecaseShopee.NewIncomeUsecase(incomeRepo)
+
+	csvContent := `หมายเลขคำสั่งซื้อ,วันที่ทำการสั่งซื้อ,วันที่โอนชำระเงินสำเร็จ,จำนวนเงินทั้งหมดที่โอนแล้ว (฿)
+260301DUP01,2026-03-01 10:30:00,2026-03-05 16:00:00,100.00
+260301DUP01,2026-03-01 10:30:00,2026-03-05 16:00:00,100.00
+260301EXIST01,2026-03-02 10:30:00,2026-03-06 16:00:00,200.00
+`
+
+	transferDate, _ := time.Parse("2006-01-02 15:04:05", "2026-03-06 16:00:00")
+	incomeRepo.On("FindByRowHashes", ctx, mock.Anything).Return([]domainShopee.ShopeeIncome{
+		{
+			OrderID:      "260301EXIST01",
+			TransferDate: transferDate,
+			NetAmount:    200.00,
+		},
+	}, nil)
+
+	preview, err := uc.PreviewIncomeFile(ctx, strings.NewReader(csvContent), "income.csv")
+	assert.NoError(t, err)
+	assert.True(t, preview.DuplicateCount >= 2)
+	assert.Contains(t, preview.DuplicateOrders, "260301DUP01")
+	assert.Contains(t, preview.DuplicateOrders, "260301EXIST01")
 }

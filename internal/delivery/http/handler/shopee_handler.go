@@ -77,18 +77,32 @@ func (h *ShopeeHandler) ImportOrders(c *fiber.Ctx) error {
 	return response.OK(c, res)
 }
 
+// GetProvinces returns distinct list of provinces from shopee orders
+func (h *ShopeeHandler) GetProvinces(c *fiber.Ctx) error {
+	provinces, err := h.orderUsecase.GetProvinces(c.Context())
+	if err != nil {
+		return response.InternalServerError(c, err.Error())
+	}
+	return response.OK(c, provinces)
+}
+
 // GetOrders returns paginated order list
 func (h *ShopeeHandler) GetOrders(c *fiber.Ctx) error {
 	page, _ := strconv.Atoi(c.Query("page", "1"))
 	limit, _ := strconv.Atoi(c.Query("limit", "50"))
 	search := c.Query("search")
+	province := c.Query("province")
+	if province == "" {
+		province = c.Query("provider")
+	}
 	startDateStr := c.Query("start_date")
 	endDateStr := c.Query("end_date")
 
 	filter := domainShopee.OrderFilter{
-		Search: search,
-		Page:   page,
-		Limit:  limit,
+		Search:   search,
+		Province: province,
+		Page:     page,
+		Limit:    limit,
 	}
 
 	if startDateStr != "" {
@@ -96,6 +110,7 @@ func (h *ShopeeHandler) GetOrders(c *fiber.Ctx) error {
 			filter.StartDate = &t
 		}
 	}
+
 	if endDateStr != "" {
 		if t, err := time.Parse("2006-01-02", endDateStr); err == nil {
 			end := t.Add(23*time.Hour + 59*time.Minute + 59*time.Second)
@@ -202,7 +217,7 @@ func (h *ShopeeHandler) ImportIncome(c *fiber.Ctx) error {
 // GetIncomes returns paginated income records
 func (h *ShopeeHandler) GetIncomes(c *fiber.Ctx) error {
 	page, _ := strconv.Atoi(c.Query("page", "1"))
-	limit, _ := strconv.Atoi(c.Query("limit", "50"))
+	limit, _ := strconv.Atoi(c.Query("limit", "10"))
 	search := c.Query("search")
 	status := c.Query("status")
 	startDateStr := c.Query("start_date")

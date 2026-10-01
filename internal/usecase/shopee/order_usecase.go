@@ -24,18 +24,31 @@ var (
 	ErrUnsupportedFormat = errors.New("unsupported file format, only .xlsx, .xls, .csv allowed")
 )
 
+type DuplicateDetail struct {
+	Identifier    string `json:"identifier"`      // e.g. Order ID "260301ABC01"
+	RowIndex      int    `json:"row_index"`       // แถวที่พบในไฟล์ (ถ้ามี)
+	DuplicateType string `json:"duplicate_type"`  // "FILE_DUPLICATE" or "DB_EXISTING"
+	Message       string `json:"message"`         // ข้อความแจ้งเตือนรายละเอียด
+}
+
 type OrderPreviewResult struct {
-	TotalRows       int                        `json:"total_rows"`
-	TotalOrders     int                        `json:"total_orders"`
-	BlankSKUCount   int                        `json:"blank_sku_count"`
-	SampleRows      []domainShopee.ShopeeOrderItem `json:"sample_rows"`
-	SampleOrders    []domainShopee.ShopeeOrder     `json:"sample_orders"`
+	TotalRows        int                            `json:"total_rows"`
+	TotalOrders      int                            `json:"total_orders"`
+	BlankSKUCount    int                            `json:"blank_sku_count"`
+	DuplicateCount   int                            `json:"duplicate_count"`
+	DuplicateOrders  []string                       `json:"duplicate_orders"`
+	DuplicateDetails []DuplicateDetail              `json:"duplicate_details"`
+	SampleRows       []domainShopee.ShopeeOrderItem `json:"sample_rows"`
+	SampleOrders     []domainShopee.ShopeeOrder     `json:"sample_orders"`
 }
 
 type OrderImportResult struct {
-	InsertedCount int `json:"inserted_count"`
-	SkippedCount  int `json:"skipped_count"`
-	TotalRows     int `json:"total_rows"`
+	InsertedCount    int               `json:"inserted_count"`
+	SkippedCount     int               `json:"skipped_count"`
+	TotalRows        int               `json:"total_rows"`
+	DuplicateCount   int               `json:"duplicate_count"`
+	DuplicateOrders  []string          `json:"duplicate_orders"`
+	DuplicateDetails []DuplicateDetail `json:"duplicate_details"`
 }
 
 type OrderUsecase interface {
@@ -43,6 +56,7 @@ type OrderUsecase interface {
 	ImportOrderFile(ctx context.Context, reader io.Reader, filename string) (*OrderImportResult, error)
 	GetOrders(ctx context.Context, filter domainShopee.OrderFilter) ([]domainShopee.ShopeeOrder, int64, error)
 	GetOrderByID(ctx context.Context, id string) (*domainShopee.ShopeeOrder, error)
+	GetProvinces(ctx context.Context) ([]string, error)
 	UpdateItemSKU(ctx context.Context, itemID uint, newSKU string) error
 	DeleteOrder(ctx context.Context, id string) error
 }
@@ -67,6 +81,7 @@ type parsedRow struct {
 	BuyerUsername string
 	Province      string
 	RawRowHash    string
+	LineIndex     int
 }
 
 func parseOrderDate(raw string) time.Time {
@@ -193,6 +208,7 @@ func parseRawGrid(grid [][]string) ([]parsedRow, error) {
 			BuyerUsername: buyerUser,
 			Province:      province,
 			RawRowHash:    hash,
+			LineIndex:     r + 1,
 		})
 	}
 
@@ -265,6 +281,55 @@ func groupRowsToOrders(parsed []parsedRow) []domainShopee.ShopeeOrder {
 	return orderList
 }
 
+func detectOrderDuplicates(ctx context.Context, orderRepo domainShopee.OrderRepository, parsed []parsedRow, orders []domainShopee.ShopeeOrder) (int, []string, []DuplicateDetail) {
+	var details []DuplicateDetail
+	dupOrderMap := make(map[string]bool)
+
+	// 1. Check internal duplicates in file
+	seenRowHashes := make(map[string]int)
+	for _, r := range parsed {
+		if firstLine, exists := seenRowHashes[r.RawRowHash]; exists {
+			dupOrderMap[r.OrderID] = true
+			details = append(details, DuplicateDetail{
+				Identifier:    r.OrderID,
+				RowIndex:      r.LineIndex,
+				DuplicateType: "FILE_DUPLICATE",
+				Message:       fmt.Sprintf("คำสั่งซื้อ %s (SKU: %s) ซ้ำกับรายการในแถวที่ %d ในไฟล์เดียวกัน", r.OrderID, r.SKU, firstLine),
+			})
+		} else {
+			seenRowHashes[r.RawRowHash] = r.LineIndex
+		}
+	}
+
+	// 2. Check existing orders in DB
+	if orderRepo != nil && len(orders) > 0 {
+		orderIDs := make([]string, len(orders))
+		for i, o := range orders {
+			orderIDs[i] = o.ID
+		}
+
+		existingOrders, err := orderRepo.FindByOrderIDs(ctx, orderIDs)
+		if err == nil && len(existingOrders) > 0 {
+			for _, exist := range existingOrders {
+				dupOrderMap[exist.ID] = true
+				details = append(details, DuplicateDetail{
+					Identifier:    exist.ID,
+					RowIndex:      0,
+					DuplicateType: "DB_EXISTING",
+					Message:       fmt.Sprintf("คำสั่งซื้อ %s มีอยู่ในฐานข้อมูลแล้ว (จะถูกข้ามเพื่อป้องกันข้อมูลซ้ำซ้อน)", exist.ID),
+				})
+			}
+		}
+	}
+
+	var duplicateOrders []string
+	for id := range dupOrderMap {
+		duplicateOrders = append(duplicateOrders, id)
+	}
+
+	return len(details), duplicateOrders, details
+}
+
 func (u *orderUsecase) PreviewOrderFile(ctx context.Context, reader io.Reader, filename string) (*OrderPreviewResult, error) {
 	grid, err := readGridFromStream(reader, filename)
 	if err != nil {
@@ -284,6 +349,7 @@ func (u *orderUsecase) PreviewOrderFile(ctx context.Context, reader io.Reader, f
 	}
 
 	orders := groupRowsToOrders(parsed)
+	dupCount, dupOrders, dupDetails := detectOrderDuplicates(ctx, u.orderRepo, parsed, orders)
 
 	sampleLimit := 50
 	if len(parsed) < sampleLimit {
@@ -307,11 +373,14 @@ func (u *orderUsecase) PreviewOrderFile(ctx context.Context, reader io.Reader, f
 	}
 
 	return &OrderPreviewResult{
-		TotalRows:     len(parsed),
-		TotalOrders:   len(orders),
-		BlankSKUCount: blankCount,
-		SampleRows:    sampleRows,
-		SampleOrders:  orders[:sampleOrderLimit],
+		TotalRows:        len(parsed),
+		TotalOrders:      len(orders),
+		BlankSKUCount:    blankCount,
+		DuplicateCount:   dupCount,
+		DuplicateOrders:  dupOrders,
+		DuplicateDetails: dupDetails,
+		SampleRows:       sampleRows,
+		SampleOrders:     orders[:sampleOrderLimit],
 	}, nil
 }
 
@@ -327,15 +396,20 @@ func (u *orderUsecase) ImportOrderFile(ctx context.Context, reader io.Reader, fi
 	}
 
 	orders := groupRowsToOrders(parsed)
+	dupCount, dupOrders, dupDetails := detectOrderDuplicates(ctx, u.orderRepo, parsed, orders)
+
 	inserted, skipped, err := u.orderRepo.BulkInsert(ctx, orders)
 	if err != nil {
 		return nil, err
 	}
 
 	return &OrderImportResult{
-		InsertedCount: inserted,
-		SkippedCount:  skipped,
-		TotalRows:     len(parsed),
+		InsertedCount:    inserted,
+		SkippedCount:     skipped,
+		TotalRows:        len(parsed),
+		DuplicateCount:   dupCount,
+		DuplicateOrders:  dupOrders,
+		DuplicateDetails: dupDetails,
 	}, nil
 }
 
@@ -345,6 +419,10 @@ func (u *orderUsecase) GetOrders(ctx context.Context, filter domainShopee.OrderF
 
 func (u *orderUsecase) GetOrderByID(ctx context.Context, id string) (*domainShopee.ShopeeOrder, error) {
 	return u.orderRepo.FindByID(ctx, id)
+}
+
+func (u *orderUsecase) GetProvinces(ctx context.Context) ([]string, error) {
+	return u.orderRepo.GetDistinctProvinces(ctx)
 }
 
 func (u *orderUsecase) UpdateItemSKU(ctx context.Context, itemID uint, newSKU string) error {

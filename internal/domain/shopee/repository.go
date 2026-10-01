@@ -7,6 +7,8 @@ import (
 
 type OrderFilter struct {
 	Search    string
+	Province  string
+	Provider  string
 	StartDate *time.Time
 	EndDate   *time.Time
 	Page      int
@@ -26,6 +28,7 @@ type OrderRepository interface {
 	BulkInsert(ctx context.Context, orders []ShopeeOrder) (inserted int, skipped int, err error)
 	FindAll(ctx context.Context, filter OrderFilter) ([]ShopeeOrder, int64, error)
 	FindByID(ctx context.Context, id string) (*ShopeeOrder, error)
+	GetDistinctProvinces(ctx context.Context) ([]string, error)
 	UpdateItemSKU(ctx context.Context, itemID uint, newSKU string, confirmed bool) error
 	Delete(ctx context.Context, id string) error
 	FindByOrderIDs(ctx context.Context, orderIDs []string) ([]ShopeeOrder, error)
@@ -37,4 +40,5 @@ type IncomeRepository interface {
 	FindByMonth(ctx context.Context, year int, month int) ([]ShopeeIncome, error)
 	Delete(ctx context.Context, id uint) error
 	GetMatchedOrderIDs(ctx context.Context, orderIDs []string) (map[string]bool, error)
+	FindByRowHashes(ctx context.Context, hashes []string) ([]ShopeeIncome, error)
 }

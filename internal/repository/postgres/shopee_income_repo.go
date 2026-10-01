@@ -143,3 +143,13 @@ func (r *ShopeeIncomeRepository) GetMatchedOrderIDs(ctx context.Context, orderID
 
 	return result, nil
 }
+
+func (r *ShopeeIncomeRepository) FindByRowHashes(ctx context.Context, hashes []string) ([]shopee.ShopeeIncome, error) {
+	if len(hashes) == 0 {
+		return nil, nil
+	}
+	var list []shopee.ShopeeIncome
+	err := r.handle(ctx).Where("row_hash IN ?", hashes).Find(&list).Error
+	return list, err
+}
+

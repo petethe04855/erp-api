@@ -91,6 +91,15 @@ func (r *ShopeeOrderRepository) FindAll(ctx context.Context, filter shopee.Order
 		db = db.Where("id ILIKE ? OR buyer_username ILIKE ? OR id IN (SELECT order_id FROM shopee_order_items WHERE sku ILIKE ? OR product_name ILIKE ?)", s, s, s, s)
 	}
 
+	prov := filter.Province
+	if prov == "" {
+		prov = filter.Provider
+	}
+	if prov != "" {
+		p := "%" + strings.TrimSpace(prov) + "%"
+		db = db.Where("province ILIKE ?", p)
+	}
+
 	if filter.StartDate != nil {
 		db = db.Where("order_date >= ?", *filter.StartDate)
 	}
@@ -121,6 +130,19 @@ func (r *ShopeeOrderRepository) FindAll(ctx context.Context, filter shopee.Order
 		Find(&orders).Error
 
 	return orders, total, err
+}
+
+func (r *ShopeeOrderRepository) GetDistinctProvinces(ctx context.Context) ([]string, error) {
+	var provinces []string
+	err := r.handle(ctx).Model(&shopee.ShopeeOrder{}).
+		Where("province IS NOT NULL AND TRIM(province) != ''").
+		Distinct("province").
+		Order("province ASC").
+		Pluck("province", &provinces).Error
+	if err != nil {
+		return nil, err
+	}
+	return provinces, nil
 }
 
 func (r *ShopeeOrderRepository) FindByID(ctx context.Context, id string) (*shopee.ShopeeOrder, error) {
