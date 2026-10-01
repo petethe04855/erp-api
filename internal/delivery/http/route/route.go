@@ -26,6 +26,8 @@ type Config struct {
 	UploadHandler     *handler.UploadHandler
 	LiveHandler       *handler.LiveHandler
 	SalesReturnHandler *handler.SalesReturnHandler
+	ShopeeHandler     *handler.ShopeeHandler
+	SKUCostHistoryHandler *handler.SKUCostHistoryHandler
 	JWTSecret         string
 	UserStatusLoader  middleware.UserStatusLoader
 }
@@ -318,5 +320,28 @@ func RegisterRoutes(cfg Config) {
 	liveGroup.Post("/content", middleware.RequireRole("owner", "sales", "live"), cfg.LiveHandler.CreateContentItem)
 	liveGroup.Put("/content/:id", middleware.RequireRole("owner", "sales", "live"), cfg.LiveHandler.UpdateContentItem)
 	liveGroup.Delete("/content/:id", middleware.RequireRole("owner", "sales"), cfg.LiveHandler.DeleteContentItem)
+
+	// Shopee Routes
+	shopeeGroup := protected.Group("/shopee")
+	shopeeGroup.Post("/orders/preview", cfg.ShopeeHandler.PreviewOrders)
+	shopeeGroup.Post("/orders/import", middleware.RequireRole("owner", "warehouse", "sales", "accountant"), cfg.ShopeeHandler.ImportOrders)
+	shopeeGroup.Get("/orders", cfg.ShopeeHandler.GetOrders)
+	shopeeGroup.Get("/orders/:id", cfg.ShopeeHandler.GetOrderByID)
+	shopeeGroup.Patch("/orders/items/:id/sku", middleware.RequireRole("owner", "warehouse", "sales", "accountant"), cfg.ShopeeHandler.UpdateItemSKU)
+	shopeeGroup.Delete("/orders/:id", middleware.RequireRole("owner", "accountant"), cfg.ShopeeHandler.DeleteOrder)
+
+	shopeeGroup.Post("/income/preview", cfg.ShopeeHandler.PreviewIncome)
+	shopeeGroup.Post("/income/import", middleware.RequireRole("owner", "warehouse", "sales", "accountant"), cfg.ShopeeHandler.ImportIncome)
+	shopeeGroup.Get("/income", cfg.ShopeeHandler.GetIncomes)
+	shopeeGroup.Delete("/income/:id", middleware.RequireRole("owner", "accountant"), cfg.ShopeeHandler.DeleteIncome)
+
+	shopeeGroup.Get("/matching", cfg.ShopeeHandler.GetMatching)
+	shopeeGroup.Get("/matching/export", cfg.ShopeeHandler.ExportMatchingCSV)
+	shopeeGroup.Get("/dashboard", cfg.ShopeeHandler.GetDashboard)
+
+	// SKU Cost History Routes
+	protected.Post("/skus/:sku/cost-history", middleware.RequireRole("owner", "accountant"), cfg.SKUCostHistoryHandler.AddCostHistory)
+	protected.Get("/skus/:sku/cost-history", cfg.SKUCostHistoryHandler.GetCostHistory)
+	protected.Delete("/skus/cost-history/:id", middleware.RequireRole("owner", "accountant"), cfg.SKUCostHistoryHandler.DeleteCostHistory)
 }
 

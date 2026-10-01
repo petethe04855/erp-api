@@ -25,6 +25,7 @@ import (
 	domainSalesReturn "chawy-erp-api/internal/domain/salesreturn"
 	domainSeq "chawy-erp-api/internal/domain/sequence"
 	domainSettings "chawy-erp-api/internal/domain/settings"
+	domainShopee "chawy-erp-api/internal/domain/shopee"
 	domainSKU "chawy-erp-api/internal/domain/sku"
 	domainStock "chawy-erp-api/internal/domain/stock"
 	domainTikTok "chawy-erp-api/internal/domain/tiktok"
@@ -43,6 +44,7 @@ import (
 	usecaseSalesReturn "chawy-erp-api/internal/usecase/salesreturn"
 	usecaseSeq "chawy-erp-api/internal/usecase/sequence"
 	usecaseSettings "chawy-erp-api/internal/usecase/settings"
+	usecaseShopee "chawy-erp-api/internal/usecase/shopee"
 	usecaseSKU "chawy-erp-api/internal/usecase/sku"
 	usecaseStock "chawy-erp-api/internal/usecase/stock"
 	usecaseTikTok "chawy-erp-api/internal/usecase/tiktok"
@@ -79,6 +81,10 @@ func main() {
 		&domainAuth.User{},
 		&domainSKU.SKU{},
 		&domainSKU.SKUAccessory{},
+		&domainSKU.SKUCostHistory{},
+		&domainShopee.ShopeeOrder{},
+		&domainShopee.ShopeeOrderItem{},
+		&domainShopee.ShopeeIncome{},
 		&domainBundle.BundleItem{},
 		&domainStock.Stock{},
 		&domainStock.StockLot{},
@@ -201,6 +207,16 @@ func main() {
 	liveUsecase := usecaseLive.NewLiveUsecase(db, liveRepo, settingsRepo, authRepo)
 	salesReturnUsecase := usecaseSalesReturn.NewSalesReturnUsecase(db, salesReturnRepo, orderRepo, invoiceRepo, skuRepo, stockRepo, formulaRepo, financeUsecase, sequenceUsecase)
 
+	// Shopee & SKU Cost History UseCases & Repos
+	skuCostHistoryRepo := postgres.NewSKUCostHistoryRepository(db)
+	skuCostHistoryUsecase := usecaseSKU.NewCostHistoryUsecase(skuCostHistoryRepo, skuRepo)
+	shopeeOrderRepo := postgres.NewShopeeOrderRepository(db)
+	shopeeIncomeRepo := postgres.NewShopeeIncomeRepository(db)
+	shopeeOrderUsecase := usecaseShopee.NewOrderUsecase(shopeeOrderRepo)
+	shopeeIncomeUsecase := usecaseShopee.NewIncomeUsecase(shopeeIncomeRepo)
+	shopeeMatchingUsecase := usecaseShopee.NewMatchingUsecase(shopeeIncomeRepo, shopeeOrderRepo, skuCostHistoryUsecase)
+	shopeeDashboardUsecase := usecaseShopee.NewDashboardUsecase(shopeeMatchingUsecase)
+
 	// 6. Dependency Injection - Handlers
 	authHdl := handler.NewAuthHandler(authUsecase)
 	skuHdl := handler.NewSKUHandler(skuUsecase)
@@ -220,6 +236,8 @@ func main() {
 	uploadHdl := handler.NewUploadHandler()
 	liveHdl := handler.NewLiveHandler(liveUsecase)
 	salesReturnHdl := handler.NewSalesReturnHandler(salesReturnUsecase)
+	shopeeHdl := handler.NewShopeeHandler(shopeeOrderUsecase, shopeeIncomeUsecase, shopeeMatchingUsecase, shopeeDashboardUsecase)
+	skuCostHistoryHdl := handler.NewSKUCostHistoryHandler(skuCostHistoryUsecase)
 
 	// 7. Initialize Fiber App
 	app := fiber.New(fiber.Config{
@@ -279,6 +297,8 @@ func main() {
 		UploadHandler:      uploadHdl,
 		LiveHandler:        liveHdl,
 		SalesReturnHandler: salesReturnHdl,
+		ShopeeHandler:      shopeeHdl,
+		SKUCostHistoryHandler: skuCostHistoryHdl,
 		JWTSecret:          cfg.JWTSecret,
 		UserStatusLoader:   authRepo,
 	})
