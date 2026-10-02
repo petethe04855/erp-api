@@ -90,13 +90,53 @@ func (h *ShopeeHandler) GetProvinces(c *fiber.Ctx) error {
 func (h *ShopeeHandler) GetOrders(c *fiber.Ctx) error {
 	page, _ := strconv.Atoi(c.Query("page", "1"))
 	limit, _ := strconv.Atoi(c.Query("limit", "50"))
-	search := c.Query("search")
-	province := c.Query("province")
+	search := strings.TrimSpace(c.Query("search"))
+	province := strings.TrimSpace(c.Query("province"))
 	if province == "" {
-		province = c.Query("provider")
+		province = strings.TrimSpace(c.Query("provider"))
 	}
-	startDateStr := c.Query("start_date")
-	endDateStr := c.Query("end_date")
+	startDateStr := strings.TrimSpace(c.Query("start_date"))
+	endDateStr := strings.TrimSpace(c.Query("end_date"))
+
+	if c.Method() == fiber.MethodPost {
+		var body struct {
+			Page       int    `json:"page"`
+			Limit      int    `json:"limit"`
+			Search     string `json:"search"`
+			Province   string `json:"province"`
+			Provider   string `json:"provider"`
+			StartDate  string `json:"start_date"`
+			StartDate2 string `json:"startDate"`
+			EndDate    string `json:"end_date"`
+			EndDate2   string `json:"endDate"`
+		}
+		if err := c.BodyParser(&body); err == nil {
+			if body.Page > 0 {
+				page = body.Page
+			}
+			if body.Limit > 0 {
+				limit = body.Limit
+			}
+			if strings.TrimSpace(body.Search) != "" {
+				search = strings.TrimSpace(body.Search)
+			}
+			if strings.TrimSpace(body.Province) != "" {
+				province = strings.TrimSpace(body.Province)
+			} else if strings.TrimSpace(body.Provider) != "" {
+				province = strings.TrimSpace(body.Provider)
+			}
+			if strings.TrimSpace(body.StartDate) != "" {
+				startDateStr = strings.TrimSpace(body.StartDate)
+			} else if strings.TrimSpace(body.StartDate2) != "" {
+				startDateStr = strings.TrimSpace(body.StartDate2)
+			}
+			if strings.TrimSpace(body.EndDate) != "" {
+				endDateStr = strings.TrimSpace(body.EndDate)
+			} else if strings.TrimSpace(body.EndDate2) != "" {
+				endDateStr = strings.TrimSpace(body.EndDate2)
+			}
+		}
+	}
 
 	filter := domainShopee.OrderFilter{
 		Search:   search,
@@ -218,10 +258,47 @@ func (h *ShopeeHandler) ImportIncome(c *fiber.Ctx) error {
 func (h *ShopeeHandler) GetIncomes(c *fiber.Ctx) error {
 	page, _ := strconv.Atoi(c.Query("page", "1"))
 	limit, _ := strconv.Atoi(c.Query("limit", "10"))
-	search := c.Query("search")
-	status := c.Query("status")
-	startDateStr := c.Query("start_date")
-	endDateStr := c.Query("end_date")
+	search := strings.TrimSpace(c.Query("search"))
+	status := strings.TrimSpace(c.Query("status"))
+	startDateStr := strings.TrimSpace(c.Query("start_date"))
+	endDateStr := strings.TrimSpace(c.Query("end_date"))
+
+	if c.Method() == fiber.MethodPost {
+		var body struct {
+			Page       int    `json:"page"`
+			Limit      int    `json:"limit"`
+			Search     string `json:"search"`
+			Status     string `json:"status"`
+			StartDate  string `json:"start_date"`
+			StartDate2 string `json:"startDate"`
+			EndDate    string `json:"end_date"`
+			EndDate2   string `json:"endDate"`
+		}
+		if err := c.BodyParser(&body); err == nil {
+			if body.Page > 0 {
+				page = body.Page
+			}
+			if body.Limit > 0 {
+				limit = body.Limit
+			}
+			if strings.TrimSpace(body.Search) != "" {
+				search = strings.TrimSpace(body.Search)
+			}
+			if strings.TrimSpace(body.Status) != "" {
+				status = strings.TrimSpace(body.Status)
+			}
+			if strings.TrimSpace(body.StartDate) != "" {
+				startDateStr = strings.TrimSpace(body.StartDate)
+			} else if strings.TrimSpace(body.StartDate2) != "" {
+				startDateStr = strings.TrimSpace(body.StartDate2)
+			}
+			if strings.TrimSpace(body.EndDate) != "" {
+				endDateStr = strings.TrimSpace(body.EndDate)
+			} else if strings.TrimSpace(body.EndDate2) != "" {
+				endDateStr = strings.TrimSpace(body.EndDate2)
+			}
+		}
+	}
 
 	filter := domainShopee.IncomeFilter{
 		Search: search,

@@ -347,6 +347,7 @@ func RegisterRoutes(cfg Config) {
 	shopeeGroup.Post("/orders/preview", cfg.ShopeeHandler.PreviewOrders)
 	shopeeGroup.Post("/orders/import", middleware.RequireRole("owner", "warehouse", "sales", "accountant"), cfg.ShopeeHandler.ImportOrders)
 	shopeeGroup.Get("/orders", cfg.ShopeeHandler.GetOrders)
+	shopeeGroup.Post("/orders/search", cfg.ShopeeHandler.GetOrders)
 	shopeeGroup.Get("/orders/provinces", cfg.ShopeeHandler.GetProvinces)
 	shopeeGroup.Get("/orders/:id", cfg.ShopeeHandler.GetOrderByID)
 	shopeeGroup.Patch("/orders/items/:id/sku", middleware.RequireRole("owner", "warehouse", "sales", "accountant"), cfg.ShopeeHandler.UpdateItemSKU)
@@ -355,6 +356,7 @@ func RegisterRoutes(cfg Config) {
 	shopeeGroup.Post("/income/preview", cfg.ShopeeHandler.PreviewIncome)
 	shopeeGroup.Post("/income/import", middleware.RequireRole("owner", "warehouse", "sales", "accountant"), cfg.ShopeeHandler.ImportIncome)
 	shopeeGroup.Get("/income", cfg.ShopeeHandler.GetIncomes)
+	shopeeGroup.Post("/income/search", cfg.ShopeeHandler.GetIncomes)
 	shopeeGroup.Delete("/income/:id", middleware.RequireRole("owner", "accountant"), cfg.ShopeeHandler.DeleteIncome)
 
 	shopeeGroup.Get("/matching", cfg.ShopeeHandler.GetMatching)
