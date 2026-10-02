@@ -21,18 +21,78 @@ func NewSalesReturnHandler(uc usecaseReturn.Usecase) *SalesReturnHandler {
 }
 
 func (h *SalesReturnHandler) List(c *fiber.Ctx) error {
-	page, _ := strconv.Atoi(c.Query("page", "1"))
-	limit, _ := strconv.Atoi(c.Query("limit", "20"))
-	whID, _ := strconv.Atoi(c.Query("warehouse_id", "0"))
+	var bodyReq struct {
+		Page        int    `json:"page"`
+		Limit       int    `json:"limit"`
+		WarehouseID uint   `json:"warehouse_id"`
+		Search      string `json:"search"`
+		Status      string `json:"status"`
+		ReturnType  string `json:"return_type"`
+		Channel     string `json:"channel"`
+		StartDate   string `json:"start_date"`
+		EndDate     string `json:"end_date"`
+	}
+	if c.Method() == fiber.MethodPost {
+		_ = c.BodyParser(&bodyReq)
+	}
+
+	page := bodyReq.Page
+	if page < 1 {
+		page, _ = strconv.Atoi(c.Query("page", "1"))
+	}
+	if page < 1 {
+		page = 1
+	}
+
+	limit := bodyReq.Limit
+	if limit <= 0 {
+		limit, _ = strconv.Atoi(c.Query("limit", "20"))
+	}
+
+	whID := bodyReq.WarehouseID
+	if whID == 0 {
+		w, _ := strconv.Atoi(c.Query("warehouse_id", "0"))
+		whID = uint(w)
+	}
+
+	search := bodyReq.Search
+	if search == "" {
+		search = c.Query("search")
+	}
+
+	status := bodyReq.Status
+	if status == "" {
+		status = c.Query("status")
+	}
+
+	returnType := bodyReq.ReturnType
+	if returnType == "" {
+		returnType = c.Query("return_type")
+	}
+
+	channel := bodyReq.Channel
+	if channel == "" {
+		channel = c.Query("channel")
+	}
+
+	startDate := bodyReq.StartDate
+	if startDate == "" {
+		startDate = c.Query("start_date")
+	}
+
+	endDate := bodyReq.EndDate
+	if endDate == "" {
+		endDate = c.Query("end_date")
+	}
 
 	query := domainReturn.Query{
-		Search:      c.Query("search"),
-		Status:      c.Query("status"),
-		ReturnType:  c.Query("return_type"),
-		Channel:     c.Query("channel"),
-		WarehouseID: uint(whID),
-		StartDate:   c.Query("start_date"),
-		EndDate:     c.Query("end_date"),
+		Search:      search,
+		Status:      status,
+		ReturnType:  returnType,
+		Channel:     channel,
+		WarehouseID: whID,
+		StartDate:   startDate,
+		EndDate:     endDate,
 		Page:        page,
 		Limit:       limit,
 	}

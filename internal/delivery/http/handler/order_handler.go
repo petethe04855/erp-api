@@ -2,6 +2,7 @@ package handler
 
 import (
 	"strconv"
+	"strings"
 
 	"chawy-erp-api/internal/delivery/http/dto"
 	domainOrder "chawy-erp-api/internal/domain/order"
@@ -70,11 +71,44 @@ func (h *OrderHandler) GetByID(c *fiber.Ctx) error {
 }
 
 func (h *OrderHandler) List(c *fiber.Ctx) error {
-	page, _ := strconv.Atoi(c.Query("page", "1"))
-	limit, _ := strconv.Atoi(c.Query("limit", "20"))
-	search := c.Query("search", "")
-	status := c.Query("status", "")
-	channel := c.Query("channel", "")
+	var bodyReq struct {
+		Page    int    `json:"page"`
+		Limit   int    `json:"limit"`
+		Search  string `json:"search"`
+		Status  string `json:"status"`
+		Channel string `json:"channel"`
+	}
+	if c.Method() == fiber.MethodPost {
+		_ = c.BodyParser(&bodyReq)
+	}
+
+	page := bodyReq.Page
+	if page < 1 {
+		page, _ = strconv.Atoi(c.Query("page", "1"))
+	}
+	if page < 1 {
+		page = 1
+	}
+
+	limit := bodyReq.Limit
+	if limit <= 0 {
+		limit, _ = strconv.Atoi(c.Query("limit", "20"))
+	}
+
+	search := strings.TrimSpace(bodyReq.Search)
+	if search == "" {
+		search = c.Query("search", "")
+	}
+
+	status := strings.TrimSpace(bodyReq.Status)
+	if status == "" {
+		status = c.Query("status", "")
+	}
+
+	channel := strings.TrimSpace(bodyReq.Channel)
+	if channel == "" {
+		channel = c.Query("channel", "")
+	}
 
 	items, total, err := h.usecase.List(c.Context(), domainOrder.Query{
 		Search:  search,
