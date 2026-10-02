@@ -2443,6 +2443,32 @@ type PurchaseRecord struct {
 func (h *WorkspaceHandler) GetPurchaseOrders(c *fiber.Ctx) error {
 	page, _ := strconv.Atoi(c.Query("page", "1"))
 	limit, _ := strconv.Atoi(c.Query("limit", "50"))
+	search := strings.TrimSpace(c.Query("search", ""))
+	statusQuery := strings.TrimSpace(c.Query("status", ""))
+
+	if c.Method() == fiber.MethodPost {
+		var body struct {
+			Page   int    `json:"page"`
+			Limit  int    `json:"limit"`
+			Search string `json:"search"`
+			Status string `json:"status"`
+		}
+		if err := c.BodyParser(&body); err == nil {
+			if body.Page > 0 {
+				page = body.Page
+			}
+			if body.Limit > 0 {
+				limit = body.Limit
+			}
+			if strings.TrimSpace(body.Search) != "" {
+				search = strings.TrimSpace(body.Search)
+			}
+			if strings.TrimSpace(body.Status) != "" {
+				statusQuery = strings.TrimSpace(body.Status)
+			}
+		}
+	}
+
 	if page < 1 {
 		page = 1
 	}
@@ -2451,13 +2477,11 @@ func (h *WorkspaceHandler) GetPurchaseOrders(c *fiber.Ctx) error {
 	var total int64
 	query := h.db.WithContext(c.Context()).Model(&domainPurchasing.PurchaseOrder{})
 
-	search := strings.TrimSpace(c.Query("search", ""))
 	if search != "" {
 		s := "%" + search + "%"
 		query = query.Where("po_no ILIKE ? OR supplier_name ILIKE ?", s, s)
 	}
 
-	statusQuery := strings.TrimSpace(c.Query("status", ""))
 	if statusQuery != "" && !strings.EqualFold(statusQuery, "all") {
 		query = query.Where("LOWER(status) = ?", strings.ToLower(statusQuery))
 	}

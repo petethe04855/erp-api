@@ -151,11 +151,13 @@ func RegisterRoutes(cfg Config) {
 	// Purchasing & Supplier Routes
 	suppliers := protected.Group("/suppliers")
 	suppliers.Get("/", cfg.PurchasingHandler.ListSuppliers)
+	suppliers.Post("/search", cfg.PurchasingHandler.ListSuppliers)
 	suppliers.Post("/", middleware.RequireRole("owner", "warehouse", "accountant"), cfg.PurchasingHandler.CreateSupplier)
 	suppliers.Get("/:id", cfg.PurchasingHandler.GetSupplierByID)
 
 	pos := protected.Group("/purchases/orders")
 	pos.Get("/", cfg.PurchasingHandler.ListPOs)
+	pos.Post("/search", cfg.PurchasingHandler.ListPOs)
 	pos.Post("/", middleware.RequireRole("owner", "warehouse", "accountant"), cfg.PurchasingHandler.CreatePO)
 	pos.Get("/:id", cfg.PurchasingHandler.GetPOByID)
 	pos.Post("/:id/approve", middleware.RequireRole("owner", "accountant"), cfg.PurchasingHandler.ApprovePO)
@@ -228,6 +230,7 @@ func RegisterRoutes(cfg Config) {
 	ws.Get("/customers", cfg.WorkspaceHandler.GetCustomers)
 	ws.Post("/customers/search", cfg.WorkspaceHandler.GetCustomers)
 	ws.Get("/purchase-orders", cfg.WorkspaceHandler.GetPurchaseOrders)
+	ws.Post("/purchase-orders/search", cfg.WorkspaceHandler.GetPurchaseOrders)
 	ws.Get("/quotations", cfg.WorkspaceHandler.GetQuotations)
 	ws.Post("/quotations/search", cfg.WorkspaceHandler.GetQuotations)
 	ws.Get("/goods-receives", cfg.WorkspaceHandler.GetGoodsReceives)
@@ -280,6 +283,7 @@ func RegisterRoutes(cfg Config) {
 
 	// Purchase Orders REST endpoints for erp-web-v2
 	protected.Get("/purchase-orders", cfg.WorkspaceHandler.GetPurchaseOrders)
+	protected.Post("/purchase-orders/search", cfg.WorkspaceHandler.GetPurchaseOrders)
 	protected.Post("/purchase-orders", middleware.RequireRole("owner", "warehouse", "accountant"), cfg.WorkspaceHandler.CreatePurchaseOrder)
 	protected.Get("/purchase-orders/:id", cfg.WorkspaceHandler.GetPurchaseOrderByID)
 	protected.Put("/purchase-orders/:id/status", middleware.RequireRole("owner", "warehouse", "accountant"), cfg.WorkspaceHandler.UpdatePurchaseOrderStatus)
@@ -312,6 +316,7 @@ func RegisterRoutes(cfg Config) {
 	tiktok.Post("/orders/sync", middleware.RequireRole("owner", "sales", "warehouse"), cfg.TikTokHandler.SyncOrders)
 	tiktok.Get("/sync-runs", cfg.TikTokHandler.GetSyncRuns)
 	tiktok.Get("/orders", cfg.TikTokHandler.GetOrders)
+	tiktok.Post("/orders/search", cfg.TikTokHandler.GetOrders)
 	tiktok.Get("/products", cfg.TikTokHandler.GetProducts)
 	tiktok.Get("/stock-preview", cfg.TikTokHandler.GetStockSyncPreview)
 	tiktok.Get("/mappings", cfg.TikTokHandler.ListMappings)
@@ -322,6 +327,7 @@ func RegisterRoutes(cfg Config) {
 	// Live & Content Routes
 	liveGroup := protected.Group("/live")
 	liveGroup.Get("/sessions", cfg.LiveHandler.ListSessions)
+	liveGroup.Post("/sessions/search", cfg.LiveHandler.ListSessions)
 	liveGroup.Post("/sessions", middleware.RequireRole("owner", "sales", "warehouse", "live"), cfg.LiveHandler.CreateSession)
 	liveGroup.Get("/sessions/:id", cfg.LiveHandler.GetSessionByID)
 	liveGroup.Put("/sessions/:id", middleware.RequireRole("owner", "sales", "live"), cfg.LiveHandler.UpdateSession)
@@ -331,6 +337,7 @@ func RegisterRoutes(cfg Config) {
 
 	// Content Items (Schedule + Performance)
 	liveGroup.Get("/content", cfg.LiveHandler.ListContentItems)
+	liveGroup.Post("/content/search", cfg.LiveHandler.ListContentItems)
 	liveGroup.Post("/content", middleware.RequireRole("owner", "sales", "live"), cfg.LiveHandler.CreateContentItem)
 	liveGroup.Put("/content/:id", middleware.RequireRole("owner", "sales", "live"), cfg.LiveHandler.UpdateContentItem)
 	liveGroup.Delete("/content/:id", middleware.RequireRole("owner", "sales"), cfg.LiveHandler.DeleteContentItem)
