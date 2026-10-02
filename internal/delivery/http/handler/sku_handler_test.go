@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -86,6 +87,47 @@ func TestSKUHandler_List_IncludesReceiptStats(t *testing.T) {
 	assert.Equal(t, "CHICKEN-001", body.Data[0].SKU)
 	assert.Equal(t, 3, body.Data[0].ReceiptCount)
 	assert.NotNil(t, body.Data[0].LastReceivedAt)
+}
+
+func TestSKUHandler_List_PostSearch(t *testing.T) {
+	mockUC := &mockSKUUsecase{
+		itemsWithStats: []usecaseSKU.SKUWithStats{
+			{
+				SKU: domainSKU.SKU{
+					ID:   2,
+					SKU:  "FISH-002",
+					Name: "Salmon Fillet",
+				},
+				ReceiptCount: 1,
+			},
+		},
+		totalStats: 1,
+	}
+
+	h := handler.NewSKUHandler(mockUC)
+	app := fiber.New()
+	app.Post("/api/v1/skus/search", h.List)
+
+	bodyBytes, _ := json.Marshal(map[string]interface{}{
+		"search": "FISH",
+		"page":   1,
+		"limit":  10,
+	})
+	req := httptest.NewRequest("POST", "/api/v1/skus/search", strings.NewReader(string(bodyBytes)))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	assert.Equal(t, 200, resp.StatusCode)
+
+	var body struct {
+		Success bool              `json:"success"`
+		Data    []dto.SKUResponse `json:"data"`
+	}
+	err = json.NewDecoder(resp.Body).Decode(&body)
+	require.NoError(t, err)
+	require.Len(t, body.Data, 1)
+	assert.Equal(t, "FISH-002", body.Data[0].SKU)
 }
 
 func TestSKUHandler_GetReceiptHistory(t *testing.T) {

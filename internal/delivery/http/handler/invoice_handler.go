@@ -3,6 +3,7 @@ package handler
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"chawy-erp-api/internal/delivery/http/dto"
 	domainCustomer "chawy-erp-api/internal/domain/customer"
@@ -66,10 +67,38 @@ func (h *InvoiceHandler) GetByID(c *fiber.Ctx) error {
 }
 
 func (h *InvoiceHandler) List(c *fiber.Ctx) error {
-	page, _ := strconv.Atoi(c.Query("page", "1"))
-	limit, _ := strconv.Atoi(c.Query("limit", "20"))
-	search := c.Query("search", "")
-	status := c.Query("status", "")
+	var bodyReq struct {
+		Page   int    `json:"page"`
+		Limit  int    `json:"limit"`
+		Search string `json:"search"`
+		Status string `json:"status"`
+	}
+	if c.Method() == fiber.MethodPost {
+		_ = c.BodyParser(&bodyReq)
+	}
+
+	page := bodyReq.Page
+	if page < 1 {
+		page, _ = strconv.Atoi(c.Query("page", "1"))
+	}
+	if page < 1 {
+		page = 1
+	}
+
+	limit := bodyReq.Limit
+	if limit <= 0 {
+		limit, _ = strconv.Atoi(c.Query("limit", "20"))
+	}
+
+	search := strings.TrimSpace(bodyReq.Search)
+	if search == "" {
+		search = c.Query("search", "")
+	}
+
+	status := strings.TrimSpace(bodyReq.Status)
+	if status == "" {
+		status = c.Query("status", "")
+	}
 
 	items, total, err := h.usecase.List(c.Context(), domainInvoice.Query{
 		Search: search,

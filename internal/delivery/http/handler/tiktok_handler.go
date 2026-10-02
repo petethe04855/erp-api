@@ -95,9 +95,39 @@ func (h *TikTokHandler) GetSyncRuns(c *fiber.Ctx) error {
 func (h *TikTokHandler) GetOrders(c *fiber.Ctx) error {
 	page, _ := strconv.Atoi(c.Query("page", "1"))
 	limit, _ := strconv.Atoi(c.Query("limit", "50"))
-	search := c.Query("search", "")
-	status := c.Query("status", "")
-	stockStatus := c.Query("stockStatus", "")
+	search := strings.TrimSpace(c.Query("search", ""))
+	status := strings.TrimSpace(c.Query("status", ""))
+	stockStatus := strings.TrimSpace(c.Query("stockStatus", ""))
+
+	if c.Method() == fiber.MethodPost {
+		var body struct {
+			Page        int    `json:"page"`
+			Limit       int    `json:"limit"`
+			Search      string `json:"search"`
+			Status      string `json:"status"`
+			StockStatus string `json:"stockStatus"`
+			Stock_Status string `json:"stock_status"`
+		}
+		if err := c.BodyParser(&body); err == nil {
+			if body.Page > 0 {
+				page = body.Page
+			}
+			if body.Limit > 0 {
+				limit = body.Limit
+			}
+			if strings.TrimSpace(body.Search) != "" {
+				search = strings.TrimSpace(body.Search)
+			}
+			if strings.TrimSpace(body.Status) != "" {
+				status = strings.TrimSpace(body.Status)
+			}
+			if strings.TrimSpace(body.StockStatus) != "" {
+				stockStatus = strings.TrimSpace(body.StockStatus)
+			} else if strings.TrimSpace(body.Stock_Status) != "" {
+				stockStatus = strings.TrimSpace(body.Stock_Status)
+			}
+		}
+	}
 
 	orders, total, err := h.usecase.ListOrders(c.Context(), domainTikTok.OrderQuery{
 		Search:      search,

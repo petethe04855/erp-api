@@ -68,6 +68,7 @@ func RegisterRoutes(cfg Config) {
 	// SKU Routes
 	skus := protected.Group("/skus")
 	skus.Get("/", cfg.SKUHandler.List)
+	skus.Post("/search", cfg.SKUHandler.List)
 	skus.Post("/", middleware.RequireRole("owner", "warehouse", "sales"), cfg.SKUHandler.Create)
 	skus.Get("/code/:code", cfg.SKUHandler.GetBySKU)
 	skus.Get("/:id", cfg.SKUHandler.GetByID)
@@ -80,6 +81,7 @@ func RegisterRoutes(cfg Config) {
 	if cfg.FormulaHandler != nil {
 		formulas := protected.Group("/inventory-formulas")
 		formulas.Get("/", cfg.FormulaHandler.List)
+		formulas.Post("/search", cfg.FormulaHandler.List)
 		formulas.Post("/", middleware.RequireRole("owner", "warehouse"), cfg.FormulaHandler.Create)
 		formulas.Get("/:code", cfg.FormulaHandler.GetByCode)
 		formulas.Put("/:code", middleware.RequireRole("owner", "warehouse"), cfg.FormulaHandler.Update)
@@ -89,6 +91,7 @@ func RegisterRoutes(cfg Config) {
 		// Root aliases matching /api/inventory-formulas
 		rootFormulas := cfg.App.Group("/api/inventory-formulas", middleware.AuthMiddleware(cfg.JWTSecret, cfg.UserStatusLoader))
 		rootFormulas.Get("/", cfg.FormulaHandler.List)
+		rootFormulas.Post("/search", cfg.FormulaHandler.List)
 		rootFormulas.Post("/", middleware.RequireRole("owner", "warehouse"), cfg.FormulaHandler.Create)
 		rootFormulas.Get("/:code", cfg.FormulaHandler.GetByCode)
 		rootFormulas.Put("/:code", middleware.RequireRole("owner", "warehouse"), cfg.FormulaHandler.Update)
@@ -112,6 +115,7 @@ func RegisterRoutes(cfg Config) {
 	// Customer Routes
 	customers := protected.Group("/customers")
 	customers.Get("/", cfg.CustomerHandler.List)
+	customers.Post("/search", cfg.CustomerHandler.List)
 	customers.Post("/", middleware.RequireRole("owner", "sales"), cfg.CustomerHandler.Create)
 	customers.Get("/:id", cfg.CustomerHandler.GetByID)
 	customers.Put("/:id", middleware.RequireRole("owner", "sales"), cfg.CustomerHandler.Update)
@@ -120,6 +124,7 @@ func RegisterRoutes(cfg Config) {
 	// Order Routes
 	orders := protected.Group("/orders")
 	orders.Get("/", cfg.OrderHandler.List)
+	orders.Post("/search", cfg.OrderHandler.List)
 	orders.Post("/", middleware.RequireRole("owner", "sales"), cfg.OrderHandler.Create)
 	orders.Get("/:id", cfg.OrderHandler.GetByID)
 	orders.Post("/:id/ship", middleware.RequireRole("owner", "warehouse", "sales"), cfg.OrderHandler.Ship)
@@ -132,6 +137,7 @@ func RegisterRoutes(cfg Config) {
 	if cfg.SalesReturnHandler != nil {
 		returns := protected.Group("/returns")
 		returns.Get("/", cfg.SalesReturnHandler.List)
+		returns.Post("/search", cfg.SalesReturnHandler.List)
 		returns.Post("/", middleware.RequireRole("owner", "sales"), cfg.SalesReturnHandler.Create)
 		returns.Get("/:id", cfg.SalesReturnHandler.GetByID)
 		returns.Put("/:id", middleware.RequireRole("owner", "sales"), cfg.SalesReturnHandler.Update)
@@ -145,11 +151,13 @@ func RegisterRoutes(cfg Config) {
 	// Purchasing & Supplier Routes
 	suppliers := protected.Group("/suppliers")
 	suppliers.Get("/", cfg.PurchasingHandler.ListSuppliers)
+	suppliers.Post("/search", cfg.PurchasingHandler.ListSuppliers)
 	suppliers.Post("/", middleware.RequireRole("owner", "warehouse", "accountant"), cfg.PurchasingHandler.CreateSupplier)
 	suppliers.Get("/:id", cfg.PurchasingHandler.GetSupplierByID)
 
 	pos := protected.Group("/purchases/orders")
 	pos.Get("/", cfg.PurchasingHandler.ListPOs)
+	pos.Post("/search", cfg.PurchasingHandler.ListPOs)
 	pos.Post("/", middleware.RequireRole("owner", "warehouse", "accountant"), cfg.PurchasingHandler.CreatePO)
 	pos.Get("/:id", cfg.PurchasingHandler.GetPOByID)
 	pos.Post("/:id/approve", middleware.RequireRole("owner", "accountant"), cfg.PurchasingHandler.ApprovePO)
@@ -158,6 +166,7 @@ func RegisterRoutes(cfg Config) {
 	// Invoice Routes
 	invoices := protected.Group("/invoices")
 	invoices.Get("/", cfg.InvoiceHandler.List)
+	invoices.Post("/search", cfg.InvoiceHandler.List)
 	invoices.Post("/", middleware.RequireRole("owner", "accountant", "sales"), cfg.InvoiceHandler.Create)
 	invoices.Get("/:id", cfg.WorkspaceHandler.GetInvoiceByID)
 	invoices.Get("/:id/pdf", cfg.InvoiceHandler.ExportPDF)
@@ -213,13 +222,21 @@ func RegisterRoutes(cfg Config) {
 	// Workspace compatibility routes for erp-web-v2
 	ws := protected.Group("/workspace")
 	ws.Get("/products", cfg.WorkspaceHandler.GetProducts)
+	ws.Post("/products/search", cfg.WorkspaceHandler.GetProducts)
 	ws.Get("/orders", cfg.WorkspaceHandler.GetOrders)
+	ws.Post("/orders/search", cfg.WorkspaceHandler.GetOrders)
 	ws.Get("/invoices", cfg.WorkspaceHandler.GetInvoices)
+	ws.Post("/invoices/search", cfg.WorkspaceHandler.GetInvoices)
 	ws.Get("/customers", cfg.WorkspaceHandler.GetCustomers)
+	ws.Post("/customers/search", cfg.WorkspaceHandler.GetCustomers)
 	ws.Get("/purchase-orders", cfg.WorkspaceHandler.GetPurchaseOrders)
+	ws.Post("/purchase-orders/search", cfg.WorkspaceHandler.GetPurchaseOrders)
 	ws.Get("/quotations", cfg.WorkspaceHandler.GetQuotations)
+	ws.Post("/quotations/search", cfg.WorkspaceHandler.GetQuotations)
 	ws.Get("/goods-receives", cfg.WorkspaceHandler.GetGoodsReceives)
+	ws.Post("/goods-receives/search", cfg.WorkspaceHandler.GetGoodsReceives)
 	ws.Get("/goods-issues", cfg.WorkspaceHandler.GetGoodsIssues)
+	ws.Post("/goods-issues/search", cfg.WorkspaceHandler.GetGoodsIssues)
 
 	protected.Post("/skus/resolve", cfg.WorkspaceHandler.ResolveSKUs)
 	protected.Get("/products/:code", cfg.WorkspaceHandler.GetProductByCode)
@@ -266,6 +283,7 @@ func RegisterRoutes(cfg Config) {
 
 	// Purchase Orders REST endpoints for erp-web-v2
 	protected.Get("/purchase-orders", cfg.WorkspaceHandler.GetPurchaseOrders)
+	protected.Post("/purchase-orders/search", cfg.WorkspaceHandler.GetPurchaseOrders)
 	protected.Post("/purchase-orders", middleware.RequireRole("owner", "warehouse", "accountant"), cfg.WorkspaceHandler.CreatePurchaseOrder)
 	protected.Get("/purchase-orders/:id", cfg.WorkspaceHandler.GetPurchaseOrderByID)
 	protected.Put("/purchase-orders/:id/status", middleware.RequireRole("owner", "warehouse", "accountant"), cfg.WorkspaceHandler.UpdatePurchaseOrderStatus)
@@ -298,6 +316,7 @@ func RegisterRoutes(cfg Config) {
 	tiktok.Post("/orders/sync", middleware.RequireRole("owner", "sales", "warehouse"), cfg.TikTokHandler.SyncOrders)
 	tiktok.Get("/sync-runs", cfg.TikTokHandler.GetSyncRuns)
 	tiktok.Get("/orders", cfg.TikTokHandler.GetOrders)
+	tiktok.Post("/orders/search", cfg.TikTokHandler.GetOrders)
 	tiktok.Get("/products", cfg.TikTokHandler.GetProducts)
 	tiktok.Get("/stock-preview", cfg.TikTokHandler.GetStockSyncPreview)
 	tiktok.Get("/mappings", cfg.TikTokHandler.ListMappings)
@@ -308,6 +327,7 @@ func RegisterRoutes(cfg Config) {
 	// Live & Content Routes
 	liveGroup := protected.Group("/live")
 	liveGroup.Get("/sessions", cfg.LiveHandler.ListSessions)
+	liveGroup.Post("/sessions/search", cfg.LiveHandler.ListSessions)
 	liveGroup.Post("/sessions", middleware.RequireRole("owner", "sales", "warehouse", "live"), cfg.LiveHandler.CreateSession)
 	liveGroup.Get("/sessions/:id", cfg.LiveHandler.GetSessionByID)
 	liveGroup.Put("/sessions/:id", middleware.RequireRole("owner", "sales", "live"), cfg.LiveHandler.UpdateSession)
@@ -317,6 +337,7 @@ func RegisterRoutes(cfg Config) {
 
 	// Content Items (Schedule + Performance)
 	liveGroup.Get("/content", cfg.LiveHandler.ListContentItems)
+	liveGroup.Post("/content/search", cfg.LiveHandler.ListContentItems)
 	liveGroup.Post("/content", middleware.RequireRole("owner", "sales", "live"), cfg.LiveHandler.CreateContentItem)
 	liveGroup.Put("/content/:id", middleware.RequireRole("owner", "sales", "live"), cfg.LiveHandler.UpdateContentItem)
 	liveGroup.Delete("/content/:id", middleware.RequireRole("owner", "sales"), cfg.LiveHandler.DeleteContentItem)
@@ -326,6 +347,7 @@ func RegisterRoutes(cfg Config) {
 	shopeeGroup.Post("/orders/preview", cfg.ShopeeHandler.PreviewOrders)
 	shopeeGroup.Post("/orders/import", middleware.RequireRole("owner", "warehouse", "sales", "accountant"), cfg.ShopeeHandler.ImportOrders)
 	shopeeGroup.Get("/orders", cfg.ShopeeHandler.GetOrders)
+	shopeeGroup.Post("/orders/search", cfg.ShopeeHandler.GetOrders)
 	shopeeGroup.Get("/orders/provinces", cfg.ShopeeHandler.GetProvinces)
 	shopeeGroup.Get("/orders/:id", cfg.ShopeeHandler.GetOrderByID)
 	shopeeGroup.Patch("/orders/items/:id/sku", middleware.RequireRole("owner", "warehouse", "sales", "accountant"), cfg.ShopeeHandler.UpdateItemSKU)
@@ -334,6 +356,7 @@ func RegisterRoutes(cfg Config) {
 	shopeeGroup.Post("/income/preview", cfg.ShopeeHandler.PreviewIncome)
 	shopeeGroup.Post("/income/import", middleware.RequireRole("owner", "warehouse", "sales", "accountant"), cfg.ShopeeHandler.ImportIncome)
 	shopeeGroup.Get("/income", cfg.ShopeeHandler.GetIncomes)
+	shopeeGroup.Post("/income/search", cfg.ShopeeHandler.GetIncomes)
 	shopeeGroup.Delete("/income/:id", middleware.RequireRole("owner", "accountant"), cfg.ShopeeHandler.DeleteIncome)
 
 	shopeeGroup.Get("/matching", cfg.ShopeeHandler.GetMatching)

@@ -141,10 +141,38 @@ func (h *FormulaHandler) GetByCode(c *fiber.Ctx) error {
 }
 
 func (h *FormulaHandler) List(c *fiber.Ctx) error {
-	page, _ := strconv.Atoi(c.Query("page", "1"))
-	limit, _ := strconv.Atoi(c.Query("limit", "50"))
-	search := c.Query("search", "")
-	status := c.Query("status", "")
+	var bodyReq struct {
+		Page   int    `json:"page"`
+		Limit  int    `json:"limit"`
+		Search string `json:"search"`
+		Status string `json:"status"`
+	}
+	if c.Method() == fiber.MethodPost {
+		_ = c.BodyParser(&bodyReq)
+	}
+
+	page := bodyReq.Page
+	if page < 1 {
+		page, _ = strconv.Atoi(c.Query("page", "1"))
+	}
+	if page < 1 {
+		page = 1
+	}
+
+	limit := bodyReq.Limit
+	if limit <= 0 {
+		limit, _ = strconv.Atoi(c.Query("limit", "50"))
+	}
+
+	search := strings.TrimSpace(bodyReq.Search)
+	if search == "" {
+		search = c.Query("search", "")
+	}
+
+	status := strings.TrimSpace(bodyReq.Status)
+	if status == "" {
+		status = c.Query("status", "")
+	}
 
 	var isActive *bool
 	if strings.EqualFold(status, "active") {

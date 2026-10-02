@@ -2,6 +2,7 @@ package handler
 
 import (
 	"strconv"
+	"strings"
 	"time"
 
 	"chawy-erp-api/internal/delivery/http/dto"
@@ -78,11 +79,44 @@ func (h *SKUHandler) GetBySKU(c *fiber.Ctx) error {
 }
 
 func (h *SKUHandler) List(c *fiber.Ctx) error {
-	page, _ := strconv.Atoi(c.Query("page", "1"))
-	limit, _ := strconv.Atoi(c.Query("limit", "20"))
-	search := c.Query("search", "")
-	category := c.Query("category", "")
-	status := c.Query("status", "")
+	var bodyReq struct {
+		Page     int    `json:"page"`
+		Limit    int    `json:"limit"`
+		Search   string `json:"search"`
+		Category string `json:"category"`
+		Status   string `json:"status"`
+	}
+	if c.Method() == fiber.MethodPost {
+		_ = c.BodyParser(&bodyReq)
+	}
+
+	page := bodyReq.Page
+	if page < 1 {
+		page, _ = strconv.Atoi(c.Query("page", "1"))
+	}
+	if page < 1 {
+		page = 1
+	}
+
+	limit := bodyReq.Limit
+	if limit <= 0 {
+		limit, _ = strconv.Atoi(c.Query("limit", "20"))
+	}
+
+	search := strings.TrimSpace(bodyReq.Search)
+	if search == "" {
+		search = c.Query("search", "")
+	}
+
+	category := strings.TrimSpace(bodyReq.Category)
+	if category == "" {
+		category = c.Query("category", "")
+	}
+
+	status := strings.TrimSpace(bodyReq.Status)
+	if status == "" {
+		status = c.Query("status", "")
+	}
 
 	itemsWithStats, total, err := h.usecase.ListWithStats(c.Context(), domainSKU.Query{
 		Search:   search,

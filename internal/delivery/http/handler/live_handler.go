@@ -111,11 +111,12 @@ func (h *LiveHandler) GetSessionByID(c *fiber.Ctx) error {
 
 // ListSessions godoc
 // GET /api/v1/live/sessions
+// POST /api/v1/live/sessions/search
 func (h *LiveHandler) ListSessions(c *fiber.Ctx) error {
-	month := c.Query("month")
-	status := c.Query("status")
-	platform := c.Query("platform")
-	staffIDStr := c.Query("staff_id")
+	month := strings.TrimSpace(c.Query("month"))
+	status := strings.TrimSpace(c.Query("status"))
+	platform := strings.TrimSpace(c.Query("platform"))
+	staffIDStr := strings.TrimSpace(c.Query("staff_id"))
 	page, _ := strconv.Atoi(c.Query("page", "1"))
 	limit, _ := strconv.Atoi(c.Query("limit", "50"))
 
@@ -123,6 +124,40 @@ func (h *LiveHandler) ListSessions(c *fiber.Ctx) error {
 	if staffIDStr != "" {
 		val, _ := strconv.ParseUint(staffIDStr, 10, 32)
 		staffID = uint(val)
+	}
+
+	if c.Method() == fiber.MethodPost {
+		var body struct {
+			Month    string `json:"month"`
+			Status   string `json:"status"`
+			Platform string `json:"platform"`
+			StaffID  uint   `json:"staff_id"`
+			StaffID2 uint   `json:"staffId"`
+			Page     int    `json:"page"`
+			Limit    int    `json:"limit"`
+		}
+		if err := c.BodyParser(&body); err == nil {
+			if strings.TrimSpace(body.Month) != "" {
+				month = strings.TrimSpace(body.Month)
+			}
+			if strings.TrimSpace(body.Status) != "" {
+				status = strings.TrimSpace(body.Status)
+			}
+			if strings.TrimSpace(body.Platform) != "" {
+				platform = strings.TrimSpace(body.Platform)
+			}
+			if body.StaffID > 0 {
+				staffID = body.StaffID
+			} else if body.StaffID2 > 0 {
+				staffID = body.StaffID2
+			}
+			if body.Page > 0 {
+				page = body.Page
+			}
+			if body.Limit > 0 {
+				limit = body.Limit
+			}
+		}
 	}
 
 	sessions, total, err := h.usecase.ListSessions(c.Context(), domainLive.SessionFilter{
@@ -243,11 +278,35 @@ func (h *LiveHandler) GetPayrollSummary(c *fiber.Ctx) error {
 
 // ListContentItems godoc
 // GET /api/v1/live/content
+// POST /api/v1/live/content/search
 func (h *LiveHandler) ListContentItems(c *fiber.Ctx) error {
-	kind := c.Query("kind")
-	platform := c.Query("platform")
+	kind := strings.TrimSpace(c.Query("kind"))
+	platform := strings.TrimSpace(c.Query("platform"))
 	page, _ := strconv.Atoi(c.Query("page", "1"))
 	limit, _ := strconv.Atoi(c.Query("limit", "50"))
+
+	if c.Method() == fiber.MethodPost {
+		var body struct {
+			Kind     string `json:"kind"`
+			Platform string `json:"platform"`
+			Page     int    `json:"page"`
+			Limit    int    `json:"limit"`
+		}
+		if err := c.BodyParser(&body); err == nil {
+			if strings.TrimSpace(body.Kind) != "" {
+				kind = strings.TrimSpace(body.Kind)
+			}
+			if strings.TrimSpace(body.Platform) != "" {
+				platform = strings.TrimSpace(body.Platform)
+			}
+			if body.Page > 0 {
+				page = body.Page
+			}
+			if body.Limit > 0 {
+				limit = body.Limit
+			}
+		}
+	}
 
 	items, total, err := h.usecase.ListContentItems(c.Context(), domainLive.ContentFilter{
 		Kind:     kind,

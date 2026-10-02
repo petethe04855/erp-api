@@ -2,6 +2,7 @@ package handler
 
 import (
 	"strconv"
+	"strings"
 
 	"chawy-erp-api/internal/delivery/http/dto"
 	domainPurchasing "chawy-erp-api/internal/domain/purchasing"
@@ -62,8 +63,31 @@ func (h *PurchasingHandler) GetSupplierByID(c *fiber.Ctx) error {
 func (h *PurchasingHandler) ListSuppliers(c *fiber.Ctx) error {
 	page, _ := strconv.Atoi(c.Query("page", "1"))
 	limit, _ := strconv.Atoi(c.Query("limit", "20"))
-	search := c.Query("search", "")
-	status := c.Query("status", "")
+	search := strings.TrimSpace(c.Query("search", ""))
+	status := strings.TrimSpace(c.Query("status", ""))
+
+	if c.Method() == fiber.MethodPost {
+		var body struct {
+			Page   int    `json:"page"`
+			Limit  int    `json:"limit"`
+			Search string `json:"search"`
+			Status string `json:"status"`
+		}
+		if err := c.BodyParser(&body); err == nil {
+			if body.Page > 0 {
+				page = body.Page
+			}
+			if body.Limit > 0 {
+				limit = body.Limit
+			}
+			if strings.TrimSpace(body.Search) != "" {
+				search = strings.TrimSpace(body.Search)
+			}
+			if strings.TrimSpace(body.Status) != "" {
+				status = strings.TrimSpace(body.Status)
+			}
+		}
+	}
 
 	items, total, err := h.usecase.ListSuppliers(c.Context(), domainPurchasing.SupplierQuery{
 		Search: search,
@@ -127,9 +151,39 @@ func (h *PurchasingHandler) GetPOByID(c *fiber.Ctx) error {
 func (h *PurchasingHandler) ListPOs(c *fiber.Ctx) error {
 	page, _ := strconv.Atoi(c.Query("page", "1"))
 	limit, _ := strconv.Atoi(c.Query("limit", "20"))
-	search := c.Query("search", "")
-	status := c.Query("status", "")
+	search := strings.TrimSpace(c.Query("search", ""))
+	status := strings.TrimSpace(c.Query("status", ""))
 	supplierID, _ := strconv.ParseUint(c.Query("supplierId", "0"), 10, 32)
+
+	if c.Method() == fiber.MethodPost {
+		var body struct {
+			Page       int    `json:"page"`
+			Limit      int    `json:"limit"`
+			Search     string `json:"search"`
+			Status     string `json:"status"`
+			SupplierID uint   `json:"supplierId"`
+			SupplierId uint   `json:"supplier_id"`
+		}
+		if err := c.BodyParser(&body); err == nil {
+			if body.Page > 0 {
+				page = body.Page
+			}
+			if body.Limit > 0 {
+				limit = body.Limit
+			}
+			if strings.TrimSpace(body.Search) != "" {
+				search = strings.TrimSpace(body.Search)
+			}
+			if strings.TrimSpace(body.Status) != "" {
+				status = strings.TrimSpace(body.Status)
+			}
+			if body.SupplierID > 0 {
+				supplierID = uint64(body.SupplierID)
+			} else if body.SupplierId > 0 {
+				supplierID = uint64(body.SupplierId)
+			}
+		}
+	}
 
 	items, total, err := h.usecase.ListPOs(c.Context(), domainPurchasing.POQuery{
 		Search:     search,

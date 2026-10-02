@@ -98,24 +98,71 @@ type ProductRecord struct {
 }
 
 func (h *WorkspaceHandler) GetProducts(c *fiber.Ctx) error {
-	page, _ := strconv.Atoi(c.Query("page", "1"))
-	limit, _ := strconv.Atoi(c.Query("limit", "50"))
+	var bodyReq struct {
+		Page     int         `json:"page"`
+		Limit    int         `json:"limit"`
+		Search   string      `json:"search"`
+		Type     string      `json:"type"`
+		Category string      `json:"category"`
+		Status   string      `json:"status"`
+		IsActive interface{} `json:"isActive"`
+		IsBundle interface{} `json:"isBundle"`
+	}
+	if c.Method() == fiber.MethodPost {
+		_ = c.BodyParser(&bodyReq)
+	}
+
+	page := bodyReq.Page
+	if page < 1 {
+		page, _ = strconv.Atoi(c.Query("page", "1"))
+	}
 	if page < 1 {
 		page = 1
+	}
+
+	limit := bodyReq.Limit
+	if limit <= 0 {
+		limit, _ = strconv.Atoi(c.Query("limit", "50"))
 	}
 	if limit <= 0 {
 		limit = 1000
 	} else if limit > 1000 {
 		limit = 1000
 	}
-	search := strings.TrimSpace(c.Query("search", ""))
-	prodType := strings.TrimSpace(c.Query("type", ""))
+
+	search := strings.TrimSpace(bodyReq.Search)
+	if search == "" {
+		search = strings.TrimSpace(c.Query("search", ""))
+	}
+
+	prodType := strings.TrimSpace(bodyReq.Type)
+	if prodType == "" {
+		prodType = strings.TrimSpace(bodyReq.Category)
+	}
+	if prodType == "" {
+		prodType = strings.TrimSpace(c.Query("type", ""))
+	}
 	if prodType == "" {
 		prodType = strings.TrimSpace(c.Query("category", ""))
 	}
-	isActiveQuery := strings.TrimSpace(c.Query("isActive", ""))
-	if isActiveQuery == "" {
-		isActiveQuery = strings.TrimSpace(c.Query("status", ""))
+
+	var isActiveQuery string
+	if bodyReq.IsActive != nil {
+		isActiveQuery = strings.TrimSpace(fmt.Sprintf("%v", bodyReq.IsActive))
+	} else if bodyReq.Status != "" {
+		isActiveQuery = strings.TrimSpace(bodyReq.Status)
+	} else {
+		isActiveQuery = strings.TrimSpace(c.Query("isActive", ""))
+		if isActiveQuery == "" {
+			isActiveQuery = strings.TrimSpace(c.Query("status", ""))
+		}
+	}
+
+	var isBundleQuery string
+	if bodyReq.IsBundle != nil {
+		isBundleQuery = strings.TrimSpace(fmt.Sprintf("%v", bodyReq.IsBundle))
+	} else {
+		isBundleQuery = strings.TrimSpace(c.Query("isBundle", ""))
 	}
 
 	var skus []domainSKU.SKU
@@ -136,7 +183,6 @@ func (h *WorkspaceHandler) GetProducts(c *fiber.Ctx) error {
 	}
 
 	// Filter by isBundle explicitly (F2)
-	isBundleQuery := strings.TrimSpace(c.Query("isBundle", ""))
 	if isBundleQuery != "" && !strings.EqualFold(isBundleQuery, "all") {
 		if strings.EqualFold(isBundleQuery, "true") {
 			query = query.Where("is_bundle = true")
@@ -1490,21 +1536,65 @@ type OrderRecord struct {
 }
 
 func (h *WorkspaceHandler) GetOrders(c *fiber.Ctx) error {
-	page, _ := strconv.Atoi(c.Query("page", "1"))
-	limit, _ := strconv.Atoi(c.Query("limit", "50"))
+	var bodyReq struct {
+		Page          int    `json:"page"`
+		Limit         int    `json:"limit"`
+		Search        string `json:"search"`
+		Status        string `json:"status"`
+		Channel       string `json:"channel"`
+		PaymentStatus string `json:"paymentStatus"`
+	}
+	if c.Method() == fiber.MethodPost {
+		_ = c.BodyParser(&bodyReq)
+	}
+
+	page := bodyReq.Page
+	if page < 1 {
+		page, _ = strconv.Atoi(c.Query("page", "1"))
+	}
 	if page < 1 {
 		page = 1
 	}
+
+	limit := bodyReq.Limit
+	if limit <= 0 {
+		limit, _ = strconv.Atoi(c.Query("limit", "50"))
+	}
 	if limit < 1 || limit > 100 {
 		limit = 50
+	}
+
+	search := strings.TrimSpace(bodyReq.Search)
+	if search == "" {
+		search = strings.TrimSpace(c.Query("search", ""))
+	}
+
+	status := strings.TrimSpace(bodyReq.Status)
+	if status == "" {
+		status = strings.TrimSpace(c.Query("status", ""))
+	}
+
+	channel := strings.TrimSpace(bodyReq.Channel)
+	if channel == "" {
+		channel = strings.TrimSpace(c.Query("channel", ""))
+	}
+
+	paymentStatus := strings.TrimSpace(bodyReq.PaymentStatus)
+	if paymentStatus == "" {
+		paymentStatus = strings.TrimSpace(c.Query("paymentStatus", ""))
 	}
 
 	var orders []domainOrder.Order
 	var total int64
 	query := h.db.WithContext(c.Context()).Model(&domainOrder.Order{})
 
-	if status := c.Query("status", ""); status != "" && !strings.EqualFold(status, "all") {
-		stUpper := strings.ToUpper(strings.TrimSpace(status))
+	if search != "" {
+		s := "%" + search + "%"
+		query = query.Where("order_no ILIKE ? OR customer_name ILIKE ?", s, s)
+	}
+
+	if status != "" && !strings.EqualFold(status, "all") {
+		stUpper := strings.ToUpper(status)
 		if stUpper == "COMPLETED" {
 			query = query.Where("UPPER(status) IN ('COMPLETED', 'SHIPPED')")
 		} else {
@@ -1512,7 +1602,7 @@ func (h *WorkspaceHandler) GetOrders(c *fiber.Ctx) error {
 		}
 	}
 
-	if channel := c.Query("channel", ""); channel != "" && !strings.EqualFold(channel, "all") {
+	if channel != "" && !strings.EqualFold(channel, "all") {
 		cLower := strings.ToLower(channel)
 		if cLower == "manual" {
 			query = query.Where("LOWER(channel) IN (?) OR channel IS NULL OR channel = ''", []string{"manual", "direct"})
@@ -1521,7 +1611,6 @@ func (h *WorkspaceHandler) GetOrders(c *fiber.Ctx) error {
 		}
 	}
 
-	paymentStatus := c.Query("paymentStatus", "")
 	if strings.EqualFold(paymentStatus, "paid") {
 		// Paid orders have an invoice with status PAID
 		query = query.Where("id IN (SELECT order_id FROM invoices WHERE order_id IS NOT NULL AND status = 'PAID')")
@@ -1890,17 +1979,41 @@ type InvoiceRecord struct {
 }
 
 func (h *WorkspaceHandler) GetInvoices(c *fiber.Ctx) error {
-	page, _ := strconv.Atoi(c.Query("page", "1"))
-	limit, _ := strconv.Atoi(c.Query("limit", "50"))
+	var bodyReq struct {
+		Page   int    `json:"page"`
+		Limit  int    `json:"limit"`
+		Search string `json:"search"`
+		Status string `json:"status"`
+	}
+	if c.Method() == fiber.MethodPost {
+		_ = c.BodyParser(&bodyReq)
+	}
+
+	page := bodyReq.Page
+	if page < 1 {
+		page, _ = strconv.Atoi(c.Query("page", "1"))
+	}
 	if page < 1 {
 		page = 1
+	}
+
+	limit := bodyReq.Limit
+	if limit <= 0 {
+		limit, _ = strconv.Atoi(c.Query("limit", "50"))
 	}
 	if limit < 1 || limit > 100 {
 		limit = 50
 	}
 
-	search := strings.TrimSpace(c.Query("search", ""))
-	statusQuery := strings.TrimSpace(c.Query("status", ""))
+	search := strings.TrimSpace(bodyReq.Search)
+	if search == "" {
+		search = strings.TrimSpace(c.Query("search", ""))
+	}
+
+	statusQuery := strings.TrimSpace(bodyReq.Status)
+	if statusQuery == "" {
+		statusQuery = strings.TrimSpace(c.Query("status", ""))
+	}
 
 	var invoices []domainInvoice.Invoice
 	var total int64
@@ -2149,18 +2262,45 @@ type CustomerRecord struct {
 }
 
 func (h *WorkspaceHandler) GetCustomers(c *fiber.Ctx) error {
-	page, _ := strconv.Atoi(c.Query("page", "1"))
-	limit, _ := strconv.Atoi(c.Query("limit", "50"))
+	var bodyReq struct {
+		Page   int    `json:"page"`
+		Limit  int    `json:"limit"`
+		Search string `json:"search"`
+	}
+	if c.Method() == fiber.MethodPost {
+		_ = c.BodyParser(&bodyReq)
+	}
+
+	page := bodyReq.Page
+	if page < 1 {
+		page, _ = strconv.Atoi(c.Query("page", "1"))
+	}
 	if page < 1 {
 		page = 1
+	}
+
+	limit := bodyReq.Limit
+	if limit <= 0 {
+		limit, _ = strconv.Atoi(c.Query("limit", "50"))
 	}
 	if limit < 1 || limit > 100 {
 		limit = 50
 	}
 
+	search := strings.TrimSpace(bodyReq.Search)
+	if search == "" {
+		search = strings.TrimSpace(c.Query("search", ""))
+	}
+
 	var customers []domainCustomer.Customer
 	var total int64
 	query := h.db.WithContext(c.Context()).Model(&domainCustomer.Customer{})
+
+	if search != "" {
+		s := "%" + search + "%"
+		query = query.Where("name ILIKE ? OR email ILIKE ? OR phone ILIKE ? OR contact_person ILIKE ?", s, s, s, s)
+	}
+
 	query.Count(&total)
 	query.Offset((page - 1) * limit).Limit(limit).Order("id DESC").Find(&customers)
 
@@ -2303,6 +2443,32 @@ type PurchaseRecord struct {
 func (h *WorkspaceHandler) GetPurchaseOrders(c *fiber.Ctx) error {
 	page, _ := strconv.Atoi(c.Query("page", "1"))
 	limit, _ := strconv.Atoi(c.Query("limit", "50"))
+	search := strings.TrimSpace(c.Query("search", ""))
+	statusQuery := strings.TrimSpace(c.Query("status", ""))
+
+	if c.Method() == fiber.MethodPost {
+		var body struct {
+			Page   int    `json:"page"`
+			Limit  int    `json:"limit"`
+			Search string `json:"search"`
+			Status string `json:"status"`
+		}
+		if err := c.BodyParser(&body); err == nil {
+			if body.Page > 0 {
+				page = body.Page
+			}
+			if body.Limit > 0 {
+				limit = body.Limit
+			}
+			if strings.TrimSpace(body.Search) != "" {
+				search = strings.TrimSpace(body.Search)
+			}
+			if strings.TrimSpace(body.Status) != "" {
+				statusQuery = strings.TrimSpace(body.Status)
+			}
+		}
+	}
+
 	if page < 1 {
 		page = 1
 	}
@@ -2311,13 +2477,11 @@ func (h *WorkspaceHandler) GetPurchaseOrders(c *fiber.Ctx) error {
 	var total int64
 	query := h.db.WithContext(c.Context()).Model(&domainPurchasing.PurchaseOrder{})
 
-	search := strings.TrimSpace(c.Query("search", ""))
 	if search != "" {
 		s := "%" + search + "%"
 		query = query.Where("po_no ILIKE ? OR supplier_name ILIKE ?", s, s)
 	}
 
-	statusQuery := strings.TrimSpace(c.Query("status", ""))
 	if statusQuery != "" && !strings.EqualFold(statusQuery, "all") {
 		query = query.Where("LOWER(status) = ?", strings.ToLower(statusQuery))
 	}
@@ -2557,17 +2721,41 @@ type QuotationRecord struct {
 }
 
 func (h *WorkspaceHandler) GetQuotations(c *fiber.Ctx) error {
-	page, _ := strconv.Atoi(c.Query("page", "1"))
-	limit, _ := strconv.Atoi(c.Query("limit", "50"))
+	var bodyReq struct {
+		Page   int    `json:"page"`
+		Limit  int    `json:"limit"`
+		Search string `json:"search"`
+		Status string `json:"status"`
+	}
+	if c.Method() == fiber.MethodPost {
+		_ = c.BodyParser(&bodyReq)
+	}
+
+	page := bodyReq.Page
+	if page < 1 {
+		page, _ = strconv.Atoi(c.Query("page", "1"))
+	}
 	if page < 1 {
 		page = 1
+	}
+
+	limit := bodyReq.Limit
+	if limit <= 0 {
+		limit, _ = strconv.Atoi(c.Query("limit", "50"))
 	}
 	if limit < 1 || limit > 100 {
 		limit = 50
 	}
 
-	search := strings.TrimSpace(c.Query("search", ""))
-	statusQuery := strings.TrimSpace(c.Query("status", ""))
+	search := strings.TrimSpace(bodyReq.Search)
+	if search == "" {
+		search = strings.TrimSpace(c.Query("search", ""))
+	}
+
+	statusQuery := strings.TrimSpace(bodyReq.Status)
+	if statusQuery == "" {
+		statusQuery = strings.TrimSpace(c.Query("status", ""))
+	}
 
 	today := time.Now().Format("2006-01-02")
 
@@ -2950,16 +3138,37 @@ type ReceiptRecord struct {
 }
 
 func (h *WorkspaceHandler) GetGoodsReceives(c *fiber.Ctx) error {
-	page, _ := strconv.Atoi(c.Query("page", "1"))
-	limit, _ := strconv.Atoi(c.Query("limit", "50"))
+	var bodyReq struct {
+		Page   int    `json:"page"`
+		Limit  int    `json:"limit"`
+		Search string `json:"search"`
+	}
+	if c.Method() == fiber.MethodPost {
+		_ = c.BodyParser(&bodyReq)
+	}
+
+	page := bodyReq.Page
+	if page < 1 {
+		page, _ = strconv.Atoi(c.Query("page", "1"))
+	}
 	if page < 1 {
 		page = 1
+	}
+
+	limit := bodyReq.Limit
+	if limit <= 0 {
+		limit, _ = strconv.Atoi(c.Query("limit", "50"))
+	}
+
+	search := strings.TrimSpace(bodyReq.Search)
+	if search == "" {
+		search = strings.TrimSpace(c.Query("search", ""))
 	}
 
 	var grs []domainPurchasing.GoodsReceive
 	var total int64
 	query := h.db.WithContext(c.Context()).Model(&domainPurchasing.GoodsReceive{})
-	if search := strings.TrimSpace(c.Query("search", "")); search != "" {
+	if search != "" {
 		s := "%" + search + "%"
 		query = query.Where("code ILIKE ? OR po_ref ILIKE ? OR supplier_name ILIKE ?", s, s, s)
 	}
@@ -3486,10 +3695,31 @@ func formatMovementChannel(channel, orderRef string) string {
 }
 
 func (h *WorkspaceHandler) GetGoodsIssues(c *fiber.Ctx) error {
-	page, _ := strconv.Atoi(c.Query("page", "1"))
-	limit, _ := strconv.Atoi(c.Query("limit", "50"))
+	var bodyReq struct {
+		Page   int    `json:"page"`
+		Limit  int    `json:"limit"`
+		Search string `json:"search"`
+	}
+	if c.Method() == fiber.MethodPost {
+		_ = c.BodyParser(&bodyReq)
+	}
+
+	page := bodyReq.Page
+	if page < 1 {
+		page, _ = strconv.Atoi(c.Query("page", "1"))
+	}
 	if page < 1 {
 		page = 1
+	}
+
+	limit := bodyReq.Limit
+	if limit <= 0 {
+		limit, _ = strconv.Atoi(c.Query("limit", "50"))
+	}
+
+	search := strings.TrimSpace(bodyReq.Search)
+	if search == "" {
+		search = strings.TrimSpace(c.Query("search", ""))
 	}
 
 	// Fetch OUT stock movements for goods issue history
@@ -3497,7 +3727,7 @@ func (h *WorkspaceHandler) GetGoodsIssues(c *fiber.Ctx) error {
 	var total int64
 	query := h.db.WithContext(c.Context()).Model(&domainStock.StockMovement{}).
 		Where("type = ?", domainStock.MovementOut)
-	if search := strings.TrimSpace(c.Query("search", "")); search != "" {
+	if search != "" {
 		s := "%" + search + "%"
 		query = query.Where("sku_code ILIKE ? OR note ILIKE ? OR reference_id ILIKE ?", s, s, s)
 	}
