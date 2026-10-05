@@ -173,7 +173,7 @@ func TestGetRevenueReport_TikTokCompletedAndManualPaid(t *testing.T) {
 			Status: " completed ",
 			Amount: 800,
 		},
-		// Delivered (should NOT be included)
+		// Delivered (included as recognized revenue status)
 		{
 			ID:     "TT-DELIVERED",
 			Date:   "2026-09-15",
@@ -187,7 +187,7 @@ func TestGetRevenueReport_TikTokCompletedAndManualPaid(t *testing.T) {
 			Status: "SHIPPED",
 			Amount: 444,
 		},
-		// In Transit (should NOT be included)
+		// In Transit (included as recognized revenue status)
 		{
 			ID:     "TT-TRANSIT",
 			Date:   "2026-09-15",
@@ -229,18 +229,20 @@ func TestGetRevenueReport_TikTokCompletedAndManualPaid(t *testing.T) {
 	// Expected TikTok:
 	// TT-COMPLETED-1: 700
 	// TT-COMPLETED-2: 800
-	// Total TikTok = 1500
-	assert.Equal(t, 1500.0, report.ByChannel["TikTok"])
+	// TT-DELIVERED: 555
+	// TT-TRANSIT: 333
+	// Total TikTok = 2388
+	assert.Equal(t, 2388.0, report.ByChannel["TikTok"])
 
 	// Shopee must not exist
 	_, hasShopee := report.ByChannel["Shopee"]
 	assert.False(t, hasShopee, "Shopee should not be in ByChannel")
 
-	// Total
-	assert.Equal(t, 4800.0, report.Total)
+	// Total = 3300 + 2388 = 5688
+	assert.Equal(t, 5688.0, report.Total)
 
-	// Rows count: 4 manual + 2 tiktok = 6
-	assert.Len(t, report.Rows, 6)
+	// Rows count: 4 manual + 4 tiktok = 8
+	assert.Len(t, report.Rows, 8)
 
 	// Verify order sorting: newest date first, then reference descending
 	for i := 0; i < len(report.Rows)-1; i++ {
