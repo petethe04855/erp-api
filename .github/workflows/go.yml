@@ -5,7 +5,7 @@ on:
     branches:
       - main
       - dev
-      - 'dev/**'        # ครอบคลุมทุกกิ่งที่ขึ้นต้นด้วย dev/ เช่น dev/stock-fix
+      - 'dev/**'
   pull_request:
     branches:
       - main
@@ -17,31 +17,35 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. ดึงโค้ดจาก Repository
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # จำเป็นสำหรับ Gitleaks เพื่อสแกนประวัติ commit
 
-      # 2. ติดตั้ง Go โดยอ่านเวอร์ชันจาก go.mod พร้อมเปิด Cache
+      # ---------------------------------------------
+      # Step สแกนรหัสผ่าน / Token / .env หลุด (Gitleaks)
+      # ---------------------------------------------
+      - name: Secret Scan (Gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version-file: 'go.mod'
           cache: true
 
-      # 3. ดาวน์โหลด Dependencies ทั้งหมด
       - name: Download Go Modules
         run: go mod download
 
-      # 4. รัน Unit Test ทุกตัวในโปรเจกต์
       - name: Run Unit Tests
         run: go test -v -count=1 ./...
 
-      # 5. สแกนหาช่องโหว่ความปลอดภัยของ Third-party Package (Vulnerability Scan)
-      - name: Run Security Scan (govulncheck)
+      - name: Run Vulnerability Scan (govulncheck)
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
 
-      # 6. ตรวจสอบว่าโค้ดคอมไพล์ผ่านจริงบน Linux
       - name: Verify Go Build
         run: go build -v -o api ./cmd/api
