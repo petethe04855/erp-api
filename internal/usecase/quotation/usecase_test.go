@@ -160,7 +160,7 @@ func TestCreate_RejectsNonDraftStatus(t *testing.T) {
 		},
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "New quotations must be created with status 'Draft'")
+	assert.Contains(t, err.Error(), "New quotations must be created with status 'Pending'")
 
 	// Attempting to bypass state machine by creating as Approved directly
 	_, err = uc.Create(context.Background(), usecaseQuotation.CreateInput{
@@ -171,7 +171,7 @@ func TestCreate_RejectsNonDraftStatus(t *testing.T) {
 		},
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "New quotations must be created with status 'Draft'")
+	assert.Contains(t, err.Error(), "New quotations must be created with status 'Pending'")
 
 	// Attempting to create as Converted directly
 	_, err = uc.Create(context.Background(), usecaseQuotation.CreateInput{
@@ -182,7 +182,7 @@ func TestCreate_RejectsNonDraftStatus(t *testing.T) {
 		},
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "New quotations must be created with status 'Draft'")
+	assert.Contains(t, err.Error(), "New quotations must be created with status 'Pending'")
 }
 
 func TestCreate_RejectsValidUntilBeforeDate(t *testing.T) {
