@@ -1,33 +1,47 @@
-# This workflow will build a golang project
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
-
-name: Go Backend CI
+name: Go Backend CI & Security Scan
 
 on:
   push:
-    branches: [ "main", "master", "develop" ]
+    branches:
+      - main
+      - dev
+      - 'dev/**'        # ครอบคลุมทุกกิ่งที่ขึ้นต้นด้วย dev/ เช่น dev/stock-fix
   pull_request:
-    branches: [ "main", "master" ]
+    branches:
+      - main
+      - dev
 
 jobs:
-  test-and-build:
+  test-and-scan:
+    name: Test, Security Scan & Build
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      # 1. ดึงโค้ดจาก Repository
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version-file: 'go.mod' # ดึงเวอร์ชัน Go ตาม go.mod อัตโนมัติ
-        cache: true              # เปิด Cache สำหรับ go modules เพื่อให้รันเร็วขึ้น
+      # 2. ติดตั้ง Go โดยอ่านเวอร์ชันจาก go.mod พร้อมเปิด Cache
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
 
-    - name: Install dependencies
-      run: go mod download
+      # 3. ดาวน์โหลด Dependencies ทั้งหมด
+      - name: Download Go Modules
+        run: go mod download
 
-    - name: Run Unit Tests
-      run: go test -v -count=1 ./...
+      # 4. รัน Unit Test ทุกตัวในโปรเจกต์
+      - name: Run Unit Tests
+        run: go test -v -count=1 ./...
 
-    - name: Build Binary
-      run: go build -v -o api ./cmd/api
+      # 5. สแกนหาช่องโหว่ความปลอดภัยของ Third-party Package (Vulnerability Scan)
+      - name: Run Security Scan (govulncheck)
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+      # 6. ตรวจสอบว่าโค้ดคอมไพล์ผ่านจริงบน Linux
+      - name: Verify Go Build
+        run: go build -v -o api ./cmd/api
