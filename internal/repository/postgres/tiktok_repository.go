@@ -89,6 +89,7 @@ func (r *TikTokRepository) UpsertOrders(ctx context.Context, orders []tiktok.Tik
 				Columns: []clause.Column{{Name: "id"}},
 				DoUpdates: clause.AssignmentColumns([]string{
 					"date", "product", "sku", "qty", "amount", "status",
+					"recipient_province_raw", "recipient_province", "recipient_postal_code",
 				}),
 			}).Create(order).Error; err != nil {
 				return err
@@ -202,6 +203,43 @@ func (r *TikTokRepository) ListOrders(ctx context.Context, query tiktok.OrderQue
 
 func (r *TikTokRepository) CreateSyncRun(ctx context.Context, run *tiktok.TiktokSyncRun) error {
 	return r.handle(ctx).Create(run).Error
+}
+
+// ListOrdersMissingProvince returns IDs of orders synced before the province
+// feature existed (recipient_province never resolved).
+func (r *TikTokRepository) ListOrdersMissingProvince(ctx context.Context, limit int) ([]string, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	var ids []string
+	err := r.handle(ctx).Model(&tiktok.TiktokOrder{}).
+		Where("recipient_province IS NULL OR TRIM(recipient_province) = ''").
+		Order("date DESC, id DESC").
+		Limit(limit).
+		Pluck("id", &ids).Error
+	return ids, err
+}
+
+// UpdateOrderProvinces writes only the province columns — never touches items
+// or stock flags, so a backfill can't trigger side effects.
+func (r *TikTokRepository) UpdateOrderProvinces(ctx context.Context, updates []tiktok.OrderProvinceUpdate) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	return r.handle(ctx).Transaction(func(tx *gorm.DB) error {
+		for _, u := range updates {
+			if err := tx.Model(&tiktok.TiktokOrder{}).
+				Where("id = ?", u.ID).
+				Updates(map[string]interface{}{
+					"recipient_province_raw": u.RawProvince,
+					"recipient_province":     u.Province,
+					"recipient_postal_code":  u.PostalCode,
+				}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (r *TikTokRepository) UpdateSyncRun(ctx context.Context, run *tiktok.TiktokSyncRun) error {

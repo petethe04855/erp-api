@@ -13,6 +13,7 @@ type Customer struct {
 	Phone         string    `json:"phone" gorm:"size:50"`
 	Email         string    `json:"email" gorm:"size:255"`
 	Address       string    `json:"address" gorm:"type:text"`
+	Province      string    `json:"province" gorm:"size:100"` // จังหวัดจัดส่ง (normalize จาก address เมื่อไม่ได้ระบุ)
 	TaxID         string    `json:"tax_id" gorm:"size:50"`
 	Logo          string    `json:"logo" gorm:"size:500"`
 	Channel       string    `json:"channel" gorm:"size:50;default:'direct'"` // tiktok, shopee, direct, etc.

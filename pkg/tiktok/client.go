@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -25,6 +26,7 @@ const (
 
 type Client struct {
 	httpClient *http.Client
+	baseURL    string
 }
 
 func NewClient() *Client {
@@ -32,7 +34,24 @@ func NewClient() *Client {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		baseURL: APIBaseURL,
 	}
+}
+
+func NewClientWithBaseURL(baseURL string) *Client {
+	return &Client{
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
+		baseURL: baseURL,
+	}
+}
+
+func (c *Client) getBaseURL() string {
+	if c.baseURL != "" {
+		return c.baseURL
+	}
+	return APIBaseURL
 }
 
 type TokenData struct {
@@ -91,6 +110,33 @@ type OrderSearchResponse struct {
 		NextPageToken string      `json:"next_page_token"`
 		Orders        []OrderItem `json:"orders"`
 		TotalCount    int         `json:"total_count"`
+	} `json:"data"`
+}
+
+type DistrictInfo struct {
+	AddressLevel     string `json:"address_level"`
+	AddressLevelName string `json:"address_level_name"`
+	AddressName      string `json:"address_name"`
+}
+
+type RecipientAddress struct {
+	FullAddress  string         `json:"full_address"`
+	PostalCode   string         `json:"postal_code"`
+	RegionCode   string         `json:"region_code"`
+	DistrictInfo []DistrictInfo `json:"district_info"`
+}
+
+type OrderDetailItem struct {
+	ID               string           `json:"id"`
+	Status           string           `json:"status"`
+	RecipientAddress RecipientAddress `json:"recipient_address"`
+}
+
+type OrderDetailResponse struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Data    struct {
+		Orders []OrderDetailItem `json:"orders"`
 	} `json:"data"`
 }
 
@@ -292,7 +338,7 @@ func (c *Client) SearchOrders(accessToken, shopCipher, appKey, appSecret string,
 	}
 	params["sign"] = GenerateSignature(path, params, string(bodyBytes), appSecret)
 
-	reqURL := fmt.Sprintf("%s%s?%s", APIBaseURL, path, encodeParams(params))
+	reqURL := fmt.Sprintf("%s%s?%s", c.getBaseURL(), path, encodeParams(params))
 	req, err := http.NewRequest(http.MethodPost, reqURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
@@ -321,6 +367,50 @@ func (c *Client) SearchOrders(accessToken, shopCipher, appKey, appSecret string,
 	return &result, nil
 }
 
+// GetOrdersDetail retrieves order details including recipient address for a batch of order IDs
+func (c *Client) GetOrdersDetail(accessToken, shopCipher, appKey, appSecret string, orderIDs []string) (*OrderDetailResponse, error) {
+	if len(orderIDs) == 0 {
+		return &OrderDetailResponse{}, nil
+	}
+	path := "/order/202309/orders"
+	idsParam := strings.Join(orderIDs, ",")
+
+	params := map[string]string{
+		"app_key":     appKey,
+		"timestamp":   fmt.Sprintf("%d", time.Now().Unix()),
+		"shop_cipher": shopCipher,
+		"ids":         idsParam,
+	}
+	params["sign"] = GenerateSignature(path, params, "", appSecret)
+
+	reqURL := fmt.Sprintf("%s%s?%s", c.getBaseURL(), path, encodeParams(params))
+	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("x-tts-access-token", accessToken)
+
+	resp, err := c.doRequest(req)
+	if err != nil {
+		return nil, fmt.Errorf("tiktok get orders detail request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyResp, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return nil, fmt.Errorf("failed to read orders detail response: %w", readErr)
+	}
+
+	var result OrderDetailResponse
+	if err := json.Unmarshal(bodyResp, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal orders detail response: %w", err)
+	}
+	if resp.StatusCode >= 400 || result.Code != 0 {
+		return nil, fmt.Errorf("tiktok orders detail API error: %s (code %d)", result.Message, result.Code)
+	}
+	return &result, nil
+}
+
 // SearchProducts queries products from TikTok Shop
 func (c *Client) SearchProducts(accessToken, shopCipher, appKey, appSecret string, pageToken string, pageSize int) (*ProductSearchResponse, error) {
 	path := "/product/202309/products/search"
@@ -340,7 +430,7 @@ func (c *Client) SearchProducts(accessToken, shopCipher, appKey, appSecret strin
 	}
 	params["sign"] = GenerateSignature(path, params, string(bodyBytes), appSecret)
 
-	reqURL := fmt.Sprintf("%s%s?%s", APIBaseURL, path, encodeParams(params))
+	reqURL := fmt.Sprintf("%s%s?%s", c.getBaseURL(), path, encodeParams(params))
 	req, err := http.NewRequest(http.MethodPost, reqURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err

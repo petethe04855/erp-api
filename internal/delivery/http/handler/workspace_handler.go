@@ -2258,6 +2258,7 @@ type CustomerRecord struct {
 	Phone         string `json:"phone"`
 	TaxID         string `json:"taxId"`
 	Address       string `json:"address"`
+	Province      string `json:"province"`
 	Logo          string `json:"logo"`
 }
 
@@ -2318,6 +2319,7 @@ func (h *WorkspaceHandler) GetCustomers(c *fiber.Ctx) error {
 			Phone:         cust.Phone,
 			TaxID:         cust.TaxID,
 			Address:       cust.Address,
+			Province:      cust.Province,
 			Logo:          cust.Logo,
 		}
 	}

@@ -60,20 +60,23 @@ func (TiktokSyncRun) TableName() string { return "tiktok_sync_runs" }
 
 // TiktokOrder stores order headers received from TikTok Shop
 type TiktokOrder struct {
-	ID            string            `gorm:"primaryKey" json:"id"`
-	Date          string            `json:"date"`
-	Product       string            `json:"product"`
-	SKU           string            `json:"sku"`
-	Qty           int               `json:"qty"`
-	Amount        float64           `json:"amount"`
-	Status        string            `json:"status"`
-	StockDeducted bool              `json:"stockDeducted"`
-	Imported      bool              `json:"imported"`
-	NetRevenue    float64           `json:"netRevenue,omitempty"`
-	PlatformFee   float64           `json:"platformFee,omitempty"`
-	Settled       bool              `json:"settled"`
-	SettlementRef string            `json:"settlementRef,omitempty"`
-	Items         []TiktokOrderItem `gorm:"foreignKey:OrderID;references:ID;constraint:OnDelete:CASCADE" json:"items"`
+	ID                   string            `gorm:"primaryKey" json:"id"`
+	Date                 string            `gorm:"index:idx_tiktok_orders_date_province_status,priority:1;size:50" json:"date"`
+	Product              string            `json:"product"`
+	SKU                  string            `json:"sku"`
+	Qty                  int               `json:"qty"`
+	Amount               float64           `json:"amount"`
+	Status               string            `gorm:"index:idx_tiktok_orders_date_province_status,priority:3;size:50" json:"status"`
+	StockDeducted        bool              `json:"stockDeducted"`
+	Imported             bool              `json:"imported"`
+	NetRevenue           float64           `json:"netRevenue,omitempty"`
+	PlatformFee          float64           `json:"platformFee,omitempty"`
+	Settled              bool              `json:"settled"`
+	SettlementRef        string            `json:"settlementRef,omitempty"`
+	RecipientProvinceRaw string            `gorm:"column:recipient_province_raw;size:100" json:"recipientProvinceRaw"`
+	RecipientProvince    string            `gorm:"column:recipient_province;index:idx_tiktok_orders_date_province_status,priority:2;size:100" json:"recipientProvince"`
+	RecipientPostalCode  string            `gorm:"column:recipient_postal_code;size:20" json:"recipientPostalCode"`
+	Items                []TiktokOrderItem `gorm:"foreignKey:OrderID;references:ID;constraint:OnDelete:CASCADE" json:"items"`
 }
 
 func (TiktokOrder) TableName() string { return "tiktok_orders" }
@@ -122,6 +125,14 @@ type OrderQuery struct {
 	Limit       int
 }
 
+// OrderProvinceUpdate carries resolved province fields for one order.
+type OrderProvinceUpdate struct {
+	ID          string
+	RawProvince string
+	Province    string
+	PostalCode  string
+}
+
 // Repository outlines database operations for TikTok integration
 type Repository interface {
 	// Connection operations
@@ -146,6 +157,11 @@ type Repository interface {
 	UpdateOrderStockDeducted(ctx context.Context, orderID string, deducted bool) error
 	ListRecentOrders(ctx context.Context, limit int) ([]TiktokOrder, error)
 	ListOrders(ctx context.Context, query OrderQuery) ([]TiktokOrder, int64, error)
+
+	// Province backfill: orders whose province was never resolved (synced
+	// before the province feature) and targeted column updates.
+	ListOrdersMissingProvince(ctx context.Context, limit int) ([]string, error)
+	UpdateOrderProvinces(ctx context.Context, updates []OrderProvinceUpdate) error
 
 	// Sync Runs
 	CreateSyncRun(ctx context.Context, run *TiktokSyncRun) error

@@ -24,6 +24,7 @@ import (
 	pkgCrypto "chawy-erp-api/pkg/crypto"
 	"chawy-erp-api/pkg/database"
 	appErrors "chawy-erp-api/pkg/errors"
+	"chawy-erp-api/pkg/province"
 	pkgTikTok "chawy-erp-api/pkg/tiktok"
 
 	"gorm.io/gorm"
@@ -69,12 +70,27 @@ type CallbackResponse struct {
 	SellerName string `json:"sellerName"`
 }
 
+// SyncResultResponse is the API contract returned after an order sync.
 type SyncResultResponse struct {
 	Synced                 int      `json:"synced"`
 	Days                   int      `json:"days"`
 	StockDeducted          int      `json:"stockDeducted"`
 	StockDeductionErrors   []string `json:"stockDeductionErrors,omitempty"`
 	StockDeductionWarnings []string `json:"stockDeductionWarnings,omitempty"`
+}
+
+// ProvinceBackfillResult reports how many orders had provinces resolved.
+type ProvinceBackfillResult struct {
+	Scanned  int `json:"scanned"`
+	Resolved int `json:"resolved"`
+	Unknown  int `json:"unknown"`
+}
+
+// resolvedAddress holds the parsed province fields for one order.
+type resolvedAddress struct {
+	RawProvince string
+	Province    string
+	PostalCode  string
 }
 
 type StockPreviewItem struct {
@@ -97,6 +113,9 @@ type Usecase interface {
 
 	// Orders & Sync
 	SyncOrders(ctx context.Context, days int) (*SyncResultResponse, error)
+	// BackfillProvinces resolves recipient provinces for orders synced before
+	// the province feature existed (province columns only, no stock side effects).
+	BackfillProvinces(ctx context.Context, limit int) (*ProvinceBackfillResult, error)
 	GetSyncRuns(ctx context.Context, limit int) ([]domainTikTok.TiktokSyncRun, error)
 	GetOrders(ctx context.Context, limit int) ([]domainTikTok.TiktokOrder, error)
 	ListOrders(ctx context.Context, query domainTikTok.OrderQuery) ([]domainTikTok.TiktokOrder, int64, error)
@@ -416,6 +435,23 @@ func (u *tiktokUsecase) SyncOrders(ctx context.Context, days int) (*SyncResultRe
 		}
 	}
 
+	// Batch fetch order details to retrieve recipient address & province
+	allIDs := make([]string, len(orders))
+	for i := range orders {
+		allIDs[i] = orders[i].ID
+	}
+	addressMap := u.resolveProvinces(ctx, decryptedToken, conn, allIDs)
+
+	for i := range orders {
+		if addr, ok := addressMap[orders[i].ID]; ok {
+			orders[i].RecipientProvinceRaw = addr.RawProvince
+			orders[i].RecipientProvince = addr.Province
+			orders[i].RecipientPostalCode = addr.PostalCode
+		} else {
+			orders[i].RecipientProvince = province.UnknownProvince
+		}
+	}
+
 	// Upsert Orders in DB
 	if err := u.tiktokRepo.UpsertOrders(ctx, orders); err != nil {
 		finishErr := time.Now().UTC()
@@ -468,6 +504,101 @@ func (u *tiktokUsecase) SyncOrders(ctx context.Context, days int) (*SyncResultRe
 		StockDeductionErrors:   deductionErrors,
 		StockDeductionWarnings: deductionWarnings,
 	}, nil
+}
+
+// resolveProvinces fetches order details in batches of 50 and parses the
+// recipient province for each order. Failed batches are logged and skipped so
+// one API hiccup never aborts a sync.
+func (u *tiktokUsecase) resolveProvinces(ctx context.Context, token string, conn *domainTikTok.TiktokConnection, orderIDs []string) map[string]resolvedAddress {
+	addressMap := make(map[string]resolvedAddress, len(orderIDs))
+
+	for i := 0; i < len(orderIDs); i += 50 {
+		end := i + 50
+		if end > len(orderIDs) {
+			end = len(orderIDs)
+		}
+		batchIDs := orderIDs[i:end]
+
+		detailResp, err := u.tiktokClient.GetOrdersDetail(token, conn.ShopCipher, u.cfg.TikTokAppKey, u.cfg.TikTokAppSecret, batchIDs)
+		if err != nil {
+			_ = u.tiktokRepo.CreateSyncLog(ctx, &domainTikTok.SyncLog{
+				OrderNo: strings.Join(batchIDs, ","),
+				Status:  "WARNING",
+				Message: fmt.Sprintf("Failed to fetch order details for province resolution: %v", err),
+			})
+			continue
+		}
+
+		for _, dOrder := range detailResp.Data.Orders {
+			rawProvince := ""
+			for _, dist := range dOrder.RecipientAddress.DistrictInfo {
+				if dist.AddressLevel == "L1" || strings.Contains(strings.ToLower(dist.AddressLevelName), "province") || strings.Contains(strings.ToLower(dist.AddressLevelName), "state") {
+					rawProvince = dist.AddressName
+					break
+				}
+			}
+			if rawProvince == "" && len(dOrder.RecipientAddress.DistrictInfo) > 0 {
+				rawProvince = dOrder.RecipientAddress.DistrictInfo[0].AddressName
+			}
+			postalCode := dOrder.RecipientAddress.PostalCode
+
+			addressMap[dOrder.ID] = resolvedAddress{
+				RawProvince: rawProvince,
+				Province:    province.NormalizeProvince(rawProvince, postalCode),
+				PostalCode:  postalCode,
+			}
+		}
+	}
+
+	return addressMap
+}
+
+// BackfillProvinces resolves recipient provinces for orders synced before the
+// province feature existed. It only writes the three province columns — no
+// items, no stock flags — so it can never trigger stock deduction.
+func (u *tiktokUsecase) BackfillProvinces(ctx context.Context, limit int) (*ProvinceBackfillResult, error) {
+	conn, err := u.ensureAccessToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	decryptedToken, err := pkgCrypto.DecryptAESGCM(conn.AccessToken, u.getEncryptionKey())
+	if err != nil {
+		return nil, fmt.Errorf("failed to decrypt access token: %w", err)
+	}
+
+	ids, err := u.tiktokRepo.ListOrdersMissingProvince(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	addressMap := u.resolveProvinces(ctx, decryptedToken, conn, ids)
+
+	updates := make([]domainTikTok.OrderProvinceUpdate, 0, len(ids))
+	result := &ProvinceBackfillResult{Scanned: len(ids)}
+	for _, id := range ids {
+		addr, ok := addressMap[id]
+		if !ok {
+			// Detail fetch failed or order not returned; leave untouched so a
+			// later run can retry it.
+			continue
+		}
+		updates = append(updates, domainTikTok.OrderProvinceUpdate{
+			ID:          id,
+			RawProvince: addr.RawProvince,
+			Province:    addr.Province,
+			PostalCode:  addr.PostalCode,
+		})
+		if addr.Province == province.UnknownProvince {
+			result.Unknown++
+		} else {
+			result.Resolved++
+		}
+	}
+
+	if err := u.tiktokRepo.UpdateOrderProvinces(ctx, updates); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // deductStockForOrder deducts every line of a TikTok order inside ONE
@@ -836,10 +967,11 @@ func (u *tiktokUsecase) SyncOrder(ctx context.Context, in SyncOrderInput) error 
 			}
 			return q
 		}(),
-		Amount:   total,
-		Status:   "SHIPPED",
-		Imported: true,
-		Items:    items,
+		Amount:            total,
+		Status:            "SHIPPED",
+		Imported:          true,
+		RecipientProvince: province.UnknownProvince,
+		Items:             items,
 	}
 	_ = customerName // customer name is not persisted on the TikTok order header schema today
 

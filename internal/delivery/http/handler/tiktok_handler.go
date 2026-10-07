@@ -71,6 +71,17 @@ func (h *TikTokHandler) ReceiveWebhook(c *fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusOK)
 }
 
+// BackfillProvinces resolves recipient provinces for historical orders that
+// were synced before the province feature existed.
+func (h *TikTokHandler) BackfillProvinces(c *fiber.Ctx) error {
+	limit, _ := strconv.Atoi(c.Query("limit", "500"))
+	res, err := h.usecase.BackfillProvinces(c.Context(), limit)
+	if err != nil {
+		return err
+	}
+	return response.OK(c, res)
+}
+
 // SyncOrders pulls recent orders from TikTok Shop API
 func (h *TikTokHandler) SyncOrders(c *fiber.Ctx) error {
 	days, _ := strconv.Atoi(c.Query("days", "30"))
@@ -101,11 +112,11 @@ func (h *TikTokHandler) GetOrders(c *fiber.Ctx) error {
 
 	if c.Method() == fiber.MethodPost {
 		var body struct {
-			Page        int    `json:"page"`
-			Limit       int    `json:"limit"`
-			Search      string `json:"search"`
-			Status      string `json:"status"`
-			StockStatus string `json:"stockStatus"`
+			Page         int    `json:"page"`
+			Limit        int    `json:"limit"`
+			Search       string `json:"search"`
+			Status       string `json:"status"`
+			StockStatus  string `json:"stockStatus"`
 			Stock_Status string `json:"stock_status"`
 		}
 		if err := c.BodyParser(&body); err == nil {

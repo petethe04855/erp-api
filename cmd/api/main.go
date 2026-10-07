@@ -31,6 +31,7 @@ import (
 	domainTikTok "chawy-erp-api/internal/domain/tiktok"
 	"chawy-erp-api/internal/repository/postgres"
 	usecaseAuth "chawy-erp-api/internal/usecase/auth"
+	usecaseCRM "chawy-erp-api/internal/usecase/crm"
 	usecaseBundle "chawy-erp-api/internal/usecase/bundle"
 	usecaseCustomer "chawy-erp-api/internal/usecase/customer"
 	usecaseFinance "chawy-erp-api/internal/usecase/finance"
@@ -162,6 +163,14 @@ func main() {
 		log.Fatalf("[FATAL] Compatibility migration failed: %v", err)
 	}
 
+	// 3.2 TikTok CRM Province index migration
+	if err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_tiktok_orders_date_province_status 
+		ON tiktok_orders(date, recipient_province, status);
+	`).Error; err != nil {
+		log.Printf("[WARN] Failed to create idx_tiktok_orders_date_province_status: %v", err)
+	}
+
 	// 3.1 Seed initial admin user only in development (FULL-01)
 	seedDefaultAdmin(db, cfg.Environment)
 	seedDefaultAccounts(db)
@@ -180,6 +189,7 @@ func main() {
 	settingsRepo := postgres.NewSettingsRepository(db)
 	salesReturnRepo := postgres.NewSalesReturnRepository(db)
 	sequenceRepo := postgres.NewSequenceRepository(db)
+	crmRepo := postgres.NewCRMRepository(db)
 
 	// 5. Dependency Injection - Usecases
 	txManager := database.NewTxManager(db)
@@ -216,6 +226,7 @@ func main() {
 	shopeeIncomeUsecase := usecaseShopee.NewIncomeUsecase(shopeeIncomeRepo)
 	shopeeMatchingUsecase := usecaseShopee.NewMatchingUsecase(shopeeIncomeRepo, shopeeOrderRepo, skuCostHistoryUsecase)
 	shopeeDashboardUsecase := usecaseShopee.NewDashboardUsecase(shopeeMatchingUsecase)
+	crmUsecase := usecaseCRM.NewUsecase(crmRepo)
 
 	// 6. Dependency Injection - Handlers
 	authHdl := handler.NewAuthHandler(authUsecase)
@@ -238,6 +249,7 @@ func main() {
 	salesReturnHdl := handler.NewSalesReturnHandler(salesReturnUsecase)
 	shopeeHdl := handler.NewShopeeHandler(shopeeOrderUsecase, shopeeIncomeUsecase, shopeeMatchingUsecase, shopeeDashboardUsecase)
 	skuCostHistoryHdl := handler.NewSKUCostHistoryHandler(skuCostHistoryUsecase)
+	crmHdl := handler.NewCRMHandler(crmUsecase)
 
 	// 7. Initialize Fiber App
 	app := fiber.New(fiber.Config{
@@ -299,6 +311,7 @@ func main() {
 		SalesReturnHandler: salesReturnHdl,
 		ShopeeHandler:      shopeeHdl,
 		SKUCostHistoryHandler: skuCostHistoryHdl,
+		CRMHandler:         crmHdl,
 		JWTSecret:          cfg.JWTSecret,
 		UserStatusLoader:   authRepo,
 	})

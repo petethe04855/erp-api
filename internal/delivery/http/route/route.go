@@ -8,28 +8,29 @@ import (
 )
 
 type Config struct {
-	App               *fiber.App
-	AuthHandler       *handler.AuthHandler
-	SKUHandler        *handler.SKUHandler
-	StockHandler      *handler.StockHandler
-	BundleHandler     *handler.BundleHandler
-	FormulaHandler    *handler.FormulaHandler
-	CustomerHandler   *handler.CustomerHandler
-	OrderHandler      *handler.OrderHandler
-	PurchasingHandler *handler.PurchasingHandler
-	InvoiceHandler    *handler.InvoiceHandler
-	ReportHandler     *handler.ReportHandler
-	FinanceHandler    *handler.FinanceHandler
-	WorkspaceHandler  *handler.WorkspaceHandler
-	TikTokHandler     *handler.TikTokHandler
-	SettingsHandler   *handler.SettingsHandler
-	UploadHandler     *handler.UploadHandler
-	LiveHandler       *handler.LiveHandler
-	SalesReturnHandler *handler.SalesReturnHandler
-	ShopeeHandler     *handler.ShopeeHandler
+	App                   *fiber.App
+	AuthHandler           *handler.AuthHandler
+	SKUHandler            *handler.SKUHandler
+	StockHandler          *handler.StockHandler
+	BundleHandler         *handler.BundleHandler
+	FormulaHandler        *handler.FormulaHandler
+	CustomerHandler       *handler.CustomerHandler
+	OrderHandler          *handler.OrderHandler
+	PurchasingHandler     *handler.PurchasingHandler
+	InvoiceHandler        *handler.InvoiceHandler
+	ReportHandler         *handler.ReportHandler
+	FinanceHandler        *handler.FinanceHandler
+	WorkspaceHandler      *handler.WorkspaceHandler
+	TikTokHandler         *handler.TikTokHandler
+	SettingsHandler       *handler.SettingsHandler
+	UploadHandler         *handler.UploadHandler
+	LiveHandler           *handler.LiveHandler
+	SalesReturnHandler    *handler.SalesReturnHandler
+	ShopeeHandler         *handler.ShopeeHandler
 	SKUCostHistoryHandler *handler.SKUCostHistoryHandler
-	JWTSecret         string
-	UserStatusLoader  middleware.UserStatusLoader
+	CRMHandler            *handler.CRMHandler
+	JWTSecret             string
+	UserStatusLoader      middleware.UserStatusLoader
 }
 
 func RegisterRoutes(cfg Config) {
@@ -75,7 +76,6 @@ func RegisterRoutes(cfg Config) {
 	skus.Get("/:id/receipts", cfg.SKUHandler.GetReceiptHistory)
 	skus.Put("/:id", middleware.RequireRole("owner", "warehouse", "sales"), cfg.SKUHandler.Update)
 	skus.Delete("/:id", middleware.RequireRole("owner", "accountant"), cfg.SKUHandler.Delete)
-
 
 	// Inventory Formulas Routes (Replaces SKU-based bundles)
 	if cfg.FormulaHandler != nil {
@@ -182,11 +182,11 @@ func RegisterRoutes(cfg Config) {
 
 	// Finance Routes (Restricted to owner and accountant)
 	financeGroup := protected.Group("/finance", middleware.RequireRole("owner", "accountant"))
-	
+
 	// Journal Entries
 	financeGroup.Get("/journal-entries", cfg.FinanceHandler.ListJournalEntries)
 	financeGroup.Get("/journal-entries/:id", cfg.FinanceHandler.GetJournalEntryByID)
-	
+
 	// Expenses
 	financeGroup.Get("/expenses", cfg.FinanceHandler.ListExpenses)
 	financeGroup.Post("/expenses", cfg.FinanceHandler.CreateExpense)
@@ -314,6 +314,7 @@ func RegisterRoutes(cfg Config) {
 	tiktok.Get("/connection", cfg.TikTokHandler.GetConnection)
 	tiktok.Post("/connect", middleware.RequireRole("owner"), cfg.TikTokHandler.StartConnect)
 	tiktok.Post("/orders/sync", middleware.RequireRole("owner", "sales", "warehouse"), cfg.TikTokHandler.SyncOrders)
+	tiktok.Post("/orders/provinces/backfill", middleware.RequireRole("owner", "sales", "warehouse"), cfg.TikTokHandler.BackfillProvinces)
 	tiktok.Get("/sync-runs", cfg.TikTokHandler.GetSyncRuns)
 	tiktok.Get("/orders", cfg.TikTokHandler.GetOrders)
 	tiktok.Post("/orders/search", cfg.TikTokHandler.GetOrders)
@@ -367,5 +368,8 @@ func RegisterRoutes(cfg Config) {
 	protected.Post("/skus/:sku/cost-history", middleware.RequireRole("owner", "accountant"), cfg.SKUCostHistoryHandler.AddCostHistory)
 	protected.Get("/skus/:sku/cost-history", cfg.SKUCostHistoryHandler.GetCostHistory)
 	protected.Delete("/skus/cost-history/:id", middleware.RequireRole("owner", "accountant"), cfg.SKUCostHistoryHandler.DeleteCostHistory)
-}
 
+	// CRM Routes
+	crmGroup := protected.Group("/crm")
+	crmGroup.Get("/tiktok/provinces", middleware.RequireRole("owner", "sales"), cfg.CRMHandler.GetTiktokProvinceReport)
+}
