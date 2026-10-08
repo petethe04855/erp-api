@@ -3,10 +3,12 @@ package customer
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	domainCustomer "chawy-erp-api/internal/domain/customer"
 	appErrors "chawy-erp-api/pkg/errors"
+	"chawy-erp-api/pkg/province"
 )
 
 type CreateInput struct {
@@ -16,6 +18,7 @@ type CreateInput struct {
 	Phone         string
 	Email         string
 	Address       string
+	Province      string
 	TaxID         string
 	Logo          string
 	Channel       string
@@ -27,10 +30,26 @@ type UpdateInput struct {
 	Phone         string
 	Email         string
 	Address       string
+	Province      string
 	TaxID         string
 	Logo          string
 	Channel       string
 	Status        string
+}
+
+// resolveProvince returns the explicit province when given, otherwise it
+// derives one from the free-text address using the shared normalizer.
+// Unknown stays empty so the API omits garbage instead of storing
+// "ไม่ทราบจังหวัด".
+func resolveProvince(explicit, address string) string {
+	if p := strings.TrimSpace(explicit); p != "" {
+		return p
+	}
+	p := province.NormalizeProvince(address, "")
+	if p == province.UnknownProvince {
+		return ""
+	}
+	return p
 }
 
 type Usecase interface {
@@ -62,6 +81,7 @@ func (u *customerUsecase) Create(ctx context.Context, in CreateInput) (*domainCu
 		Phone:         in.Phone,
 		Email:         in.Email,
 		Address:       in.Address,
+		Province:      resolveProvince(in.Province, in.Address),
 		TaxID:         in.TaxID,
 		Logo:          in.Logo,
 		Channel:       in.Channel,
@@ -118,6 +138,12 @@ func (u *customerUsecase) Update(ctx context.Context, id uint, in UpdateInput) (
 	}
 	if in.Address != "" {
 		c.Address = in.Address
+	}
+	if in.Province != "" {
+		c.Province = resolveProvince(in.Province, "")
+	} else if in.Address != "" {
+		// Address changed without an explicit province: re-derive it.
+		c.Province = resolveProvince("", in.Address)
 	}
 	if in.TaxID != "" {
 		c.TaxID = in.TaxID

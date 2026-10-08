@@ -14,6 +14,7 @@ type CreateCustomerRequest struct {
 	Phone            string `json:"phone"`
 	Email            string `json:"email"`
 	Address          string `json:"address"`
+	Province         string `json:"province"`
 	TaxID            string `json:"tax_id"`
 	TaxIDAlt         string `json:"taxId"`
 	Logo             string `json:"logo"`
@@ -27,6 +28,7 @@ type UpdateCustomerRequest struct {
 	Phone            string `json:"phone"`
 	Email            string `json:"email"`
 	Address          string `json:"address"`
+	Province         string `json:"province"`
 	TaxID            string `json:"tax_id"`
 	TaxIDAlt         string `json:"taxId"`
 	Logo             string `json:"logo"`
@@ -45,6 +47,7 @@ type CustomerResponse struct {
 	Phone         string `json:"phone"`
 	Email         string `json:"email"`
 	Address       string `json:"address"`
+	Province      string `json:"province"`
 	TaxID         string `json:"taxId"`
 	Logo          string `json:"logo"`
 	Channel       string `json:"channel"`
@@ -63,6 +66,7 @@ func NewCustomerResponse(c *domainCustomer.Customer) CustomerResponse {
 		Phone:         c.Phone,
 		Email:         c.Email,
 		Address:       c.Address,
+		Province:      c.Province,
 		TaxID:         c.TaxID,
 		Logo:          c.Logo,
 		Channel:       c.Channel,
