@@ -10,13 +10,14 @@ import (
 )
 
 var (
-	ErrInvalidDateFormat = errors.New("invalid date format, must be YYYY-MM-DD")
+	ErrInvalidDateFormat   = errors.New("invalid date format, must be YYYY-MM-DD")
 	ErrDateFromAfterDateTo = errors.New("dateFrom cannot be after dateTo")
 	ErrDateRangeExceeded   = errors.New("date range cannot exceed 366 days")
 )
 
 type Usecase interface {
 	GetTiktokProvinceReport(ctx context.Context, query crm.ProvinceQuery) (*crm.TiktokProvinceReport, error)
+	SearchProvinceReport(ctx context.Context, req crm.ProvinceSearchRequest) (*crm.TiktokProvinceReport, error)
 }
 
 type crmUsecase struct {
@@ -74,4 +75,31 @@ func (u *crmUsecase) GetTiktokProvinceReport(ctx context.Context, query crm.Prov
 	}
 
 	return u.crmRepo.GetTiktokProvinceReport(ctx, validatedQuery)
+}
+
+func (u *crmUsecase) SearchProvinceReport(ctx context.Context, req crm.ProvinceSearchRequest) (*crm.TiktokProvinceReport, error) {
+	province := ""
+	if len(req.Province) > 0 {
+		province = req.Province[0]
+	}
+
+	channel := strings.ToLower(strings.TrimSpace(req.Channel))
+	if channel == "" {
+		channel = "all"
+	}
+
+	status := strings.ToLower(strings.TrimSpace(req.Status))
+	if status == "" {
+		status = "fulfilled"
+	}
+
+	query := crm.ProvinceQuery{
+		Channel:  channel,
+		DateFrom: req.DateFrom,
+		DateTo:   req.DateTo,
+		Status:   status,
+		Province: province,
+	}
+
+	return u.GetTiktokProvinceReport(ctx, query)
 }

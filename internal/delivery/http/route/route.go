@@ -372,4 +372,6 @@ func RegisterRoutes(cfg Config) {
 	// CRM Routes
 	crmGroup := protected.Group("/crm")
 	crmGroup.Get("/tiktok/provinces", middleware.RequireRole("owner", "sales"), cfg.CRMHandler.GetTiktokProvinceReport)
+	crmGroup.Post("/tiktok/provinces/search", middleware.RequireRole("owner", "sales"), cfg.CRMHandler.SearchProvinceReport)
+
 }

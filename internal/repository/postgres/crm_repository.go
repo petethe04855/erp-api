@@ -42,6 +42,7 @@ func (r *CRMRepository) GetTiktokProvinceReport(ctx context.Context, query crm.P
 	}
 
 	var results []provinceQueryResult
+
 	if channel == "all" || channel == "tiktok" {
 		rows, err := r.queryTiktok(ctx, query)
 		if err != nil {
@@ -183,7 +184,9 @@ func (r *CRMRepository) queryShopee(ctx context.Context, query crm.ProvinceQuery
 	switch strings.ToLower(strings.TrimSpace(query.Status)) {
 	case "cancelled":
 		db = db.Where("shopee_orders.status IN (?)", []string{"CANCELLED", "RETURNED", "REFUNDED"})
-	default: // fulfilled/all — Shopee has no UNPAID state
+	case "all":
+		// all statuses
+	default: // fulfilled
 		db = db.Where("shopee_orders.status NOT IN (?)", []string{"CANCELLED", "RETURNED", "REFUNDED"})
 	}
 
@@ -248,4 +251,31 @@ func mergeProvinceResults(rows []provinceQueryResult) []provinceQueryResult {
 func roundFloat(val float64, precision int) float64 {
 	ratio := math.Pow(10, float64(precision))
 	return math.Round(val*ratio) / ratio
+}
+
+func (r *CRMRepository) SearchProvinceReport(ctx context.Context, req crm.ProvinceSearchRequest) (*crm.TiktokProvinceReport, error) {
+	province := ""
+	if len(req.Province) > 0 {
+		province = req.Province[0] // ดึงจังหวัดแรกที่ส่งมา
+	}
+
+	channel := strings.ToLower(strings.TrimSpace(req.Channel))
+	if channel == "" {
+		channel = "all"
+	}
+
+	status := strings.ToLower(strings.TrimSpace(req.Status))
+	if status == "" {
+		status = "fulfilled"
+	}
+
+	query := crm.ProvinceQuery{
+		Channel:  channel,
+		DateFrom: req.DateFrom,
+		DateTo:   req.DateTo,
+		Status:   status,
+		Province: province,
+	}
+
+	return r.GetTiktokProvinceReport(ctx, query)
 }

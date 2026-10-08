@@ -33,3 +33,11 @@ type ProvinceQuery struct {
 	Province string // Optional specific province name
 	Channel  string // "all" (default), "tiktok", "shopee"
 }
+
+type ProvinceSearchRequest struct {
+	Province []string `json:"province"`
+	Channel  string   `json:"channel"`
+	Status   string   `json:"status"`
+	DateFrom string   `json:"dateFrom"`
+	DateTo   string   `json:"dateTo"`
+}

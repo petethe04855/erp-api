@@ -22,6 +22,10 @@ func (m *mockCRMRepo) GetTiktokProvinceReport(ctx context.Context, query crm.Pro
 	return m.report, m.err
 }
 
+func (m *mockCRMRepo) SearchProvinceReport(ctx context.Context, query crm.ProvinceSearchRequest) (*crm.TiktokProvinceReport, error) {
+	return m.report, m.err
+}
+
 func TestGetTiktokProvinceReport_Validation(t *testing.T) {
 	mockRepo := &mockCRMRepo{
 		report: &crm.TiktokProvinceReport{},

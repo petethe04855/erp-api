@@ -40,3 +40,17 @@ func (h *CRMHandler) GetTiktokProvinceReport(c *fiber.Ctx) error {
 
 	return response.OK(c, report)
 }
+
+func (h *CRMHandler) SearchProvinceReport(c *fiber.Ctx) error {
+	var req crm.ProvinceSearchRequest
+	if err := c.BodyParser(&req); err != nil {
+		return response.BadRequest(c, "Invalid request body")
+	}
+
+	report, err := h.crmUsecase.SearchProvinceReport(c.Context(), req)
+	if err != nil {
+		return response.InternalServerError(c, err.Error())
+	}
+
+	return response.OK(c, report)
+}
