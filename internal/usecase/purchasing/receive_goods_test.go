@@ -44,6 +44,9 @@ func (f *fakeSKURepo) GetReceiptStatsBatch(ctx context.Context, skuIDs []uint) (
 func (f *fakeSKURepo) GetReceiptHistory(ctx context.Context, query domainSKU.SKUReceiptQuery) ([]domainSKU.SKUReceiptItem, int64, error) {
 	return nil, 0, nil
 }
+func (f *fakeSKURepo) FindAccessoriesBySKU(ctx context.Context, skuCode string) ([]domainSKU.SKUAccessory, error) {
+	return nil, nil
+}
 
 
 type fakePurchRepo struct {

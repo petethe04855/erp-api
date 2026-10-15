@@ -649,7 +649,7 @@ func (u *tiktokUsecase) deductStockForOrder(ctx context.Context, orderID string)
 			})
 		}
 
-		resolver := usecaseStock.NewDeductionResolver(u.db, u.formulaRepo, u.skuRepo)
+		resolver := usecaseStock.NewDeductionResolver(u.formulaRepo, u.skuRepo)
 		resolvedItems, err := resolver.ResolveDeductionItems(txCtx, itemsToResolve, "TIKTOK", order.ID)
 		if err != nil {
 			return err

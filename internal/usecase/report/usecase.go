@@ -5,15 +5,7 @@ import (
 	"sort"
 	"time"
 
-	domainCustomer "chawy-erp-api/internal/domain/customer"
-	domainInvoice "chawy-erp-api/internal/domain/invoice"
-	domainOrder "chawy-erp-api/internal/domain/order"
-	domainPurchasing "chawy-erp-api/internal/domain/purchasing"
 	domainReport "chawy-erp-api/internal/domain/report"
-	domainSKU "chawy-erp-api/internal/domain/sku"
-	domainTikTok "chawy-erp-api/internal/domain/tiktok"
-
-	"gorm.io/gorm"
 )
 
 type Usecase interface {
@@ -24,85 +16,34 @@ type Usecase interface {
 }
 
 type reportUsecase struct {
-	db *gorm.DB
+	repo domainReport.Repository
 }
 
-func NewReportUsecase(db *gorm.DB) Usecase {
-	return &reportUsecase{db: db}
+func NewReportUsecase(repo domainReport.Repository) Usecase {
+	return &reportUsecase{repo: repo}
 }
 
 func (u *reportUsecase) GetDashboardSummary(ctx context.Context) (*domainReport.DashboardSummary, error) {
-	var summary domainReport.DashboardSummary
-
-	// Orders summary
-	var totalOrders, pendingOrders, shippedOrders int64
-	var totalSales float64
-
-	u.db.WithContext(ctx).Model(&domainOrder.Order{}).Count(&totalOrders)
-	u.db.WithContext(ctx).Model(&domainOrder.Order{}).Where("status = ?", domainOrder.StatusPending).Count(&pendingOrders)
-	u.db.WithContext(ctx).Model(&domainOrder.Order{}).Where("status = ?", domainOrder.StatusShipped).Count(&shippedOrders)
-	u.db.WithContext(ctx).Model(&domainOrder.Order{}).Where("status = ?", domainOrder.StatusShipped).Select("COALESCE(SUM(total_amount), 0)").Scan(&totalSales)
-
-	summary.TotalOrders = totalOrders
-	summary.PendingOrders = pendingOrders
-	summary.ShippedOrders = shippedOrders
-	summary.TotalSales = totalSales
-
-	// SKUs, Suppliers, Customers
-	u.db.WithContext(ctx).Model(&domainSKU.SKU{}).Count(&summary.TotalSKUs)
-	u.db.WithContext(ctx).Model(&domainPurchasing.Supplier{}).Count(&summary.TotalSuppliers)
-	u.db.WithContext(ctx).Model(&domainCustomer.Customer{}).Count(&summary.TotalCustomers)
-
-	// Invoices
-	u.db.WithContext(ctx).Model(&domainInvoice.Invoice{}).Where("status = ?", domainInvoice.StatusUnpaid).Count(&summary.TotalUnpaidInvs)
-	u.db.WithContext(ctx).Model(&domainInvoice.Invoice{}).Where("status = ?", domainInvoice.StatusUnpaid).Select("COALESCE(SUM(amount), 0)").Scan(&summary.UnpaidInvsAmount)
-
-	return &summary, nil
+	return u.repo.GetDashboardSummary(ctx)
 }
 
 func (u *reportUsecase) GetRevenueReport(ctx context.Context, month string) (*domainReport.RevenueReport, error) {
-	// Manual revenue is recognized only from fully paid ERP invoices. An
-	// invoice without an order is treated as Manual; linked invoices are Manual
-	// only when the source order is direct/manual. TikTok revenue comes directly
-	// from the synced tiktok_orders table and is recognized only after TikTok
-	// reports COMPLETED. Shopee is intentionally excluded for now.
-	type manualRevenueRecord struct {
-		InvoiceNo    string
-		CustomerName string
-		Amount       float64
-		PaidAt       *time.Time
-		CreatedAt    time.Time
-	}
-
-	var manualInvoices []manualRevenueRecord
-	manualQuery := u.db.WithContext(ctx).
-		Table("invoices AS invoices").
-		Select(`invoices.invoice_no,
-			invoices.customer_name,
-			invoices.amount,
-			invoices.paid_at,
-			invoices.created_at`).
-		Joins("LEFT JOIN orders AS orders ON orders.id = invoices.order_id").
-		Where("invoices.status = ?", domainInvoice.StatusPaid).
-		Where("invoices.order_id IS NULL OR LOWER(TRIM(COALESCE(orders.channel, ''))) IN ?", []string{"", "direct", "manual"})
-
-	var tiktokOrders []domainTikTok.TiktokOrder
-	tiktokQuery := u.db.WithContext(ctx).Model(&domainTikTok.TiktokOrder{}).
-		Where("UPPER(TRIM(status)) IN ?", []string{"COMPLETED", "DELIVERED", "IN_TRANSIT", "AWAITING_SHIPMENT"})
-
+	var startTime, endTime string
 	if month != "" {
-		startTime := month + "-01"
-		if parsed, err := time.Parse("2006-01-02", startTime); err == nil {
-			endTime := parsed.AddDate(0, 1, 0).Format("2006-01-02")
-			manualQuery = manualQuery.Where("COALESCE(invoices.paid_at, invoices.created_at) >= ? AND COALESCE(invoices.paid_at, invoices.created_at) < ?", startTime, endTime)
-			tiktokQuery = tiktokQuery.Where("date >= ? AND date < ?", startTime, endTime)
+		st := month + "-01"
+		if parsed, err := time.Parse("2006-01-02", st); err == nil {
+			startTime = st
+			endTime = parsed.AddDate(0, 1, 0).Format("2006-01-02")
 		}
 	}
 
-	if err := manualQuery.Order("COALESCE(invoices.paid_at, invoices.created_at) DESC, invoices.id DESC").Scan(&manualInvoices).Error; err != nil {
+	manualInvoices, err := u.repo.GetPaidManualInvoices(ctx, startTime, endTime)
+	if err != nil {
 		return nil, err
 	}
-	if err := tiktokQuery.Order("date DESC, id DESC").Find(&tiktokOrders).Error; err != nil {
+
+	tiktokOrders, err := u.repo.GetCompletedTikTokOrders(ctx, startTime, endTime)
+	if err != nil {
 		return nil, err
 	}
 
@@ -161,22 +102,19 @@ func (u *reportUsecase) GetFinancialSummary(ctx context.Context, month string) (
 
 	revenue := revReport.Total
 
-	// API-27: Calculate actual COGS by summing (order_items.quantity * skus.cost_price)
-	var cogs float64
-	cogsQuery := u.db.WithContext(ctx).Table("order_items").
-		Select("COALESCE(SUM(order_items.quantity * skus.cost_price), 0)").
-		Joins("JOIN orders ON orders.id = order_items.order_id").
-		Joins("JOIN skus ON skus.sku = order_items.sku").
-		Where("orders.status IN ?", []string{string(domainOrder.StatusShipped), "COMPLETED"})
-
+	var startTime, endTime string
 	if month != "" {
-		startTime := month + "-01"
-		if parsed, err := time.Parse("2006-01-02", startTime); err == nil {
-			endTime := parsed.AddDate(0, 1, 0).Format("2006-01-02")
-			cogsQuery = cogsQuery.Where("orders.created_at >= ? AND orders.created_at < ?", startTime, endTime)
+		st := month + "-01"
+		if parsed, err := time.Parse("2006-01-02", st); err == nil {
+			startTime = st
+			endTime = parsed.AddDate(0, 1, 0).Format("2006-01-02")
 		}
 	}
-	_ = cogsQuery.Scan(&cogs).Error
+
+	cogs, err := u.repo.GetCOGS(ctx, startTime, endTime)
+	if err != nil {
+		return nil, err
+	}
 
 	grossProfit := revenue - cogs
 	operatingExpenses := 0.0
@@ -203,21 +141,7 @@ func (u *reportUsecase) GetFinancialSummary(ctx context.Context, month string) (
 }
 
 func (u *reportUsecase) GetInventoryValuation(ctx context.Context) (*domainReport.InventoryValuation, error) {
-	type stockSKUJoin struct {
-		SKUCode   string
-		SKUName   string
-		Quantity  int
-		CostPrice float64
-		Category  string
-	}
-
-	var results []stockSKUJoin
-	err := u.db.WithContext(ctx).Table("stocks").
-		Select("skus.sku as sku_code, skus.name as sku_name, stocks.quantity, skus.cost_price, skus.category").
-		Joins("JOIN skus ON skus.id = stocks.sku_id").
-		Where("stocks.quantity > 0").
-		Scan(&results).Error
-
+	results, err := u.repo.GetStockValuationItems(ctx)
 	if err != nil {
 		return nil, err
 	}

@@ -8,7 +8,6 @@ import (
 	domainFormula "chawy-erp-api/internal/domain/formula"
 	domainSKU "chawy-erp-api/internal/domain/sku"
 	appErrors "chawy-erp-api/pkg/errors"
-	"gorm.io/gorm"
 )
 
 type ItemToResolve struct {
@@ -36,18 +35,15 @@ type DeductionResolver interface {
 }
 
 type deductionResolver struct {
-	db          *gorm.DB
 	formulaRepo domainFormula.Repository
 	skuRepo     domainSKU.Repository
 }
 
 func NewDeductionResolver(
-	db *gorm.DB,
 	formulaRepo domainFormula.Repository,
 	skuRepo domainSKU.Repository,
 ) DeductionResolver {
 	return &deductionResolver{
-		db:          db,
 		formulaRepo: formulaRepo,
 		skuRepo:     skuRepo,
 	}
@@ -111,10 +107,9 @@ func (r *deductionResolver) ResolveDeductionItems(
 				}
 			}
 
-			// Explode Accessories if DB available
-			if r.db != nil {
-				var accessories []domainSKU.SKUAccessory
-				if err := r.db.WithContext(ctx).Where("UPPER(sku) = ?", skuCode).Find(&accessories).Error; err == nil && len(accessories) > 0 {
+			// Explode Accessories if available
+			if r.skuRepo != nil {
+				if accessories, err := r.skuRepo.FindAccessoriesBySKU(ctx, skuCode); err == nil && len(accessories) > 0 {
 					for _, acc := range accessories {
 						accCode := strings.ToUpper(strings.TrimSpace(acc.AccessorySKU))
 						accQty := acc.Quantity * item.Quantity

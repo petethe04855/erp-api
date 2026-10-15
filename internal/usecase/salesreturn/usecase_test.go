@@ -151,6 +151,9 @@ func (m *MockSKURepository) GetReceiptStatsBatch(ctx context.Context, skuIDs []u
 func (m *MockSKURepository) GetReceiptHistory(ctx context.Context, query domainSKU.SKUReceiptQuery) ([]domainSKU.SKUReceiptItem, int64, error) {
 	return nil, 0, nil
 }
+func (m *MockSKURepository) FindAccessoriesBySKU(ctx context.Context, skuCode string) ([]domainSKU.SKUAccessory, error) {
+	return nil, nil
+}
 
 // MockStockRepository
 type MockStockRepository struct {

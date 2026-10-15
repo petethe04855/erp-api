@@ -54,6 +54,7 @@ type orderUsecase struct {
 	bundleRepo  domainBundle.Repository
 	formulaRepo domainFormula.Repository
 	stockRepo   domainStock.Repository
+	financeRepo domainFinance.Repository
 	txMgr       database.TxManager
 	seqUsecase  usecaseSeq.Usecase
 }
@@ -65,6 +66,7 @@ func NewOrderUsecase(
 	bundleRepo domainBundle.Repository,
 	formulaRepo domainFormula.Repository,
 	stockRepo domainStock.Repository,
+	financeRepo domainFinance.Repository,
 	seqUsecase ...usecaseSeq.Usecase,
 ) Usecase {
 	var txMgr database.TxManager
@@ -82,6 +84,7 @@ func NewOrderUsecase(
 		bundleRepo:  bundleRepo,
 		formulaRepo: formulaRepo,
 		stockRepo:   stockRepo,
+		financeRepo: financeRepo,
 		txMgr:       txMgr,
 		seqUsecase:  su,
 	}
@@ -111,6 +114,10 @@ func NewOrderUsecaseWithTx(
 		txMgr:       txMgr,
 		seqUsecase:  su,
 	}
+}
+
+func (u *orderUsecase) SetFinanceRepo(repo domainFinance.Repository) {
+	u.financeRepo = repo
 }
 
 
@@ -276,7 +283,7 @@ func (u *orderUsecase) ShipOrder(ctx context.Context, id uint, warehouseID uint)
 		totalCOGS := 0.0
 
 		// Step 1: Resolve all physical SKU quantities to deduct across all order lines using shared resolver
-		resolver := usecaseStock.NewDeductionResolver(u.db, u.formulaRepo, u.skuRepo)
+		resolver := usecaseStock.NewDeductionResolver(u.formulaRepo, u.skuRepo)
 		itemsToResolve := make([]usecaseStock.ItemToResolve, len(orderItem.Items))
 		for i, line := range orderItem.Items {
 			itemsToResolve[i] = usecaseStock.ItemToResolve{
@@ -445,29 +452,31 @@ func (u *orderUsecase) ShipOrder(ctx context.Context, id uint, warehouseID uint)
 		}
 
 		// Auto-Post Journal Entry for Cost of Goods Sold (Dr. 5000 COGS / Cr. 1300 Inventory)
-		// when database transaction is available and total COGS is positive.
-		if u.db != nil && totalCOGS > 0 {
-			var accCOGS domainFinance.Account
-			var accInventory domainFinance.Account
-			dbTx := u.db.WithContext(txCtx)
+		// when finance repo is available and total COGS is positive.
+		if u.financeRepo != nil && totalCOGS > 0 {
+			accCOGS, _ := u.financeRepo.GetAccountByCode(txCtx, "5000")
+			accInventory, _ := u.financeRepo.GetAccountByCode(txCtx, "1300")
 
-			_ = dbTx.Where("code = ?", "5000").First(&accCOGS).Error
-			_ = dbTx.Where("code = ?", "1300").First(&accInventory).Error
-
-			cogsAccountID := accCOGS.ID
-			cogsAccountName := accCOGS.Name
-			if cogsAccountName == "" {
-				cogsAccountName = "ต้นทุนขาย (Cost of Goods Sold)"
+			var cogsAccountID uint
+			cogsAccountName := "ต้นทุนขาย (Cost of Goods Sold)"
+			if accCOGS != nil {
+				cogsAccountID = accCOGS.ID
+				if accCOGS.Name != "" {
+					cogsAccountName = accCOGS.Name
+				}
 			}
 
-			invAccountID := accInventory.ID
-			invAccountName := accInventory.Name
-			if invAccountName == "" {
-				invAccountName = "สินค้าคงเหลือ (Inventory)"
+			var invAccountID uint
+			invAccountName := "สินค้าคงเหลือ (Inventory)"
+			if accInventory != nil {
+				invAccountID = accInventory.ID
+				if accInventory.Name != "" {
+					invAccountName = accInventory.Name
+				}
 			}
 
 			jeCode := fmt.Sprintf("JE-%s-%04d", time.Now().Format("2006/01/02"), time.Now().UnixNano()%10000)
-			journal := domainFinance.JournalEntry{
+			journal := &domainFinance.JournalEntry{
 				Code:        jeCode,
 				Date:        time.Now().Format("2006-01-02"),
 				SourceType:  "sales_delivery",
@@ -497,11 +506,9 @@ func (u *orderUsecase) ShipOrder(ctx context.Context, id uint, warehouseID uint)
 				},
 			}
 
-			var existingCount int64
-			if err := dbTx.Model(&domainFinance.JournalEntry{}).
-				Where("source_type = ? AND source_id = ?", "sales_delivery", orderItem.ID).
-				Count(&existingCount).Error; err == nil && existingCount == 0 {
-				_ = dbTx.Create(&journal).Error
+			existing, _ := u.financeRepo.FindJournalEntryBySource(txCtx, "sales_delivery", orderItem.ID)
+			if existing == nil {
+				_ = u.financeRepo.CreateJournalEntry(txCtx, journal)
 			}
 		}
 

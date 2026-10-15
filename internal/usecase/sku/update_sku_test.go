@@ -49,6 +49,10 @@ func (f *fakeSKURepo) GetReceiptHistory(ctx context.Context, query domainSKU.SKU
 	return nil, 0, nil
 }
 
+func (f *fakeSKURepo) FindAccessoriesBySKU(ctx context.Context, skuCode string) ([]domainSKU.SKUAccessory, error) {
+	return nil, nil
+}
+
 
 // FULL-11: updating only the name must keep cost price, bundle flag and image.
 func TestUpdate_PartialUpdatePreservesFields(t *testing.T) {

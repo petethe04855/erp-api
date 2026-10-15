@@ -43,7 +43,7 @@ func (h *PurchasingHandler) CreateSupplier(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.Created(c, result, "Supplier created successfully")
+	return response.Created(c, dto.NewSupplierResponse(result), "Supplier created successfully")
 }
 
 func (h *PurchasingHandler) GetSupplierByID(c *fiber.Ctx) error {
@@ -57,7 +57,7 @@ func (h *PurchasingHandler) GetSupplierByID(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.OK(c, result)
+	return response.OK(c, dto.NewSupplierResponse(result))
 }
 
 func (h *PurchasingHandler) ListSuppliers(c *fiber.Ctx) error {
@@ -99,7 +99,7 @@ func (h *PurchasingHandler) ListSuppliers(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.List(c, items, page, limit, total)
+	return response.List(c, dto.NewSupplierResponses(items), page, limit, total)
 }
 
 // Purchase Order
@@ -131,7 +131,7 @@ func (h *PurchasingHandler) CreatePO(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.Created(c, result, "Purchase order created successfully")
+	return response.Created(c, dto.NewPurchaseOrderResponse(result), "Purchase order created successfully")
 }
 
 func (h *PurchasingHandler) GetPOByID(c *fiber.Ctx) error {
@@ -145,7 +145,7 @@ func (h *PurchasingHandler) GetPOByID(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.OK(c, result)
+	return response.OK(c, dto.NewPurchaseOrderResponse(result))
 }
 
 func (h *PurchasingHandler) ListPOs(c *fiber.Ctx) error {
@@ -196,7 +196,7 @@ func (h *PurchasingHandler) ListPOs(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.List(c, items, page, limit, total)
+	return response.List(c, dto.NewPurchaseOrderResponses(items), page, limit, total)
 }
 
 func (h *PurchasingHandler) ApprovePO(c *fiber.Ctx) error {
@@ -210,7 +210,7 @@ func (h *PurchasingHandler) ApprovePO(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.OK(c, result, "Purchase order approved successfully")
+	return response.OK(c, dto.NewPurchaseOrderResponse(result), "Purchase order approved successfully")
 }
 
 func (h *PurchasingHandler) ReceiveGoods(c *fiber.Ctx) error {
@@ -245,5 +245,5 @@ func (h *PurchasingHandler) ReceiveGoods(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.OK(c, result, "Goods received and stock updated successfully")
+	return response.OK(c, dto.NewPurchaseOrderResponse(result), "Goods received and stock updated successfully")
 }

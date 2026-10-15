@@ -131,7 +131,7 @@ func (m *smtpMailer) SendUserCredentials(recipientEmail, recipientName, generate
 		m.from, recipientEmail, subject)
 
 	msg := []byte(headerStr + htmlBody)
-	addr := fmt.Sprintf("%s:%s", m.host, m.port)
+	addr := net.JoinHostPort(m.host, m.port)
 
 	// Send via SMTP
 	var auth smtp.Auth

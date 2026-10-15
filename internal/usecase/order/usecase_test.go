@@ -140,6 +140,10 @@ func (m *mockSKURepo) GetReceiptHistory(ctx context.Context, query domainSKU.SKU
 	return nil, 0, nil
 }
 
+func (m *mockSKURepo) FindAccessoriesBySKU(ctx context.Context, skuCode string) ([]domainSKU.SKUAccessory, error) {
+	return nil, nil
+}
+
 
 type mockBundleRepo struct {
 	bundles map[string][]domainBundle.BundleItem
