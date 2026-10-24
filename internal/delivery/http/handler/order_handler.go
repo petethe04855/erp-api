@@ -53,7 +53,7 @@ func (h *OrderHandler) Create(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.Created(c, result, "Order created successfully")
+	return response.Created(c, dto.NewOrderResponse(result), "Order created successfully")
 }
 
 func (h *OrderHandler) GetByID(c *fiber.Ctx) error {
@@ -67,7 +67,7 @@ func (h *OrderHandler) GetByID(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.OK(c, result)
+	return response.OK(c, dto.NewOrderResponse(result))
 }
 
 func (h *OrderHandler) List(c *fiber.Ctx) error {
@@ -121,7 +121,7 @@ func (h *OrderHandler) List(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.List(c, items, page, limit, total)
+	return response.List(c, dto.NewOrderResponses(items), page, limit, total)
 }
 
 func (h *OrderHandler) Ship(c *fiber.Ctx) error {
@@ -141,7 +141,7 @@ func (h *OrderHandler) Ship(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.OK(c, result, "Order shipped and inventory deducted successfully")
+	return response.OK(c, dto.NewOrderResponse(result), "Order shipped and inventory deducted successfully")
 }
 
 func (h *OrderHandler) Cancel(c *fiber.Ctx) error {
@@ -155,5 +155,5 @@ func (h *OrderHandler) Cancel(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.OK(c, result, "Order cancelled successfully")
+	return response.OK(c, dto.NewOrderResponse(result), "Order cancelled successfully")
 }

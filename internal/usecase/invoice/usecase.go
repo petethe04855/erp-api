@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	domainCustomer "chawy-erp-api/internal/domain/customer"
 	domainInvoice "chawy-erp-api/internal/domain/invoice"
 	domainOrder "chawy-erp-api/internal/domain/order"
 	domainSeq "chawy-erp-api/internal/domain/sequence"
@@ -28,13 +29,15 @@ type Usecase interface {
 	GetByID(ctx context.Context, id uint) (*domainInvoice.Invoice, error)
 	List(ctx context.Context, q domainInvoice.Query) ([]domainInvoice.Invoice, int64, error)
 	MarkAsPaid(ctx context.Context, in MarkPaidInput) (*domainInvoice.Invoice, error)
+	GetInvoiceDetailForPDF(ctx context.Context, id uint) (*domainInvoice.Invoice, *domainOrder.Order, *domainCustomer.Customer, error)
 }
 
 type invoiceUsecase struct {
-	invRepo    domainInvoice.Repository
-	orderRepo  domainOrder.Repository
-	txMgr      database.TxManager
-	seqUsecase usecaseSeq.Usecase
+	invRepo      domainInvoice.Repository
+	orderRepo    domainOrder.Repository
+	customerRepo domainCustomer.Repository
+	txMgr        database.TxManager
+	seqUsecase   usecaseSeq.Usecase
 }
 
 func NewInvoiceUsecase(invRepo domainInvoice.Repository, orderRepo domainOrder.Repository, seqUsecase ...usecaseSeq.Usecase) Usecase {
@@ -62,6 +65,45 @@ func NewInvoiceUsecaseWithTx(invRepo domainInvoice.Repository, orderRepo domainO
 		txMgr:      txMgr,
 		seqUsecase: su,
 	}
+}
+
+func NewInvoiceUsecaseWithCustomer(invRepo domainInvoice.Repository, orderRepo domainOrder.Repository, customerRepo domainCustomer.Repository, txMgr database.TxManager, seqUsecase ...usecaseSeq.Usecase) Usecase {
+	var su usecaseSeq.Usecase
+	if len(seqUsecase) > 0 {
+		su = seqUsecase[0]
+	}
+	return &invoiceUsecase{
+		invRepo:      invRepo,
+		orderRepo:    orderRepo,
+		customerRepo: customerRepo,
+		txMgr:        txMgr,
+		seqUsecase:   su,
+	}
+}
+
+func (u *invoiceUsecase) SetCustomerRepo(repo domainCustomer.Repository) {
+	u.customerRepo = repo
+}
+
+func (u *invoiceUsecase) GetInvoiceDetailForPDF(ctx context.Context, id uint) (*domainInvoice.Invoice, *domainOrder.Order, *domainCustomer.Customer, error) {
+	inv, err := u.invRepo.FindByID(ctx, id)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if inv == nil {
+		return nil, nil, nil, appErrors.ErrNotFound
+	}
+
+	var orderItem *domainOrder.Order
+	var cust *domainCustomer.Customer
+	if inv.OrderID != nil && *inv.OrderID > 0 {
+		orderItem, _ = u.orderRepo.FindByID(ctx, *inv.OrderID)
+		if orderItem != nil && orderItem.CustomerID > 0 && u.customerRepo != nil {
+			cust, _ = u.customerRepo.FindByID(ctx, orderItem.CustomerID)
+		}
+	}
+
+	return inv, orderItem, cust, nil
 }
 
 func (u *invoiceUsecase) CreateFromOrder(ctx context.Context, in CreateInvoiceFromOrderInput) (*domainInvoice.Invoice, error) {

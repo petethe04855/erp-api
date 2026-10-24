@@ -79,6 +79,9 @@ func (m *mockSKURepo) GetReceiptHistory(ctx context.Context, query domainSKU.SKU
 	args := m.Called(ctx, query)
 	return args.Get(0).([]domainSKU.SKUReceiptItem), args.Get(1).(int64), args.Error(2)
 }
+func (m *mockSKURepo) FindAccessoriesBySKU(ctx context.Context, skuCode string) ([]domainSKU.SKUAccessory, error) {
+	return nil, nil
+}
 
 func TestCostHistoryResolution(t *testing.T) {
 	ctx := context.Background()

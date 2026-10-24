@@ -316,3 +316,10 @@ func (r *SKURepository) GetReceiptHistory(ctx context.Context, q sku.SKUReceiptQ
 	return items, total, nil
 }
 
+func (r *SKURepository) FindAccessoriesBySKU(ctx context.Context, skuCode string) ([]sku.SKUAccessory, error) {
+	db := r.handle(ctx)
+	var accessories []sku.SKUAccessory
+	err := db.Where("UPPER(sku) = ?", strings.ToUpper(strings.TrimSpace(skuCode))).Find(&accessories).Error
+	return accessories, err
+}
+

@@ -6,28 +6,23 @@ import (
 	"strings"
 
 	"chawy-erp-api/internal/delivery/http/dto"
-	domainCustomer "chawy-erp-api/internal/domain/customer"
 	domainInvoice "chawy-erp-api/internal/domain/invoice"
-	domainOrder "chawy-erp-api/internal/domain/order"
 	usecaseInvoice "chawy-erp-api/internal/usecase/invoice"
 	usecaseSettings "chawy-erp-api/internal/usecase/settings"
 	"chawy-erp-api/pkg/pdf"
 	"chawy-erp-api/pkg/response"
 
 	"github.com/gofiber/fiber/v2"
-	"gorm.io/gorm"
 )
 
 type InvoiceHandler struct {
 	usecase         usecaseInvoice.Usecase
-	db              *gorm.DB
 	settingsUsecase usecaseSettings.Usecase
 }
 
-func NewInvoiceHandler(usecase usecaseInvoice.Usecase, db *gorm.DB, settingsUsecase usecaseSettings.Usecase) *InvoiceHandler {
+func NewInvoiceHandler(usecase usecaseInvoice.Usecase, settingsUsecase usecaseSettings.Usecase) *InvoiceHandler {
 	return &InvoiceHandler{
 		usecase:         usecase,
-		db:              db,
 		settingsUsecase: settingsUsecase,
 	}
 }
@@ -49,7 +44,7 @@ func (h *InvoiceHandler) Create(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.Created(c, result, "Invoice created successfully")
+	return response.Created(c, dto.NewInvoiceResponse(result), "Invoice created successfully")
 }
 
 func (h *InvoiceHandler) GetByID(c *fiber.Ctx) error {
@@ -63,7 +58,7 @@ func (h *InvoiceHandler) GetByID(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.OK(c, result)
+	return response.OK(c, dto.NewInvoiceResponse(result))
 }
 
 func (h *InvoiceHandler) List(c *fiber.Ctx) error {
@@ -110,7 +105,7 @@ func (h *InvoiceHandler) List(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.List(c, items, page, limit, total)
+	return response.List(c, dto.NewInvoiceResponses(items), page, limit, total)
 }
 
 func (h *InvoiceHandler) MarkAsPaid(c *fiber.Ctx) error {
@@ -140,7 +135,7 @@ func (h *InvoiceHandler) MarkAsPaid(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.OK(c, result, "Invoice payment processed successfully")
+	return response.OK(c, dto.NewInvoiceResponse(result), "Invoice payment processed successfully")
 }
 
 func (h *InvoiceHandler) ExportPDF(c *fiber.Ctx) error {
@@ -149,8 +144,8 @@ func (h *InvoiceHandler) ExportPDF(c *fiber.Ctx) error {
 		return response.BadRequest(c, "Invalid invoice ID")
 	}
 
-	var inv domainInvoice.Invoice
-	if err := h.db.WithContext(c.Context()).First(&inv, id).Error; err != nil {
+	inv, order, cust, err := h.usecase.GetInvoiceDetailForPDF(c.Context(), uint(id))
+	if err != nil || inv == nil {
 		return response.NotFound(c, "Invoice not found")
 	}
 
@@ -193,27 +188,21 @@ func (h *InvoiceHandler) ExportPDF(c *fiber.Ctx) error {
 	var customerTaxID string
 	var pdfLines []pdf.InvoicePDFLine
 
-	if inv.OrderID != nil && *inv.OrderID > 0 {
-		var order domainOrder.Order
-		if err := h.db.WithContext(c.Context()).Preload("Items").First(&order, *inv.OrderID).Error; err == nil {
-			for i, it := range order.Items {
-				pdfLines = append(pdfLines, pdf.InvoicePDFLine{
-					Index:     i + 1,
-					Name:      it.Name,
-					SKU:       it.SKU,
-					Quantity:  it.Quantity,
-					UnitPrice: it.Price,
-					LineTotal: it.Subtotal,
-				})
-			}
-			if order.CustomerID > 0 {
-				var cust domainCustomer.Customer
-				if err := h.db.WithContext(c.Context()).First(&cust, order.CustomerID).Error; err == nil {
-					customerAddress = cust.Address
-					customerTaxID = cust.TaxID
-				}
-			}
+	if order != nil {
+		for i, it := range order.Items {
+			pdfLines = append(pdfLines, pdf.InvoicePDFLine{
+				Index:     i + 1,
+				Name:      it.Name,
+				SKU:       it.SKU,
+				Quantity:  it.Quantity,
+				UnitPrice: it.Price,
+				LineTotal: it.Subtotal,
+			})
 		}
+	}
+	if cust != nil {
+		customerAddress = cust.Address
+		customerTaxID = cust.TaxID
 	}
 
 	// Fallback if no order items found

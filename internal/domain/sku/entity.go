@@ -73,5 +73,8 @@ type Repository interface {
 	// Receipt stats & history
 	GetReceiptStatsBatch(ctx context.Context, skuIDs []uint) (map[uint]SKUBatchReceiptStat, error)
 	GetReceiptHistory(ctx context.Context, query SKUReceiptQuery) ([]SKUReceiptItem, int64, error)
+
+	// Accessories
+	FindAccessoriesBySKU(ctx context.Context, skuCode string) ([]SKUAccessory, error)
 }
 

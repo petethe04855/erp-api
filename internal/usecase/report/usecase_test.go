@@ -8,6 +8,7 @@ import (
 	domainInvoice "chawy-erp-api/internal/domain/invoice"
 	domainOrder "chawy-erp-api/internal/domain/order"
 	domainTikTok "chawy-erp-api/internal/domain/tiktok"
+	"chawy-erp-api/internal/repository/postgres"
 	usecaseReport "chawy-erp-api/internal/usecase/report"
 
 	"github.com/glebarez/sqlite"
@@ -32,7 +33,8 @@ func setupTestDB(t *testing.T) *gorm.DB {
 
 func TestGetRevenueReport_TikTokCompletedAndManualPaid(t *testing.T) {
 	db := setupTestDB(t)
-	uc := usecaseReport.NewReportUsecase(db)
+	repo := postgres.NewReportRepository(db)
+	uc := usecaseReport.NewReportUsecase(repo)
 	ctx := context.Background()
 
 	// 1. Setup Orders

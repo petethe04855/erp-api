@@ -99,12 +99,15 @@ func (m *mockSKURepo) GetReceiptStatsBatch(ctx context.Context, skuIDs []uint) (
 func (m *mockSKURepo) GetReceiptHistory(ctx context.Context, query domainSKU.SKUReceiptQuery) ([]domainSKU.SKUReceiptItem, int64, error) {
 	return nil, 0, nil
 }
+func (m *mockSKURepo) FindAccessoriesBySKU(ctx context.Context, skuCode string) ([]domainSKU.SKUAccessory, error) {
+	return nil, nil
+}
 
 
 func TestDeductionResolver_DirectSKU(t *testing.T) {
 	formulaRepo := &mockFormulaRepo{formulas: make(map[string]*domainFormula.InventoryFormula)}
 	skuRepo := &mockSKURepo{skus: make(map[string]*domainSKU.SKU)}
-	resolver := usecaseStock.NewDeductionResolver(nil, formulaRepo, skuRepo)
+	resolver := usecaseStock.NewDeductionResolver(formulaRepo, skuRepo)
 
 	items := []usecaseStock.ItemToResolve{
 		{SKU: "SKU-SINGLE", Quantity: 3, Price: 150},
@@ -142,7 +145,7 @@ func TestDeductionResolver_FormulaExplosion(t *testing.T) {
 		},
 	}
 
-	resolver := usecaseStock.NewDeductionResolver(nil, formulaRepo, skuRepo)
+	resolver := usecaseStock.NewDeductionResolver(formulaRepo, skuRepo)
 
 	items := []usecaseStock.ItemToResolve{
 		{SKU: "bundle-set", Quantity: 5, Price: 500}, // Case-insensitive
@@ -199,7 +202,7 @@ func TestDeductionResolver_AggregatesDuplicates(t *testing.T) {
 		},
 	}
 
-	resolver := usecaseStock.NewDeductionResolver(nil, formulaRepo, skuRepo)
+	resolver := usecaseStock.NewDeductionResolver(formulaRepo, skuRepo)
 
 	items := []usecaseStock.ItemToResolve{
 		{SKU: "SET-1", Quantity: 2}, // RAW-A x 2
