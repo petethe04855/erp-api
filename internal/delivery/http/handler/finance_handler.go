@@ -102,6 +102,9 @@ func (h *FinanceHandler) CreateExpense(c *fiber.Ctx) error {
 		Category:    domainFinance.ExpenseCategory(req.Category),
 		Channel:     domainFinance.ExpenseChannel(req.Channel),
 		Amount:      req.Amount,
+		ProductName: req.ProductName,
+		PurchaseURL: req.PurchaseURL,
+		SlipURL:     req.SlipURL,
 		Vendor:      req.Vendor,
 		InvoiceRef:  req.InvoiceRef,
 		Description: req.Description,
@@ -130,6 +133,9 @@ func (h *FinanceHandler) UpdateExpense(c *fiber.Ctx) error {
 		Category:    domainFinance.ExpenseCategory(req.Category),
 		Channel:     domainFinance.ExpenseChannel(req.Channel),
 		Amount:      req.Amount,
+		ProductName: req.ProductName,
+		PurchaseURL: req.PurchaseURL,
+		SlipURL:     req.SlipURL,
 		Vendor:      req.Vendor,
 		InvoiceRef:  req.InvoiceRef,
 		Description: req.Description,
@@ -284,7 +290,7 @@ func (h *FinanceHandler) ExportExpenses(c *fiber.Ctx) error {
 	sheet := "Expenses"
 	f.SetSheetName("Sheet1", sheet)
 
-	headers := []interface{}{"Date", "Code", "Category", "Channel", "Amount", "Vendor", "Invoice Ref", "Description", "Created By"}
+	headers := []interface{}{"Date", "Code", "Product", "Category", "Channel", "Amount", "Purchase URL", "Slip URL", "Vendor", "Invoice Ref", "Description", "Created By"}
 	f.SetSheetRow(sheet, "A1", &headers)
 
 	rowIdx := 2
@@ -292,9 +298,12 @@ func (h *FinanceHandler) ExportExpenses(c *fiber.Ctx) error {
 		row := []interface{}{
 			exp.Date,
 			exp.Code,
+			exp.ProductName,
 			string(exp.Category),
 			string(exp.Channel),
 			exp.Amount,
+			exp.PurchaseURL,
+			exp.SlipURL,
 			exp.Vendor,
 			exp.InvoiceRef,
 			exp.Description,
