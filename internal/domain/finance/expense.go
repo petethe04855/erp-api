@@ -34,6 +34,9 @@ type Expense struct {
 	Category    ExpenseCategory `gorm:"size:100;index;not null" json:"category"`
 	Channel     ExpenseChannel  `gorm:"size:50;index;not null" json:"channel"`
 	Amount      float64         `gorm:"type:numeric(15,2);not null" json:"amount"`
+	ProductName string          `gorm:"size:255;index" json:"product_name"`
+	PurchaseURL string          `gorm:"size:500" json:"purchase_url"`
+	SlipURL     string          `gorm:"size:500" json:"slip_url"`
 	Vendor      string          `gorm:"size:150" json:"vendor"`
 	InvoiceRef  string          `gorm:"size:100" json:"invoice_ref"`
 	Description string          `gorm:"size:255" json:"description"`

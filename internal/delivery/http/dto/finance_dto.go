@@ -5,6 +5,9 @@ type CreateExpenseRequest struct {
 	Category    string  `json:"category"`
 	Channel     string  `json:"channel"`
 	Amount      float64 `json:"amount"`
+	ProductName string  `json:"product_name"`
+	PurchaseURL string  `json:"purchase_url"`
+	SlipURL     string  `json:"slip_url"`
 	Vendor      string  `json:"vendor"`
 	InvoiceRef  string  `json:"invoice_ref"`
 	Description string  `json:"description"`
@@ -15,6 +18,9 @@ type UpdateExpenseRequest struct {
 	Category    string  `json:"category"`
 	Channel     string  `json:"channel"`
 	Amount      float64 `json:"amount"`
+	ProductName string  `json:"product_name"`
+	PurchaseURL string  `json:"purchase_url"`
+	SlipURL     string  `json:"slip_url"`
 	Vendor      string  `json:"vendor"`
 	InvoiceRef  string  `json:"invoice_ref"`
 	Description string  `json:"description"`

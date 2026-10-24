@@ -135,7 +135,7 @@ func (u *financeUsecase) CreateExpense(ctx context.Context, in CreateExpenseInpu
 		return nil, appErrors.NewAppError("INVALID_AMOUNT", "Expense amount must be greater than zero", 400)
 	}
 	if in.Category == "" {
-		return nil, appErrors.NewAppError("INVALID_CATEGORY", "Expense category is required", 400)
+		in.Category = domainFinance.ExpenseCategorySGA
 	}
 	if in.Channel == "" {
 		in.Channel = domainFinance.ExpenseChannelGeneral
@@ -153,6 +153,9 @@ func (u *financeUsecase) CreateExpense(ctx context.Context, in CreateExpenseInpu
 		Category:    in.Category,
 		Channel:     in.Channel,
 		Amount:      in.Amount,
+		ProductName: in.ProductName,
+		PurchaseURL: in.PurchaseURL,
+		SlipURL:     in.SlipURL,
 		Vendor:      in.Vendor,
 		InvoiceRef:  in.InvoiceRef,
 		Description: in.Description,
@@ -164,13 +167,20 @@ func (u *financeUsecase) CreateExpense(ctx context.Context, in CreateExpenseInpu
 			return err
 		}
 
+		journalSubject := exp.Vendor
+		if journalSubject == "" {
+			journalSubject = exp.ProductName
+		} else if exp.ProductName != "" {
+			journalSubject = fmt.Sprintf("%s (%s)", exp.Vendor, exp.ProductName)
+		}
+
 		// Auto-post journal for this expense
 		_, err := u.PostJournal(txCtx, PostingRequest{
 			Date:        exp.Date,
 			SourceType:  "expense",
 			SourceID:    exp.ID,
 			SourceRef:   exp.Code,
-			Description: fmt.Sprintf("[%s] %s - %s", exp.Category, exp.Vendor, exp.Description),
+			Description: fmt.Sprintf("[%s] %s - %s", exp.Category, journalSubject, exp.Description),
 			CreatedBy:   exp.CreatedBy,
 			Lines: []PostingLineInput{
 				{AccountCode: AccountOperatingExpense, Debit: exp.Amount, Channel: string(exp.Channel)},
@@ -215,6 +225,9 @@ func (u *financeUsecase) UpdateExpense(ctx context.Context, id uint, in UpdateEx
 		exp.Date = in.Date
 	}
 	exp.Amount = in.Amount
+	exp.ProductName = in.ProductName
+	exp.PurchaseURL = in.PurchaseURL
+	exp.SlipURL = in.SlipURL
 	exp.Vendor = in.Vendor
 	exp.InvoiceRef = in.InvoiceRef
 	exp.Description = in.Description

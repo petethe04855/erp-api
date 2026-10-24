@@ -240,7 +240,7 @@ func main() {
 	purchasingHdl := handler.NewPurchasingHandler(purchasingUsecase)
 	invoiceHdl := handler.NewInvoiceHandler(invoiceUsecase, settingsUsecase)
 	reportHdl := handler.NewReportHandler(reportUsecase)
-	financeHdl := handler.NewFinanceHandler(financeUsecase)
+	financeHdl := handler.NewFinanceHandler(financeUsecase, cfg.GeminiAPIKey)
 	workspaceHdl := handler.NewWorkspaceHandler(db, orderUsecase, quotationUsecase, stockUsecase, skuRepo, sequenceUsecase)
 
 	tiktokHdl := handler.NewTikTokHandler(tiktokUsecase)

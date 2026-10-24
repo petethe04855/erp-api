@@ -222,7 +222,7 @@ func (r *financeRepository) ListExpenses(ctx context.Context, filter domainFinan
 	}
 	if filter.Search != "" {
 		searchPattern := "%" + filter.Search + "%"
-		q = q.Where("code ILIKE ? OR vendor ILIKE ? OR invoice_ref ILIKE ? OR description ILIKE ?", searchPattern, searchPattern, searchPattern, searchPattern)
+		q = q.Where("code ILIKE ? OR vendor ILIKE ? OR invoice_ref ILIKE ? OR description ILIKE ? OR product_name ILIKE ?", searchPattern, searchPattern, searchPattern, searchPattern, searchPattern)
 	}
 
 	if err := q.Count(&total).Error; err != nil {

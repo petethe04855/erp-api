@@ -99,6 +99,7 @@ func (h *UploadHandler) UploadImage(c *fiber.Ctx) error {
 		"returns":   true,
 		"general":   true,
 		"images":    true,
+		"expenses":  true,
 	}
 	if !validFolders[folder] {
 		folder = "images"

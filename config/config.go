@@ -40,13 +40,20 @@ type Config struct {
 	SMTPUsername string
 	SMTPPassword string
 	EmailSend    string
+
+	// Google Gemini AI Configuration
+	GeminiAPIKey string
 }
 
 
 func LoadConfig() *Config {
 	if err := godotenv.Load(); err != nil {
 		if err := godotenv.Load("../.env"); err != nil {
-			log.Println("[INFO] No .env file found in current or parent directory, using system environment variables")
+			if err := godotenv.Load("../../.env"); err != nil {
+				log.Println("[INFO] No .env file found in current or parent directory, using system environment variables")
+			} else {
+				log.Println("[INFO] Successfully loaded .env from root directory")
+			}
 		} else {
 			log.Println("[INFO] Successfully loaded .env from parent directory")
 		}
@@ -113,6 +120,8 @@ func LoadConfig() *Config {
 		SMTPUsername: getEnv("SMTP_USERNAME", ""),
 		SMTPPassword: getEnv("SMTP_PASSWORD", ""),
 		EmailSend:    getEnv("EMAIL_SEND", ""),
+
+		GeminiAPIKey: getEnv("GEMINI_API_KEY", ""),
 	}
 }
 

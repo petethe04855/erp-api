@@ -31,6 +31,9 @@ type CreateExpenseInput struct {
 	Category    domainFinance.ExpenseCategory  `json:"category"`
 	Channel     domainFinance.ExpenseChannel   `json:"channel"`
 	Amount      float64                        `json:"amount"`
+	ProductName string                         `json:"product_name"`
+	PurchaseURL string                         `json:"purchase_url"`
+	SlipURL     string                         `json:"slip_url"`
 	Vendor      string                         `json:"vendor"`
 	InvoiceRef  string                         `json:"invoice_ref"`
 	Description string                         `json:"description"`
@@ -42,6 +45,9 @@ type UpdateExpenseInput struct {
 	Category    domainFinance.ExpenseCategory  `json:"category"`
 	Channel     domainFinance.ExpenseChannel   `json:"channel"`
 	Amount      float64                        `json:"amount"`
+	ProductName string                         `json:"product_name"`
+	PurchaseURL string                         `json:"purchase_url"`
+	SlipURL     string                         `json:"slip_url"`
 	Vendor      string                         `json:"vendor"`
 	InvoiceRef  string                         `json:"invoice_ref"`
 	Description string                         `json:"description"`
