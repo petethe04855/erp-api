@@ -7,16 +7,26 @@
 bin/
 dist/
 
-# Test binary, built with `go test -c`
+# Uploaded media & user files (สำคัญมาก)
+uploads/
+
+# Logs & Temp files
+*.log
+tmp/
+
+# Test & Coverage
 *.test
-
-# Output of the go coverage tool
 *.out
+coverage.html
+coverage.txt
 
-# Environment variables
+# Environment variables (เก็บ secret ให้ปลอดภัย แต่เปิดให้ commit template ตัวอย่างได้)
 .env
 .env.*
 .env.example
+
+# Go Vendor
+vendor/
 
 # IDE files
 .idea/
@@ -27,5 +37,3 @@ dist/
 # OS files
 .DS_Store
 Thumbs.db
-
-.gitkeep

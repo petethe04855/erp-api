@@ -190,6 +190,7 @@ func RegisterRoutes(cfg Config) {
 	// Expenses
 	financeGroup.Get("/expenses", cfg.FinanceHandler.ListExpenses)
 	financeGroup.Post("/expenses", cfg.FinanceHandler.CreateExpense)
+	financeGroup.Post("/expenses/scan-receipt", cfg.FinanceHandler.ScanReceipt)
 	financeGroup.Put("/expenses/:id", cfg.FinanceHandler.UpdateExpense)
 	financeGroup.Delete("/expenses/:id", cfg.FinanceHandler.DeleteExpense)
 
@@ -209,6 +210,7 @@ func RegisterRoutes(cfg Config) {
 	protected.Get("/journal-entries/:id", middleware.RequireRole("owner", "accountant"), cfg.FinanceHandler.GetJournalEntryByID)
 	protected.Get("/expenses", middleware.RequireRole("owner", "accountant"), cfg.FinanceHandler.ListExpenses)
 	protected.Post("/expenses", middleware.RequireRole("owner", "accountant"), cfg.FinanceHandler.CreateExpense)
+	protected.Post("/expenses/scan-receipt", middleware.RequireRole("owner", "accountant"), cfg.FinanceHandler.ScanReceipt)
 	protected.Put("/expenses/:id", middleware.RequireRole("owner", "accountant"), cfg.FinanceHandler.UpdateExpense)
 	protected.Delete("/expenses/:id", middleware.RequireRole("owner", "accountant"), cfg.FinanceHandler.DeleteExpense)
 	protected.Get("/export/journal", middleware.RequireRole("owner", "accountant"), cfg.FinanceHandler.ExportJournal)

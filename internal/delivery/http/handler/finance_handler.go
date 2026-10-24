@@ -1,25 +1,42 @@
 package handler
 
 import (
+	"context"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"chawy-erp-api/internal/delivery/http/dto"
 	domainFinance "chawy-erp-api/internal/domain/finance"
 	usecaseFinance "chawy-erp-api/internal/usecase/finance"
+	"chawy-erp-api/pkg/gemini"
 	"chawy-erp-api/pkg/response"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
 	"github.com/xuri/excelize/v2"
 )
 
 type FinanceHandler struct {
-	usecase usecaseFinance.Usecase
+	usecase   usecaseFinance.Usecase
+	geminiKey string
+	scanner   *gemini.Scanner
 }
 
-func NewFinanceHandler(usecase usecaseFinance.Usecase) *FinanceHandler {
-	return &FinanceHandler{usecase: usecase}
+func NewFinanceHandler(usecase usecaseFinance.Usecase, geminiKey ...string) *FinanceHandler {
+	key := ""
+	if len(geminiKey) > 0 {
+		key = geminiKey[0]
+	}
+	return &FinanceHandler{
+		usecase:   usecase,
+		geminiKey: key,
+		scanner:   gemini.NewScanner(),
+	}
 }
 
 // Journal Entries
@@ -158,6 +175,84 @@ func (h *FinanceHandler) DeleteExpense(c *fiber.Ctx) error {
 	}
 
 	return response.OK(c, fiber.Map{"id": id}, "Expense deleted successfully")
+}
+
+// ScanReceipt handles uploading receipt/slip image and running Gemini Vision OCR.
+func (h *FinanceHandler) ScanReceipt(c *fiber.Ctx) error {
+	file, err := c.FormFile("image")
+	if err != nil {
+		file, err = c.FormFile("slip")
+		if err != nil {
+			file, err = c.FormFile("file")
+			if err != nil {
+				return response.BadRequest(c, "กรุณาแนบไฟล์รูปภาพสลิปหรือใบเสร็จ (image หรือ slip)")
+			}
+		}
+	}
+
+	const maxFileSize = 10 * 1024 * 1024 // 10MB
+	if file.Size > maxFileSize {
+		return response.BadRequest(c, "ขนาดไฟล์รูปภาพเกินกำหนด (ต้องไม่เกิน 10 MB)")
+	}
+
+	ext := strings.ToLower(filepath.Ext(file.Filename))
+	if ext != ".png" && ext != ".jpg" && ext != ".jpeg" && ext != ".webp" {
+		return response.BadRequest(c, "รองรับเฉพาะไฟล์รูปภาพ .png, .jpg, .jpeg หรือ .webp เท่านั้น")
+	}
+
+	f, err := file.Open()
+	if err != nil {
+		return response.BadRequest(c, "ไม่สามารถเปิดไฟล์รูปภาพได้")
+	}
+	defer f.Close()
+
+	fileBytes, err := io.ReadAll(f)
+	if err != nil {
+		return response.BadRequest(c, "ไม่สามารถอ่านข้อมูลไฟล์รูปภาพได้")
+	}
+
+	// Save file locally to ./uploads/expenses
+	targetDir := filepath.Join(".", "uploads", "expenses")
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		return response.InternalServerError(c, "ไม่สามารถสร้างโฟลเดอร์สำหรับจัดเก็บรูปภาพได้")
+	}
+
+	filename := fmt.Sprintf("expense-%d-%s%s", time.Now().UnixNano(), uuid.New().String()[:8], ext)
+	savedPath := filepath.Join(targetDir, filename)
+	if err := os.WriteFile(savedPath, fileBytes, 0644); err != nil {
+		return response.InternalServerError(c, "ไม่สามารถบันทึกไฟล์รูปภาพได้")
+	}
+
+	slipURL := fmt.Sprintf("/uploads/expenses/%s", filename)
+
+	if strings.TrimSpace(h.geminiKey) == "" {
+		return response.BadRequest(c, "กรุณาตั้งค่า GEMINI_API_KEY ในไฟล์ .env ของระบบหลังบ้านเพื่อเปิดใช้งาน AI สแกนใบเสร็จ")
+	}
+
+	mimeType := "image/jpeg"
+	if ext == ".png" {
+		mimeType = "image/png"
+	} else if ext == ".webp" {
+		mimeType = "image/webp"
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	scanResult, err := h.scanner.ScanReceipt(ctx, h.geminiKey, fileBytes, mimeType)
+	if err != nil {
+		return response.BadRequest(c, fmt.Sprintf("AI สแกนรูปภาพไม่สำเร็จ: %v", err))
+	}
+
+	type ScanResponse struct {
+		*gemini.ReceiptData
+		SlipURL string `json:"slip_url"`
+	}
+
+	return response.OK(c, ScanResponse{
+		ReceiptData: scanResult,
+		SlipURL:     slipURL,
+	}, "วิเคราะห์ข้อมูลจากใบเสร็จสำเร็จ")
 }
 
 // Reports
