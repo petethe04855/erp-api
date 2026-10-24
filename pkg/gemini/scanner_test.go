@@ -71,7 +71,7 @@ func TestScanReceipt_MissingKey(t *testing.T) {
 }
 
 func TestScanUserUploadedSlip(t *testing.T) {
-	imgPath := `C:\Users\pete\.gemini\antigravity-ide\brain\fb80fe34-b4ab-4563-bee9-38daf0395055\.user_uploaded\media_1792846770929.jpg`
+	imgPath := `C:\Users\pete\.gemini\antigravity-ide\brain\fb80fe34-b4ab-4563-bee9-38daf0395055\.user_uploaded\media_1792850348037.png`
 	imgBytes, err := os.ReadFile(imgPath)
 	if err != nil {
 		t.Skipf("image file not found: %v", err)
@@ -84,7 +84,7 @@ func TestScanUserUploadedSlip(t *testing.T) {
 
 	s := NewScanner()
 	start := time.Now()
-	res, err := s.ScanReceipt(context.Background(), cfg.GeminiAPIKey, imgBytes, "image/jpeg")
+	res, err := s.ScanReceipt(context.Background(), cfg.GeminiAPIKey, imgBytes, "image/png")
 	duration := time.Since(start)
 
 	if err != nil {

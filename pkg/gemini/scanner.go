@@ -43,26 +43,36 @@ func NewScanner() *Scanner {
 	return &Scanner{}
 }
 
-const promptText = `You are an expert OCR and receipt/invoice/slip analysis system for Thai businesses.
-Extract expense and transaction details from the provided image (receipt, tax invoice, delivery slip, or bank transfer slip).
+const promptText = `You are an expert OCR and receipt/invoice/order/slip analysis system for Thai businesses.
+Extract expense and transaction details from the provided image (receipt, tax invoice, bank transfer slip, or e-commerce purchase order screenshot such as Shopee, Lazada, or TikTok Shop).
+
+Handling Multiple Items or Orders (สำคัญมาก):
+- If the image contains multiple items or multiple purchase orders (e.g. 2 orders on a Shopee/Lazada screen):
+  1. "amount": Calculate and SUM the total net amount of ALL visible items/orders together (e.g. 240 + 48 = 288). Do not miss any item.
+  2. "product_name": Provide a concise combined summary of the items in Thai (e.g. "กล่องพัสดุ 2B และ สติกเกอร์เทปกระดาษ").
+  3. "description": List ALL items with their quantity and individual prices clearly in Thai, formatted with bullet points:
+     e.g. "1. กล่องพัสดุ เบอร์ 2B (20ใบ) x4 (฿240) | 2. สติกเกอร์เทปกระดาษ 50 หลา x1 (฿48)"
+  4. "vendor": If multiple vendors/stores, join them with ' / ' (e.g. "ร้านเหมียวเลิฟเวอร์ Pet shop / Stickera4 Official Store TH").
+  5. "channel": Identify the e-commerce platform if visible ('Shopee', 'TikTok', 'LINE', or 'ทั่วไป').
+
 Return a JSON object with the following fields:
-- "amount": (number) Total net amount to pay (Grand total / ยอดรวมสุทธิ). If bank slip, the transferred amount. Must be a positive number.
-- "date": (string) Transaction date in format YYYY-MM-DD. Convert Buddhist Era (e.g. 2567, 2568, 2569) to Christian Era (e.g. 2024, 2025, 2026). If year is missing, assume current year.
-- "vendor": (string) Name of store, vendor, payee, or billing company (e.g. '7-Eleven', 'บจก. ซีพี ออลล์', 'Shell', 'Makro', 'นาย...').
-- "invoice_ref": (string) Invoice number, receipt number, tax invoice number, or bank transaction reference number.
-- "product_name": (string) Summary of primary items, goods, or service purchased (concise Thai, e.g. 'เครื่องดื่มและอาหารว่าง', 'น้ำมันดีเซล', 'กระดาษและอุปกรณ์สำนักงาน').
+- "amount": (number) Total net amount to pay (Grand total / ยอดรวมสุทธิ). If multiple items/orders, SUM them together into one total amount. Must be a positive number.
+- "date": (string) Transaction or delivery date in format YYYY-MM-DD. Convert Thai Buddhist Era (2567, 2568, 2569) to Christian Era (2024, 2025, 2026). If year is missing (e.g. 31 มี.ค.), assume year 2026.
+- "vendor": (string) Name of store, vendor, payee, or billing company (if multiple, combine with ' / ').
+- "invoice_ref": (string) Order number, tracking number, invoice number, or bank transaction reference.
+- "product_name": (string) Concise summary of goods or services purchased in Thai.
 - "category": (string) Must be strictly one of these 7 categories:
   ["ค่าโฆษณา", "ค่าธรรมเนียมแพลตฟอร์ม", "ต้นทุนขาย/วัตถุดิบ", "ค่าใช้จ่ายในการบริหาร", "ค่าขนส่ง", "ค่าแรง/เงินเดือน", "อื่นๆ"]
   Guidance:
-  - Fuel/gas, food/snacks, office supplies, utilities, repairs, general -> "ค่าใช้จ่ายในการบริหาร"
+  - Packaging (กล่องพัสดุ, เทป, ซอง, สติกเกอร์), raw materials, inventory -> "ต้นทุนขาย/วัตถุดิบ"
+  - Fuel/gas, food/snacks, office supplies, utilities, repairs -> "ค่าใช้จ่ายในการบริหาร"
   - Shipping/courier/postal -> "ค่าขนส่ง"
-  - Raw material/packaging/inventory -> "ต้นทุนขาย/วัตถุดิบ"
   - Ads/Marketing -> "ค่าโฆษณา"
   - Platform fees -> "ค่าธรรมเนียมแพลตฟอร์ม"
   - Wage/Salary -> "ค่าแรง/เงินเดือน"
   - Default if unsure -> "ค่าใช้จ่ายในการบริหาร"
-- "channel": (string) Channel name if identified (e.g. 'TikTok', 'Shopee', 'LINE', 'ทั่วไป'). Default is 'ทั่วไป'.
-- "description": (string) Any additional details, item list summary, or notes.
+- "channel": (string) Channel name if identified (e.g. 'Shopee', 'TikTok', 'LINE', 'ทั่วไป'). Default is 'ทั่วไป'.
+- "description": (string) Itemized list breakdown of all products with quantities and prices, plus any notes.
 
 Return ONLY valid JSON matching this schema.`
 
