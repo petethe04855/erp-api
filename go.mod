@@ -1,6 +1,6 @@
 module chawy-erp-api
 
-go 1.26.0
+go 1.26.10
 
 require (
 	github.com/glebarez/sqlite v1.11.0
