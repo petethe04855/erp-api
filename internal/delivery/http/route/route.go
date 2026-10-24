@@ -51,6 +51,11 @@ func RegisterRoutes(cfg Config) {
 	authGroup.Post("/login", cfg.AuthHandler.Login)
 	authGroup.Get("/me", middleware.AuthMiddleware(cfg.JWTSecret, cfg.UserStatusLoader), cfg.AuthHandler.Me)
 
+	// Public Expense Upload Routes (for mobile quick upload & LINE OA integration)
+	publicExpenses := api.Group("/public/expenses")
+	publicExpenses.Post("/scan-receipt", cfg.FinanceHandler.ScanReceipt)
+	publicExpenses.Post("/", cfg.FinanceHandler.CreateExpense)
+
 	// Protected Routes Group
 	protected := api.Group("/", middleware.AuthMiddleware(cfg.JWTSecret, cfg.UserStatusLoader))
 

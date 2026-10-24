@@ -266,9 +266,14 @@ func main() {
 	}))
 	allowedOrigins := cfg.AllowedOrigins
 	if allowedOrigins == "" {
-		allowedOrigins = "http://localhost:3000,http://localhost:3001,http://localhost:8082,http://127.0.0.1:8082,http://127.0.0.1:3000,http://127.0.0.1:3001"
-	} else if !strings.Contains(allowedOrigins, "8082") {
-		allowedOrigins += ",http://localhost:8082,http://127.0.0.1:8082"
+		allowedOrigins = "http://localhost:3000,http://localhost:3001,http://localhost:8082,http://127.0.0.1:8082,http://localhost:8083,http://127.0.0.1:8083,http://127.0.0.1:3000,http://127.0.0.1:3001"
+	} else {
+		if !strings.Contains(allowedOrigins, "8082") {
+			allowedOrigins += ",http://localhost:8082,http://127.0.0.1:8082"
+		}
+		if !strings.Contains(allowedOrigins, "8083") {
+			allowedOrigins += ",http://localhost:8083,http://127.0.0.1:8083"
+		}
 	}
 
 	// In development, allow any origin (e.g. access via LAN IP from other
