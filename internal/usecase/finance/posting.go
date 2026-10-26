@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	domainFinance "chawy-erp-api/internal/domain/finance"
@@ -231,6 +232,9 @@ func (u *financeUsecase) UpdateExpense(ctx context.Context, id uint, in UpdateEx
 	exp.Vendor = in.Vendor
 	exp.InvoiceRef = in.InvoiceRef
 	exp.Description = in.Description
+	if strings.TrimSpace(in.CreatedBy) != "" {
+		exp.CreatedBy = strings.TrimSpace(in.CreatedBy)
+	}
 
 	if err := u.repo.UpdateExpense(ctx, exp); err != nil {
 		return nil, err
