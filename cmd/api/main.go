@@ -292,8 +292,9 @@ func main() {
 		AllowCredentials: corsAllowCredentials,
 	}))
 
-	// Serve uploaded files statically
+	// Serve uploaded files statically (from own directory and shared expense upload directory)
 	app.Static("/uploads", "./uploads")
+	app.Static("/uploads", "../erp-expense-api/uploads")
 
 	// 9. Register Routes
 	route.RegisterRoutes(route.Config{
