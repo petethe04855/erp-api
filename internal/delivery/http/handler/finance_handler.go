@@ -109,9 +109,13 @@ func (h *FinanceHandler) CreateExpense(c *fiber.Ctx) error {
 		return response.BadRequest(c, "Invalid request body")
 	}
 
-	username, _ := c.Locals("email").(string)
-	if username == "" {
-		username = "system"
+	createdBy := strings.TrimSpace(req.CreatedBy)
+	if createdBy == "" {
+		username, _ := c.Locals("email").(string)
+		if username == "" {
+			username = "system"
+		}
+		createdBy = username
 	}
 
 	exp, err := h.usecase.CreateExpense(c.Context(), usecaseFinance.CreateExpenseInput{
@@ -125,7 +129,7 @@ func (h *FinanceHandler) CreateExpense(c *fiber.Ctx) error {
 		Vendor:      req.Vendor,
 		InvoiceRef:  req.InvoiceRef,
 		Description: req.Description,
-		CreatedBy:   username,
+		CreatedBy:   createdBy,
 	})
 	if err != nil {
 		return err
@@ -156,6 +160,7 @@ func (h *FinanceHandler) UpdateExpense(c *fiber.Ctx) error {
 		Vendor:      req.Vendor,
 		InvoiceRef:  req.InvoiceRef,
 		Description: req.Description,
+		CreatedBy:   strings.TrimSpace(req.CreatedBy),
 	})
 	if err != nil {
 		return err

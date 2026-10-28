@@ -11,6 +11,7 @@ type CreateExpenseRequest struct {
 	Vendor      string  `json:"vendor"`
 	InvoiceRef  string  `json:"invoice_ref"`
 	Description string  `json:"description"`
+	CreatedBy   string  `json:"created_by"`
 }
 
 type UpdateExpenseRequest struct {
@@ -24,6 +25,7 @@ type UpdateExpenseRequest struct {
 	Vendor      string  `json:"vendor"`
 	InvoiceRef  string  `json:"invoice_ref"`
 	Description string  `json:"description"`
+	CreatedBy   string  `json:"created_by"`
 }
 
 type JournalQueryRequest struct {

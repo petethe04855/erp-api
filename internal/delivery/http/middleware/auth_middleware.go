@@ -26,6 +26,7 @@ func AuthMiddleware(secret string, users UserStatusLoader) fiber.Handler {
 		if path == "/api/v1/health" ||
 			path == "/api/v1/auth/login" ||
 			path == "/api/v1/auth/register" ||
+			strings.HasPrefix(path, "/api/v1/public/") ||
 			strings.HasSuffix(path, "/callback") ||
 			strings.HasSuffix(path, "/webhook") {
 			return c.Next()
