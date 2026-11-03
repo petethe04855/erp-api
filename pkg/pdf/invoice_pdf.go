@@ -141,7 +141,7 @@ func GenerateInvoicePDF(data InvoicePDFData) ([]byte, error) {
 	pdf.SetTextColor(0, 0, 0)
 	pdf.CellFormat(74, 8, "ใบแจ้งหนี้", "", 1, "R", false, 0, "")
 
-	pdf.SetXY(124, pdf.GetY())
+	pdf.SetXY(124, pdf.GetY()+4)
 	pdf.SetFont(fontName, "B", 8)
 	pdf.SetTextColor(107, 114, 128) // text-gray-500
 	pdf.CellFormat(74, 4, "INVOICE · ต้นฉบับ", "", 1, "R", false, 0, "")
@@ -215,11 +215,6 @@ func GenerateInvoicePDF(data InvoicePDFData) ([]byte, error) {
 		pdf.SetX(12)
 		pdf.CellFormat(186, 4.2, custTax, "", 1, "L", false, 0, "")
 	}
-
-	// Divider below customer
-	pdf.SetDrawColor(209, 213, 219) // border-gray-300
-	pdf.SetLineWidth(0.3)
-	pdf.Line(12, pdf.GetY()+3, 198, pdf.GetY()+3)
 	pdf.SetY(pdf.GetY() + 6)
 
 	// --- 3. ITEMS TABLE ---

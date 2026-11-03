@@ -3323,6 +3323,10 @@ func (h *WorkspaceHandler) CreateGoodsReceive(c *fiber.Ctx) error {
 					}
 				}
 
+				if unitCost <= 0 {
+					return response.BadRequest(c, fmt.Sprintf("กรุณาระบุราคาต้นทุนต่อหน่วยที่มากกว่า 0 สำหรับ SKU %s", it.SKU))
+				}
+
 				retailPrice := 0.0
 				if it.RetailPrice != nil {
 					retailPrice = *it.RetailPrice

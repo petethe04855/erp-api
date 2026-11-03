@@ -55,6 +55,11 @@ func RegisterRoutes(cfg Config) {
 	publicExpenses := api.Group("/public/expenses")
 	publicExpenses.Post("/scan-receipt", cfg.FinanceHandler.ScanReceipt)
 	publicExpenses.Post("/", cfg.FinanceHandler.CreateExpense)
+	publicExpenses.Post("", cfg.FinanceHandler.CreateExpense)
+	publicExpenses.Post("/scan", cfg.FinanceHandler.ScanReceipt)
+
+	// Direct public scan alias for erp-expense-upload
+	api.Post("/scan", cfg.FinanceHandler.ScanReceipt)
 
 	// Protected Routes Group
 	protected := api.Group("/", middleware.AuthMiddleware(cfg.JWTSecret, cfg.UserStatusLoader))
