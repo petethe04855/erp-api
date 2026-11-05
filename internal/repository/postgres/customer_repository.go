@@ -82,3 +82,23 @@ func (r *CustomerRepository) Update(ctx context.Context, c *customer.Customer) e
 func (r *CustomerRepository) Delete(ctx context.Context, id uint) error {
 	return r.db.WithContext(ctx).Delete(&customer.Customer{}, id).Error
 }
+
+// FindAllForWorkspace keeps the historical workspace search semantics:
+// name/email/phone/contact_person are matched (code is NOT searched) and the
+// blank-scan/pagination failure is ignored by the caller like before.
+func (r *CustomerRepository) FindAllForWorkspace(ctx context.Context, q customer.WorkspaceQuery) ([]customer.Customer, int64, error) {
+	var items []customer.Customer
+	var total int64
+
+	query := r.db.WithContext(ctx).Model(&customer.Customer{})
+
+	if q.Search != "" {
+		s := "%" + q.Search + "%"
+		query = query.Where("name ILIKE ? OR email ILIKE ? OR phone ILIKE ? OR contact_person ILIKE ?", s, s, s, s)
+	}
+
+	query.Count(&total)
+	query.Offset((q.Page - 1) * q.Limit).Limit(q.Limit).Order("id DESC").Find(&items)
+
+	return items, total, nil
+}

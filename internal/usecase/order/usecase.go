@@ -43,6 +43,14 @@ type Usecase interface {
 	Create(ctx context.Context, input CreateOrderInput) (*domainOrder.Order, error)
 	GetByID(ctx context.Context, id uint) (*domainOrder.Order, error)
 	List(ctx context.Context, query domainOrder.Query) ([]domainOrder.Order, int64, error)
+	// ListSales returns the workspace sales-order list rows together with the
+	// linked invoice status (used as the "invRef" column).
+	ListSales(ctx context.Context, query domainOrder.SalesQuery) ([]SalesListItem, int64, error)
+	// GetByRef resolves an order by numeric id or document number.
+	GetByRef(ctx context.Context, ref string) (*domainOrder.Order, error)
+	// UpdateStatusByRef applies the workspace status transition rules. The
+	// returned bool is true when the order already had the target status.
+	UpdateStatusByRef(ctx context.Context, ref, status, note string) (*domainOrder.Order, bool, error)
 	ShipOrder(ctx context.Context, id uint, warehouseID uint) (*domainOrder.Order, error)
 	CancelOrder(ctx context.Context, id uint) (*domainOrder.Order, error)
 }
@@ -634,4 +642,117 @@ func (u *orderUsecase) CancelOrder(ctx context.Context, id uint) (*domainOrder.O
 		return nil, err
 	}
 	return cancelled, nil
+}
+
+// SalesListItem is one workspace sales-order row plus the status of the
+// invoice linked to it (rendered as the "invRef" column).
+type SalesListItem struct {
+	Order         domainOrder.Order
+	InvoiceStatus string
+}
+
+// ListSales returns the workspace sales-order list with the same filters the
+// screen exposes.
+func (u *orderUsecase) ListSales(ctx context.Context, q domainOrder.SalesQuery) ([]SalesListItem, int64, error) {
+	if q.Page < 1 {
+		q.Page = 1
+	}
+	if q.Limit < 1 || q.Limit > 100 {
+		q.Limit = 50
+	}
+
+	orders, total, err := u.orderRepo.FindAllForSales(ctx, q)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	invoiceStatus := make(map[uint]string, len(orders))
+	if u.db != nil && len(orders) > 0 {
+		orderIDs := make([]uint, 0, len(orders))
+		for _, o := range orders {
+			orderIDs = append(orderIDs, o.ID)
+		}
+		var rows []struct {
+			OrderID uint
+			Status  string
+		}
+		if err := u.db.WithContext(ctx).Table("invoices").
+			Select("order_id, status").
+			Where("order_id IN ?", orderIDs).
+			Scan(&rows).Error; err == nil {
+			for _, row := range rows {
+				invoiceStatus[row.OrderID] = row.Status
+			}
+		}
+	}
+
+	items := make([]SalesListItem, len(orders))
+	for i, o := range orders {
+		items[i] = SalesListItem{Order: o, InvoiceStatus: invoiceStatus[o.ID]}
+	}
+	return items, total, nil
+}
+
+// GetByRef resolves an order by numeric id or document number.
+func (u *orderUsecase) GetByRef(ctx context.Context, ref string) (*domainOrder.Order, error) {
+	return u.orderRepo.FindByRef(ctx, ref)
+}
+
+// UpdateStatusByRef applies the workspace status transition rules. The returned
+// bool reports whether the order already had the requested status.
+func (u *orderUsecase) UpdateStatusByRef(ctx context.Context, ref, status, note string) (*domainOrder.Order, bool, error) {
+	ord, err := u.orderRepo.FindByRef(ctx, ref)
+	if err != nil {
+		return nil, false, err
+	}
+	if ord == nil {
+		return nil, false, appErrors.NewAppError("ORDER_NOT_FOUND", "Sales order not found", 404)
+	}
+
+	target := strings.ToUpper(strings.TrimSpace(status))
+	if target == "COMPLETED" {
+		target = "SHIPPED"
+	}
+
+	targetStatus := domainOrder.Status(target)
+	if !domainOrder.IsValidStatus(targetStatus) {
+		return nil, false, appErrors.NewAppError("INVALID_ORDER_STATUS",
+			fmt.Sprintf("Invalid order status: %s", status), 400)
+	}
+
+	// Idempotency: same status.
+	if ord.Status == targetStatus {
+		return ord, true, nil
+	}
+
+	if !domainOrder.CanTransition(ord.Status, targetStatus) {
+		return nil, false, appErrors.NewAppError("INVALID_ORDER_TRANSITION",
+			fmt.Sprintf("Cannot transition order from %s to %s", ord.Status, target), 400)
+	}
+
+	if targetStatus == domainOrder.StatusCancelled {
+		cancelled, err := u.CancelOrder(ctx, ord.ID)
+		if err != nil {
+			return nil, false, err
+		}
+		return cancelled, false, nil
+	}
+
+	if targetStatus == domainOrder.StatusShipped {
+		shipped, err := u.ShipOrder(ctx, ord.ID, 1)
+		if err != nil {
+			return nil, false, appErrors.NewAppError("ORDER_SHIP_FAILED",
+				"ไม่สามารถตัดสต็อกได้: "+err.Error(), 400)
+		}
+		return shipped, false, nil
+	}
+
+	ord.Status = targetStatus
+	if note != "" {
+		ord.Note = note
+	}
+	if err := u.orderRepo.Update(ctx, ord); err != nil {
+		return nil, false, appErrors.NewAppError("ORDER_UPDATE_FAILED", "Failed to update order status", 500)
+	}
+	return ord, false, nil
 }

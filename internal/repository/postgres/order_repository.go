@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"chawy-erp-api/internal/domain/order"
 	"chawy-erp-api/pkg/database"
@@ -97,6 +98,71 @@ func (r *OrderRepository) FindAll(ctx context.Context, q order.Query) ([]order.O
 
 func (r *OrderRepository) UpdateStatus(ctx context.Context, id uint, status order.Status) error {
 	return r.getDB(ctx).Model(&order.Order{}).Where("id = ?", id).Update("status", status).Error
+}
+
+// FindByRef resolves an order by numeric id or document number, mirroring the
+// lookup the workspace sales screens perform.
+func (r *OrderRepository) FindByRef(ctx context.Context, ref string) (*order.Order, error) {
+	var o order.Order
+	err := r.getDB(ctx).Preload("Items").Where("id::text = ? OR order_no = ?", ref, ref).First(&o).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &o, nil
+}
+
+// FindAllForSales applies the sales-list filters used by the workspace screen.
+func (r *OrderRepository) FindAllForSales(ctx context.Context, q order.SalesQuery) ([]order.Order, int64, error) {
+	var items []order.Order
+	var total int64
+
+	tx := r.getDB(ctx).Model(&order.Order{})
+
+	if q.Search != "" {
+		pat := "%" + q.Search + "%"
+		tx = tx.Where("order_no ILIKE ? OR customer_name ILIKE ?", pat, pat)
+	}
+
+	if q.Status != "" && !strings.EqualFold(q.Status, "all") {
+		stUpper := strings.ToUpper(q.Status)
+		if stUpper == "COMPLETED" {
+			tx = tx.Where("UPPER(status) IN ('COMPLETED', 'SHIPPED')")
+		} else {
+			tx = tx.Where("UPPER(status) = ?", stUpper)
+		}
+	}
+
+	if q.Channel != "" && !strings.EqualFold(q.Channel, "all") {
+		cLower := strings.ToLower(q.Channel)
+		if cLower == "manual" {
+			tx = tx.Where("LOWER(channel) IN (?) OR channel IS NULL OR channel = ''", []string{"manual", "direct"})
+		} else {
+			tx = tx.Where("LOWER(channel) LIKE ?", "%"+cLower+"%")
+		}
+	}
+
+	if strings.EqualFold(q.PaymentStatus, "paid") {
+		// Paid orders have an invoice with status PAID.
+		tx = tx.Where("id IN (SELECT order_id FROM invoices WHERE order_id IS NOT NULL AND status = 'PAID')")
+	} else if strings.EqualFold(q.PaymentStatus, "unpaid") {
+		// Unpaid orders have either no invoice or an unpaid invoice.
+		tx = tx.Where("id NOT IN (SELECT order_id FROM invoices WHERE order_id IS NOT NULL AND status = 'PAID')")
+	}
+
+	if err := tx.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	offset := (q.Page - 1) * q.Limit
+	if offset < 0 {
+		offset = 0
+	}
+
+	err := tx.Preload("Items").Offset(offset).Limit(q.Limit).Order("id DESC").Find(&items).Error
+	return items, total, err
 }
 
 func (r *OrderRepository) Update(ctx context.Context, o *order.Order) error {

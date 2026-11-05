@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strconv"
@@ -8,44 +9,53 @@ import (
 	"time"
 
 	domainBundle "chawy-erp-api/internal/domain/bundle"
-	domainCustomer "chawy-erp-api/internal/domain/customer"
-	domainFormula "chawy-erp-api/internal/domain/formula"
 	domainInvoice "chawy-erp-api/internal/domain/invoice"
 	domainOrder "chawy-erp-api/internal/domain/order"
 	domainPurchasing "chawy-erp-api/internal/domain/purchasing"
 	domainQuotation "chawy-erp-api/internal/domain/quotation"
 	domainSKU "chawy-erp-api/internal/domain/sku"
-	domainStock "chawy-erp-api/internal/domain/stock"
-	domainTikTok "chawy-erp-api/internal/domain/tiktok"
+	usecaseBundle "chawy-erp-api/internal/usecase/bundle"
+	usecaseCatalog "chawy-erp-api/internal/usecase/catalog"
+	usecaseCustomer "chawy-erp-api/internal/usecase/customer"
+	usecaseInvoice "chawy-erp-api/internal/usecase/invoice"
 	usecaseOrder "chawy-erp-api/internal/usecase/order"
+	usecasePurchasing "chawy-erp-api/internal/usecase/purchasing"
 	usecaseQuotation "chawy-erp-api/internal/usecase/quotation"
 	usecaseSeq "chawy-erp-api/internal/usecase/sequence"
+	usecaseSettings "chawy-erp-api/internal/usecase/settings"
 	usecaseStock "chawy-erp-api/internal/usecase/stock"
-	"chawy-erp-api/pkg/database"
+	appErrors "chawy-erp-api/pkg/errors"
 	"chawy-erp-api/pkg/pdf"
 	"chawy-erp-api/pkg/response"
 
 	"github.com/gofiber/fiber/v2"
-	"github.com/xuri/excelize/v2"
-	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 type WorkspaceHandler struct {
-	db               *gorm.DB
-	orderUsecase     usecaseOrder.Usecase
-	quotationUsecase usecaseQuotation.Usecase
-	stockUsecase     usecaseStock.Usecase
-	skuRepo          domainSKU.Repository
-	seqUsecase       usecaseSeq.Usecase
+	catalogUsecase    usecaseCatalog.Usecase
+	orderUsecase      usecaseOrder.Usecase
+	quotationUsecase  usecaseQuotation.Usecase
+	stockUsecase      usecaseStock.Usecase
+	skuRepo           domainSKU.Repository
+	seqUsecase        usecaseSeq.Usecase
+	bundleUsecase     usecaseBundle.Usecase
+	purchasingUsecase usecasePurchasing.Usecase
+	invoiceUsecase    usecaseInvoice.Usecase
+	customerUsecase   usecaseCustomer.Usecase
+	settingsUsecase   usecaseSettings.Usecase
 }
 
 func NewWorkspaceHandler(
-	db *gorm.DB,
+	catalogUsecase usecaseCatalog.Usecase,
 	orderUsecase usecaseOrder.Usecase,
 	quotationUsecase usecaseQuotation.Usecase,
 	stockUsecase usecaseStock.Usecase,
 	skuRepo domainSKU.Repository,
+	bundleUsecase usecaseBundle.Usecase,
+	purchasingUsecase usecasePurchasing.Usecase,
+	invoiceUsecase usecaseInvoice.Usecase,
+	customerUsecase usecaseCustomer.Usecase,
+	settingsUsecase usecaseSettings.Usecase,
 	seqUsecase ...usecaseSeq.Usecase,
 ) *WorkspaceHandler {
 	var su usecaseSeq.Usecase
@@ -53,1473 +63,18 @@ func NewWorkspaceHandler(
 		su = seqUsecase[0]
 	}
 	return &WorkspaceHandler{
-		db:               db,
-		orderUsecase:     orderUsecase,
-		quotationUsecase: quotationUsecase,
-		stockUsecase:     stockUsecase,
-		skuRepo:          skuRepo,
-		seqUsecase:       su,
+		catalogUsecase:    catalogUsecase,
+		orderUsecase:      orderUsecase,
+		quotationUsecase:  quotationUsecase,
+		stockUsecase:      stockUsecase,
+		skuRepo:           skuRepo,
+		seqUsecase:        su,
+		bundleUsecase:     bundleUsecase,
+		purchasingUsecase: purchasingUsecase,
+		invoiceUsecase:    invoiceUsecase,
+		customerUsecase:   customerUsecase,
+		settingsUsecase:   settingsUsecase,
 	}
-}
-
-// ProductRecord matching erp-web-v2 features/erp/types/records.ts
-type SKUAccessoryRecord struct {
-	ID           uint   `json:"id"`
-	SKU          string `json:"sku"`
-	AccessorySKU string `json:"accessorySku"`
-	Quantity     int    `json:"quantity"`
-	Note         string `json:"note"`
-	Name         string `json:"name,omitempty"`
-}
-
-type ProductRecord struct {
-	ID              uint                 `json:"id"`
-	SKU             string               `json:"sku"`
-	Name            string               `json:"name"`
-	Type            string               `json:"type"`
-	Barcode         string               `json:"barcode"`
-	BaseUnit        string               `json:"baseUnit"`
-	RetailPrice     float64              `json:"retailPrice"`
-	WholesalePrice  float64              `json:"wholesalePrice"`
-	Cost            float64              `json:"cost"`
-	Stock           int                  `json:"stock"`
-	ReservedQty     int                  `json:"reservedQty"`
-	UsedQty         int                  `json:"usedQty"`
-	Reorder         int                  `json:"reorder"`
-	IsBundle        bool                 `json:"isBundle"`
-	IsActive        bool                 `json:"isActive"`
-	Available       int                  `json:"available"`
-	BundleAvailable *int                 `json:"bundleAvailable,omitempty"`
-	Image           string               `json:"image"`
-	Accessories     []SKUAccessoryRecord `json:"accessories,omitempty"`
-	CreatedAt       string               `json:"createdAt"`
-	LastReceivedAt  *string              `json:"lastReceivedAt"`
-	ReceiptCount    int                  `json:"receiptCount"`
-}
-
-func (h *WorkspaceHandler) GetProducts(c *fiber.Ctx) error {
-	var bodyReq struct {
-		Page     int         `json:"page"`
-		Limit    int         `json:"limit"`
-		Search   string      `json:"search"`
-		Type     string      `json:"type"`
-		Category string      `json:"category"`
-		Status   string      `json:"status"`
-		IsActive interface{} `json:"isActive"`
-		IsBundle interface{} `json:"isBundle"`
-	}
-	if c.Method() == fiber.MethodPost {
-		_ = c.BodyParser(&bodyReq)
-	}
-
-	page := bodyReq.Page
-	if page < 1 {
-		page, _ = strconv.Atoi(c.Query("page", "1"))
-	}
-	if page < 1 {
-		page = 1
-	}
-
-	limit := bodyReq.Limit
-	if limit <= 0 {
-		limit, _ = strconv.Atoi(c.Query("limit", "50"))
-	}
-	if limit <= 0 {
-		limit = 1000
-	} else if limit > 1000 {
-		limit = 1000
-	}
-
-	search := strings.TrimSpace(bodyReq.Search)
-	if search == "" {
-		search = strings.TrimSpace(c.Query("search", ""))
-	}
-
-	prodType := strings.TrimSpace(bodyReq.Type)
-	if prodType == "" {
-		prodType = strings.TrimSpace(bodyReq.Category)
-	}
-	if prodType == "" {
-		prodType = strings.TrimSpace(c.Query("type", ""))
-	}
-	if prodType == "" {
-		prodType = strings.TrimSpace(c.Query("category", ""))
-	}
-
-	var isActiveQuery string
-	if bodyReq.IsActive != nil {
-		isActiveQuery = strings.TrimSpace(fmt.Sprintf("%v", bodyReq.IsActive))
-	} else if bodyReq.Status != "" {
-		isActiveQuery = strings.TrimSpace(bodyReq.Status)
-	} else {
-		isActiveQuery = strings.TrimSpace(c.Query("isActive", ""))
-		if isActiveQuery == "" {
-			isActiveQuery = strings.TrimSpace(c.Query("status", ""))
-		}
-	}
-
-	var isBundleQuery string
-	if bodyReq.IsBundle != nil {
-		isBundleQuery = strings.TrimSpace(fmt.Sprintf("%v", bodyReq.IsBundle))
-	} else {
-		isBundleQuery = strings.TrimSpace(c.Query("isBundle", ""))
-	}
-
-	var skus []domainSKU.SKU
-	var total int64
-	query := h.db.WithContext(c.Context()).Model(&domainSKU.SKU{})
-	if search != "" {
-		s := "%" + search + "%"
-		query = query.Where("sku ILIKE ? OR name ILIKE ? OR barcode ILIKE ?", s, s, s)
-	}
-
-	// Filter by type / category (e.g. 'Finished Product', 'Raw Material', 'Bundle')
-	if prodType != "" && !strings.EqualFold(prodType, "all") {
-		if strings.EqualFold(prodType, "bundle") {
-			query = query.Where("is_bundle = true")
-		} else {
-			query = query.Where("(category ILIKE ? OR (? = 'Finished Product' AND (category IS NULL OR category = '')))", prodType, prodType)
-		}
-	}
-
-	// Filter by isBundle explicitly (F2)
-	if isBundleQuery != "" && !strings.EqualFold(isBundleQuery, "all") {
-		if strings.EqualFold(isBundleQuery, "true") {
-			query = query.Where("is_bundle = true")
-		} else if strings.EqualFold(isBundleQuery, "false") {
-			query = query.Where("is_bundle = false")
-		}
-	}
-
-	// Filter by isActive / status
-	if isActiveQuery != "" && !strings.EqualFold(isActiveQuery, "all") {
-		if strings.EqualFold(isActiveQuery, "true") || strings.EqualFold(isActiveQuery, "active") {
-			query = query.Where("status = 'active'")
-		} else if strings.EqualFold(isActiveQuery, "false") || strings.EqualFold(isActiveQuery, "inactive") {
-			query = query.Where("status != 'active'")
-		}
-	}
-
-	if err := query.Count(&total).Error; err != nil {
-		return response.InternalServerError(c, "Failed to count products: "+err.Error())
-	}
-
-	if err := query.Offset((page - 1) * limit).Limit(limit).Order("id DESC").Find(&skus).Error; err != nil {
-		return response.InternalServerError(c, "Failed to fetch products: "+err.Error())
-	}
-
-	if len(skus) == 0 {
-		return response.List(c, []ProductRecord{}, page, limit, total)
-	}
-
-	skuIDs := make([]uint, len(skus))
-	skuCodes := make([]string, len(skus))
-	for i, s := range skus {
-		skuIDs[i] = s.ID
-		skuCodes[i] = strings.ToUpper(strings.TrimSpace(s.SKU))
-	}
-
-	// 1. Batch fetch stocks aggregated across all warehouses for all retrieved SKUs
-	type StockSum struct {
-		SKUID        uint `gorm:"column:sku_id"`
-		Quantity     int  `gorm:"column:quantity"`
-		AvailableQty int  `gorm:"column:available_qty"`
-		ReservedQty  int  `gorm:"column:reserved_qty"`
-	}
-	var stockSums []StockSum
-	if err := h.db.WithContext(c.Context()).Model(&domainStock.Stock{}).
-		Select("sku_id, COALESCE(SUM(quantity), 0) AS quantity, COALESCE(SUM(available_qty), 0) AS available_qty, COALESCE(SUM(reserved_qty), 0) AS reserved_qty").
-		Where("sku_id IN ?", skuIDs).
-		Group("sku_id").
-		Scan(&stockSums).Error; err != nil {
-		return response.InternalServerError(c, "Failed to fetch stock sums: "+err.Error())
-	}
-	stockMap := make(map[uint]StockSum, len(stockSums))
-	for _, ss := range stockSums {
-		stockMap[ss.SKUID] = ss
-	}
-
-	// 1.1 Batch fetch total used quantity (movement type OUT) for retrieved SKUs
-	type UsedSum struct {
-		SKUID   uint   `gorm:"column:sku_id"`
-		SKUCode string `gorm:"column:sku_code"`
-		Qty     int    `gorm:"column:qty"`
-	}
-	var usedSums []UsedSum
-	_ = h.db.WithContext(c.Context()).Model(&domainStock.StockMovement{}).
-		Select("COALESCE(sku_id, 0) AS sku_id, UPPER(TRIM(sku_code)) AS sku_code, COALESCE(SUM(quantity), 0) AS qty").
-		Where("(sku_id IN ? OR UPPER(TRIM(sku_code)) IN ?) AND type = ?", skuIDs, skuCodes, domainStock.MovementOut).
-		Group("sku_id, UPPER(TRIM(sku_code))").
-		Scan(&usedSums).Error
-	usedMap := make(map[uint]int)
-	usedCodeMap := make(map[string]int)
-	for _, us := range usedSums {
-		if us.SKUID > 0 {
-			usedMap[us.SKUID] += us.Qty
-		}
-		if us.SKUCode != "" {
-			usedCodeMap[us.SKUCode] += us.Qty
-		}
-	}
-
-	// 2. Batch fetch TikTok SKU mappings for candidate SKU sets
-	var mappings []domainTikTok.SKUMapping
-	if err := h.db.WithContext(c.Context()).
-		Where("UPPER(TRIM(erp_sku)) IN ?", skuCodes).
-		Find(&mappings).Error; err != nil {
-		return response.InternalServerError(c, "Failed to fetch TikTok mappings: "+err.Error())
-	}
-
-	// Build map of erp_sku -> candidate TikTok SKUs
-	skuToCandidates := make(map[string]map[string]bool, len(skus))
-	var allCandidates []string
-	seenCandidate := make(map[string]bool)
-	for _, sCode := range skuCodes {
-		if sCode == "" {
-			continue
-		}
-		if _, ok := skuToCandidates[sCode]; !ok {
-			skuToCandidates[sCode] = make(map[string]bool)
-		}
-		skuToCandidates[sCode][sCode] = true
-		if !seenCandidate[sCode] {
-			seenCandidate[sCode] = true
-			allCandidates = append(allCandidates, sCode)
-		}
-	}
-	for _, m := range mappings {
-		erpUpper := strings.ToUpper(strings.TrimSpace(m.LocalSKU))
-		ttUpper := strings.ToUpper(strings.TrimSpace(m.TikTokSKU))
-		if erpUpper != "" && ttUpper != "" {
-			if _, ok := skuToCandidates[erpUpper]; !ok {
-				skuToCandidates[erpUpper] = make(map[string]bool)
-			}
-			skuToCandidates[erpUpper][ttUpper] = true
-			if !seenCandidate[ttUpper] {
-				seenCandidate[ttUpper] = true
-				allCandidates = append(allCandidates, ttUpper)
-			}
-		}
-	}
-
-	// 3. Batch fetch TikTok pending reserved quantities grouped by SKU
-	type TikTokPending struct {
-		SKU string `gorm:"column:sku"`
-		Qty int64  `gorm:"column:qty"`
-	}
-	tiktokPendingMap := make(map[string]int64)
-	if len(allCandidates) > 0 {
-		var pendingItems []TikTokPending
-		if err := h.db.WithContext(c.Context()).Model(&domainTikTok.TiktokOrderItem{}).
-			Select("UPPER(TRIM(tiktok_order_items.sku)) AS sku, COALESCE(SUM(tiktok_order_items.qty), 0) AS qty").
-			Joins("JOIN tiktok_orders ON tiktok_orders.id = tiktok_order_items.order_id").
-			Where("UPPER(TRIM(tiktok_order_items.sku)) IN ? AND tiktok_orders.stock_deducted = false AND UPPER(tiktok_orders.status) NOT IN ('CANCELLED', 'CANCELED', 'COMPLETED', 'DELIVERED', 'SHIPPED')", allCandidates).
-			Group("UPPER(TRIM(tiktok_order_items.sku))").
-			Scan(&pendingItems).Error; err != nil {
-			return response.InternalServerError(c, "Failed to calculate TikTok pending reserves: "+err.Error())
-		}
-		for _, pi := range pendingItems {
-			tiktokPendingMap[pi.SKU] = pi.Qty
-		}
-	}
-
-	// 4. Batch fetch bundle items and accessories for candidate SKUs
-	var bundleSKUs []string
-	var nonBundleSKUs []string
-	for _, s := range skus {
-		if s.IsBundle {
-			bundleSKUs = append(bundleSKUs, s.SKU)
-		} else {
-			nonBundleSKUs = append(nonBundleSKUs, s.SKU)
-		}
-	}
-
-	bundleItemsMap := make(map[string][]domainBundle.BundleItem)
-	if len(bundleSKUs) > 0 {
-		var bItems []domainBundle.BundleItem
-		_ = h.db.WithContext(c.Context()).Where("bundle_sku IN ?", bundleSKUs).Find(&bItems).Error
-		for _, bi := range bItems {
-			bundleItemsMap[bi.BundleSKU] = append(bundleItemsMap[bi.BundleSKU], bi)
-		}
-	}
-
-	// Fetch components stock availability for virtual bundles
-	var compSKUList []string
-	seenComp := make(map[string]bool)
-	for _, items := range bundleItemsMap {
-		for _, bi := range items {
-			cUpper := strings.ToUpper(strings.TrimSpace(bi.ComponentSKU))
-			if cUpper != "" && !seenComp[cUpper] {
-				seenComp[cUpper] = true
-				compSKUList = append(compSKUList, cUpper)
-			}
-		}
-	}
-
-	compAvailableMap := make(map[string]int)
-	if len(compSKUList) > 0 {
-		type CompStock struct {
-			SKUCode      string `gorm:"column:sku_code"`
-			AvailableQty int    `gorm:"column:available_qty"`
-		}
-		var compStocks []CompStock
-		_ = h.db.WithContext(c.Context()).Model(&domainStock.Stock{}).
-			Select("UPPER(TRIM(sku_code)) AS sku_code, COALESCE(SUM(available_qty), 0) AS available_qty").
-			Where("UPPER(TRIM(sku_code)) IN ?", compSKUList).
-			Group("UPPER(TRIM(sku_code))").
-			Scan(&compStocks).Error
-		for _, cs := range compStocks {
-			compAvailableMap[cs.SKUCode] = cs.AvailableQty
-		}
-	}
-
-	// Batch fetch accessories for non-bundle SKUs
-	accessoriesMap := make(map[string][]SKUAccessoryRecord)
-	if len(nonBundleSKUs) > 0 {
-		var accItems []domainSKU.SKUAccessory
-		_ = h.db.WithContext(c.Context()).Where("sku IN ?", nonBundleSKUs).Find(&accItems).Error
-		for _, ai := range accItems {
-			accessoriesMap[ai.SKU] = append(accessoriesMap[ai.SKU], SKUAccessoryRecord{
-				ID:           ai.ID,
-				SKU:          ai.SKU,
-				AccessorySKU: ai.AccessorySKU,
-				Quantity:     ai.Quantity,
-				Note:         ai.Note,
-			})
-		}
-	}
-
-	// Batch fetch receipt stats for candidate SKUs
-	receiptStatsMap, _ := h.skuRepo.GetReceiptStatsBatch(c.Context(), skuIDs)
-
-	records := make([]ProductRecord, len(skus))
-	for i, s := range skus {
-		stk := stockMap[s.ID]
-
-		pType := "Finished Product"
-		if s.Category != "" {
-			pType = s.Category
-		}
-
-		sCode := strings.ToUpper(strings.TrimSpace(s.SKU))
-		var tiktokReserved int64
-		if cands, ok := skuToCandidates[sCode]; ok {
-			for cand := range cands {
-				tiktokReserved += tiktokPendingMap[cand]
-			}
-		}
-
-		totalReserved := stk.ReservedQty + int(tiktokReserved)
-		available := stk.Quantity - totalReserved
-		if available < 0 {
-			available = 0
-		}
-
-		var bundleAvail *int
-		if s.IsBundle {
-			items := bundleItemsMap[s.SKU]
-			if len(items) == 0 {
-				zero := 0
-				bundleAvail = &zero
-			} else {
-				minSets := -1
-				for _, bi := range items {
-					reqQty := bi.Quantity
-					if reqQty <= 0 {
-						reqQty = 1
-					}
-					cStock := compAvailableMap[strings.ToUpper(strings.TrimSpace(bi.ComponentSKU))]
-					sets := cStock / reqQty
-					if minSets == -1 || sets < minSets {
-						minSets = sets
-					}
-				}
-				if minSets < 0 {
-					minSets = 0
-				}
-				bundleAvail = &minSets
-			}
-		}
-
-		usedTotal := usedMap[s.ID]
-		if alt, ok := usedCodeMap[sCode]; ok && alt > usedTotal {
-			usedTotal = alt
-		}
-
-		rcStat := receiptStatsMap[s.ID]
-		var lastRecDateStr *string
-		if rcStat.LastReceivedAt != nil {
-			formatted := rcStat.LastReceivedAt.Format(time.RFC3339)
-			lastRecDateStr = &formatted
-		}
-
-		records[i] = ProductRecord{
-			ID:              s.ID,
-			SKU:             s.SKU,
-			Name:            s.Name,
-			Type:            pType,
-			Barcode:         s.Barcode,
-			BaseUnit:        "ชิ้น",
-			RetailPrice:     s.Price,
-			WholesalePrice:  s.Price,
-			Cost:            s.CostPrice,
-			Stock:           stk.Quantity,
-			ReservedQty:     totalReserved,
-			UsedQty:         usedTotal,
-			Reorder:         s.ReorderPoint,
-			IsBundle:        s.IsBundle,
-			IsActive:        s.Status == "active",
-			Available:       available,
-			BundleAvailable: bundleAvail,
-			Image:           s.Image,
-			Accessories:     accessoriesMap[s.SKU],
-			CreatedAt:       s.CreatedAt.Format(time.RFC3339),
-			LastReceivedAt:  lastRecDateStr,
-			ReceiptCount:    rcStat.ReceiptCount,
-		}
-	}
-
-	return response.List(c, records, page, limit, total)
-}
-
-func (h *WorkspaceHandler) GetProductByCode(c *fiber.Ctx) error {
-	code := c.Params("code")
-	var s domainSKU.SKU
-	if err := h.db.WithContext(c.Context()).Where("sku = ?", code).First(&s).Error; err != nil {
-		return response.NotFound(c, "Product not found")
-	}
-
-	var stk domainStock.Stock
-	_ = h.db.WithContext(c.Context()).Where("sku_id = ?", s.ID).First(&stk).Error
-
-	pType := "Finished Product"
-	if s.Category != "" {
-		pType = s.Category
-	}
-
-	skuSet := make(map[string]bool)
-	skuUpper := strings.ToUpper(strings.TrimSpace(s.SKU))
-	if skuUpper != "" {
-		skuSet[skuUpper] = true
-	}
-
-	var mappings []domainTikTok.SKUMapping
-	_ = h.db.WithContext(c.Context()).Where("UPPER(TRIM(erp_sku)) = ?", skuUpper).Find(&mappings).Error
-	for _, m := range mappings {
-		ttUpper := strings.ToUpper(strings.TrimSpace(m.TikTokSKU))
-		if ttUpper != "" {
-			skuSet[ttUpper] = true
-		}
-	}
-
-	var candidateSKUs []string
-	for k := range skuSet {
-		candidateSKUs = append(candidateSKUs, k)
-	}
-
-	var tiktokReserved int64
-	if len(candidateSKUs) > 0 {
-		_ = h.db.WithContext(c.Context()).Model(&domainTikTok.TiktokOrderItem{}).
-			Joins("JOIN tiktok_orders ON tiktok_orders.id = tiktok_order_items.order_id").
-			Where("UPPER(TRIM(tiktok_order_items.sku)) IN ? AND tiktok_orders.stock_deducted = false AND UPPER(tiktok_orders.status) NOT IN ('CANCELLED', 'CANCELED', 'COMPLETED', 'DELIVERED', 'SHIPPED')", candidateSKUs).
-			Select("COALESCE(SUM(tiktok_order_items.qty), 0)").
-			Scan(&tiktokReserved).Error
-	}
-
-	totalReserved := stk.ReservedQty + int(tiktokReserved)
-	available := stk.Quantity - totalReserved
-	if available < 0 {
-		available = 0
-	}
-
-	var bundleAvail *int
-	if s.IsBundle {
-		var items []domainBundle.BundleItem
-		_ = h.db.WithContext(c.Context()).Where("bundle_sku = ?", s.SKU).Find(&items).Error
-		if len(items) == 0 {
-			zero := 0
-			bundleAvail = &zero
-		} else {
-			minSets := -1
-			for _, bi := range items {
-				reqQty := bi.Quantity
-				if reqQty <= 0 {
-					reqQty = 1
-				}
-				var cStock struct {
-					AvailableQty int `gorm:"column:available_qty"`
-				}
-				_ = h.db.WithContext(c.Context()).Model(&domainStock.Stock{}).
-					Select("COALESCE(SUM(available_qty), 0) AS available_qty").
-					Where("UPPER(TRIM(sku_code)) = ?", strings.ToUpper(strings.TrimSpace(bi.ComponentSKU))).
-					Scan(&cStock).Error
-				sets := cStock.AvailableQty / reqQty
-				if minSets == -1 || sets < minSets {
-					minSets = sets
-				}
-			}
-			if minSets < 0 {
-				minSets = 0
-			}
-			bundleAvail = &minSets
-		}
-	}
-
-	var accessories []SKUAccessoryRecord
-	if !s.IsBundle {
-		var accItems []domainSKU.SKUAccessory
-		_ = h.db.WithContext(c.Context()).Where("sku = ?", s.SKU).Find(&accItems).Error
-		for _, ai := range accItems {
-			accessories = append(accessories, SKUAccessoryRecord{
-				ID:           ai.ID,
-				SKU:          ai.SKU,
-				AccessorySKU: ai.AccessorySKU,
-				Quantity:     ai.Quantity,
-				Note:         ai.Note,
-			})
-		}
-	}
-
-	var usedQty int64
-	_ = h.db.WithContext(c.Context()).Model(&domainStock.StockMovement{}).
-		Where("(sku_id = ? OR UPPER(TRIM(sku_code)) = ?) AND type = ?", s.ID, skuUpper, domainStock.MovementOut).
-		Select("COALESCE(SUM(quantity), 0)").
-		Scan(&usedQty).Error
-
-	rec := ProductRecord{
-		ID:              s.ID,
-		SKU:             s.SKU,
-		Name:            s.Name,
-		Type:            pType,
-		Barcode:         s.Barcode,
-		BaseUnit:        "ชิ้น",
-		RetailPrice:     s.Price,
-		WholesalePrice:  s.Price,
-		Cost:            s.CostPrice,
-		Stock:           stk.Quantity,
-		ReservedQty:     totalReserved,
-		UsedQty:         int(usedQty),
-		Reorder:         s.ReorderPoint,
-		IsBundle:        s.IsBundle,
-		IsActive:        s.Status == "active",
-		Available:       available,
-		BundleAvailable: bundleAvail,
-		Image:           s.Image,
-		Accessories:     accessories,
-	}
-	return response.OK(c, rec)
-}
-
-func (h *WorkspaceHandler) CreateProduct(c *fiber.Ctx) error {
-	var req struct {
-		SKU             string  `json:"sku"`
-		Name            string  `json:"name"`
-		Barcode         string  `json:"barcode"`
-		Type            string  `json:"type"`
-		BaseUnit        string  `json:"baseUnit"`
-		RetailPrice     float64 `json:"retailPrice"`
-		Cost            float64 `json:"cost"`
-		IsBundle        bool    `json:"isBundle"`
-		Image           string  `json:"image"`
-		InitialQuantity int     `json:"initialQuantity"`
-		Stock           int     `json:"stock"`
-		Components      []struct {
-			ComponentSKU string `json:"componentSku"`
-			SKU          string `json:"sku"`
-			Quantity     int    `json:"quantity"`
-			Qty          int    `json:"qty"`
-			Note         string `json:"note"`
-		} `json:"components"`
-		Accessories []struct {
-			AccessorySKU string `json:"accessorySku"`
-			SKU          string `json:"sku"`
-			Quantity     int    `json:"quantity"`
-			Qty          int    `json:"qty"`
-			Note         string `json:"note"`
-		} `json:"accessories"`
-	}
-	if err := c.BodyParser(&req); err != nil {
-		return response.BadRequest(c, "Invalid request body")
-	}
-
-	skuCode := strings.ToUpper(strings.TrimSpace(req.SKU))
-	if skuCode == "" {
-		return response.BadRequest(c, "SKU is required")
-	}
-	if req.Name == "" {
-		return response.BadRequest(c, "Product name is required")
-	}
-
-	// Spec: SKU ใหม่และการแก้ไข SKU ถูกบังคับเป็นสินค้าปกติ (is_bundle = false)
-	req.IsBundle = false
-	if len(req.Accessories) > 0 {
-		for _, acc := range req.Accessories {
-			aSKU := acc.AccessorySKU
-			if aSKU == "" && acc.SKU != "" {
-				aSKU = acc.SKU
-			}
-			aSKU = strings.ToUpper(strings.TrimSpace(aSKU))
-			if aSKU == "" {
-				return response.BadRequest(c, "Accessory SKU cannot be empty")
-			}
-			if aSKU == skuCode {
-				return response.BadRequest(c, "สินค้าไม่สามารถผูกตนเองเป็น Accessory ได้")
-			}
-			qty := acc.Quantity
-			if qty <= 0 && acc.Qty > 0 {
-				qty = acc.Qty
-			}
-			if qty <= 0 {
-				return response.BadRequest(c, fmt.Sprintf("จำนวน Accessory สำหรับ SKU %s ต้องมากกว่า 0", aSKU))
-			}
-
-			// Validate accessory SKU exists
-			var accExists domainSKU.SKU
-			if err := h.db.WithContext(c.Context()).Where("UPPER(sku) = ?", aSKU).First(&accExists).Error; err != nil {
-				return response.BadRequest(c, fmt.Sprintf("ไม่พบ SKU Accessory '%s' ในระบบ", aSKU), "ACCESSORY_NOT_FOUND")
-			}
-			// Cycle check: accessory cannot have this SKU as its accessory
-			var cycleCount int64
-			_ = h.db.WithContext(c.Context()).Model(&domainSKU.SKUAccessory{}).
-				Where("UPPER(sku) = ? AND UPPER(accessory_sku) = ?", aSKU, skuCode).
-				Count(&cycleCount).Error
-			if cycleCount > 0 {
-				return response.BadRequest(c, fmt.Sprintf("เกิด Cycle: SKU %s ผูกกับ %s อยู่แล้ว", aSKU, skuCode), "ACCESSORY_CYCLE")
-			}
-		}
-	}
-
-	var createdAccessories []SKUAccessoryRecord
-	var skuEntity domainSKU.SKU
-	err := h.db.WithContext(c.Context()).Transaction(func(tx *gorm.DB) error {
-		skuEntity = domainSKU.SKU{
-			SKU:       skuCode,
-			Name:      req.Name,
-			Barcode:   strings.TrimSpace(req.Barcode),
-			Category:  req.Type,
-			Price:     req.RetailPrice,
-			CostPrice: req.Cost,
-			IsBundle:  req.IsBundle,
-			Image:     req.Image,
-			Status:    "active",
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
-		}
-
-		if err := tx.Create(&skuEntity).Error; err != nil {
-			return err
-		}
-
-		// Determine initial stock
-		initQty := req.InitialQuantity
-		if initQty <= 0 && req.Stock > 0 {
-			initQty = req.Stock
-		}
-		if initQty < 0 {
-			initQty = 0
-		}
-
-		// Create initial stock row
-		stockEntity := domainStock.Stock{
-			SKUID:        skuEntity.ID,
-			SKUCode:      skuEntity.SKU,
-			WarehouseID:  1,
-			Quantity:     initQty,
-			AvailableQty: initQty,
-			UpdatedAt:    time.Now(),
-		}
-		if err := tx.Create(&stockEntity).Error; err != nil {
-			return err
-		}
-
-		if initQty > 0 {
-			movement := domainStock.StockMovement{
-				SKUID:         skuEntity.ID,
-				SKUCode:       skuEntity.SKU,
-				WarehouseID:   1,
-				Type:          domainStock.MovementIn,
-				Quantity:      initQty,
-				BeforeQty:     0,
-				AfterQty:      initQty,
-				ReferenceType: "opening_stock",
-				ReferenceID:   skuEntity.SKU,
-				Note:          "Initial stock on SKU creation",
-				CreatedAt:     time.Now(),
-			}
-			if err := tx.Create(&movement).Error; err != nil {
-				return err
-			}
-		}
-
-		if req.IsBundle {
-			for _, comp := range req.Components {
-				compSKU := comp.ComponentSKU
-				if compSKU == "" && comp.SKU != "" {
-					compSKU = comp.SKU
-				}
-				compSKU = strings.ToUpper(strings.TrimSpace(compSKU))
-				if compSKU == "" {
-					continue
-				}
-
-				qty := comp.Quantity
-				if qty <= 0 && comp.Qty > 0 {
-					qty = comp.Qty
-				}
-				if qty <= 0 {
-					qty = 1
-				}
-
-				bundleItem := domainBundle.BundleItem{
-					BundleSKU:    skuEntity.SKU,
-					ComponentSKU: compSKU,
-					Quantity:     qty,
-					Note:         comp.Note,
-					CreatedAt:    time.Now(),
-					UpdatedAt:    time.Now(),
-				}
-				if err := tx.Create(&bundleItem).Error; err != nil {
-					return err
-				}
-			}
-		} else if len(req.Accessories) > 0 {
-			for _, acc := range req.Accessories {
-				aSKU := acc.AccessorySKU
-				if aSKU == "" && acc.SKU != "" {
-					aSKU = acc.SKU
-				}
-				aSKU = strings.ToUpper(strings.TrimSpace(aSKU))
-				if aSKU == "" {
-					continue
-				}
-
-				qty := acc.Quantity
-				if qty <= 0 && acc.Qty > 0 {
-					qty = acc.Qty
-				}
-				if qty <= 0 {
-					qty = 1
-				}
-
-				accItem := domainSKU.SKUAccessory{
-					SKU:          skuEntity.SKU,
-					AccessorySKU: aSKU,
-					Quantity:     qty,
-					Note:         acc.Note,
-					CreatedAt:    time.Now(),
-					UpdatedAt:    time.Now(),
-				}
-				if err := tx.Create(&accItem).Error; err != nil {
-					return err
-				}
-				createdAccessories = append(createdAccessories, SKUAccessoryRecord{
-					ID:           accItem.ID,
-					SKU:          accItem.SKU,
-					AccessorySKU: accItem.AccessorySKU,
-					Quantity:     accItem.Quantity,
-					Note:         accItem.Note,
-				})
-			}
-		}
-
-		return nil
-	})
-
-	if err != nil {
-		return response.BadRequest(c, "Failed to create product: "+err.Error())
-	}
-
-	rec := ProductRecord{
-		ID:          skuEntity.ID,
-		SKU:         skuEntity.SKU,
-		Name:        skuEntity.Name,
-		Type:        skuEntity.Category,
-		Barcode:     skuEntity.Barcode,
-		BaseUnit:    req.BaseUnit,
-		RetailPrice: skuEntity.Price,
-		Cost:        skuEntity.CostPrice,
-		IsBundle:    skuEntity.IsBundle,
-		IsActive:    true,
-		Image:       skuEntity.Image,
-		Accessories: createdAccessories,
-	}
-	return response.Created(c, rec, "Product created successfully")
-}
-
-// resolveProductByCode finds a product strictly by SKU string (case-insensitive).
-// Numeric-looking SKUs are matched as SKU, never as record ID (FULL-12 v2).
-func (h *WorkspaceHandler) resolveProductByCode(c *fiber.Ctx, code string) (*domainSKU.SKU, error) {
-	var s domainSKU.SKU
-	if err := h.db.WithContext(c.Context()).Where("UPPER(sku) = ?", strings.ToUpper(strings.TrimSpace(code))).First(&s).Error; err != nil {
-		return nil, err
-	}
-	return &s, nil
-}
-
-// resolveProductByID finds a product by record ID.
-func (h *WorkspaceHandler) resolveProductByID(c *fiber.Ctx, id string) (*domainSKU.SKU, error) {
-	uid, err := strconv.ParseUint(id, 10, 32)
-	if err != nil {
-		return nil, errors.New("invalid product ID")
-	}
-	var s domainSKU.SKU
-	if err := h.db.WithContext(c.Context()).First(&s, uid).Error; err != nil {
-		return nil, err
-	}
-	return &s, nil
-}
-
-// GetProductByID returns a product by numeric record ID.
-func (h *WorkspaceHandler) GetProductByID(c *fiber.Ctx) error {
-	s, err := h.resolveProductByID(c, c.Params("id"))
-	if err != nil {
-		return response.NotFound(c, "Product not found")
-	}
-	return response.OK(c, fiber.Map{"id": s.ID, "sku": s.SKU, "name": s.Name, "type": s.Category, "retailPrice": s.Price, "cost": s.CostPrice, "isBundle": s.IsBundle, "isActive": s.Status == "active", "image": s.Image})
-}
-
-// UpdateProductByID updates a product by numeric record ID.
-func (h *WorkspaceHandler) UpdateProductByID(c *fiber.Ctx) error {
-	var req struct {
-		SKU         *string  `json:"sku"`
-		Name        *string  `json:"name"`
-		Barcode     *string  `json:"barcode"`
-		Type        *string  `json:"type"`
-		RetailPrice *float64 `json:"retailPrice"`
-		Cost        *float64 `json:"cost"`
-		IsBundle    *bool    `json:"isBundle"`
-		Image       *string  `json:"image"`
-		Status      *string  `json:"status"`
-	}
-	if err := c.BodyParser(&req); err != nil {
-		return response.BadRequest(c, "Invalid request body")
-	}
-	s, err := h.resolveProductByID(c, c.Params("id"))
-	if err != nil {
-		return response.NotFound(c, "Product not found")
-	}
-
-	oldSKU := s.SKU
-	skuChanged := false
-
-	if req.SKU != nil {
-		newSKU := strings.ToUpper(strings.TrimSpace(*req.SKU))
-		if newSKU != "" && newSKU != strings.ToUpper(oldSKU) {
-			// Check uniqueness
-			var dup domainSKU.SKU
-			if err := h.db.WithContext(c.Context()).Where("UPPER(sku) = ? AND id != ?", newSKU, s.ID).First(&dup).Error; err == nil {
-				return response.BadRequest(c, "รหัส SKU '"+newSKU+"' ถูกใช้งานแล้ว กรุณาใช้รหัสอื่น", "SKU_ALREADY_EXISTS")
-			}
-			s.SKU = newSKU
-			skuChanged = true
-		}
-	}
-
-	if req.Name != nil && *req.Name != "" {
-		s.Name = *req.Name
-	}
-	if req.Barcode != nil {
-		s.Barcode = strings.TrimSpace(*req.Barcode)
-	}
-	if req.Type != nil {
-		s.Category = *req.Type
-	}
-	if req.RetailPrice != nil && *req.RetailPrice > 0 {
-		s.Price = *req.RetailPrice
-	}
-	if req.Cost != nil && *req.Cost >= 0 {
-		s.CostPrice = *req.Cost
-	}
-	// Spec: SKU ใหม่และการแก้ไข SKU ถูกบังคับเป็นสินค้าปกติ
-	s.IsBundle = false
-	if req.Image != nil {
-		s.Image = *req.Image
-	}
-	if req.Status != nil && *req.Status != "" {
-		s.Status = strings.ToLower(strings.TrimSpace(*req.Status))
-	}
-	s.UpdatedAt = time.Now()
-
-	err = h.db.WithContext(c.Context()).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Save(s).Error; err != nil {
-			return err
-		}
-		if skuChanged {
-			if err := h.cascadeSKURename(tx, oldSKU, s.SKU); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return response.InternalServerError(c, "Failed to update product: "+err.Error())
-	}
-
-	return response.OK(c, fiber.Map{"id": s.ID, "sku": s.SKU, "name": s.Name, "isActive": s.Status == "active"}, "Product updated successfully")
-}
-
-// UpdateProductStatusByID toggles a product's status by numeric record ID.
-func (h *WorkspaceHandler) UpdateProductStatusByID(c *fiber.Ctx) error {
-	var req struct {
-		Status string `json:"status"`
-	}
-	if err := c.BodyParser(&req); err != nil {
-		return response.BadRequest(c, "Invalid request body")
-	}
-	s, err := h.resolveProductByID(c, c.Params("id"))
-	if err != nil {
-		return response.NotFound(c, "Product not found")
-	}
-	newStatus := strings.ToLower(strings.TrimSpace(req.Status))
-	if newStatus != "active" && newStatus != "inactive" {
-		if newStatus == "archived" {
-			newStatus = "inactive"
-		} else {
-			newStatus = "active"
-		}
-	}
-	s.Status = newStatus
-	s.UpdatedAt = time.Now()
-	if err := h.db.WithContext(c.Context()).Save(s).Error; err != nil {
-		return response.InternalServerError(c, "Failed to update product status")
-	}
-	return response.OK(c, fiber.Map{"sku": s.SKU, "status": s.Status}, "Product status updated successfully")
-}
-
-// UpdateProductReorderByID updates a product's reorder point by numeric record ID.
-func (h *WorkspaceHandler) UpdateProductReorderByID(c *fiber.Ctx) error {
-	var req struct {
-		Reorder *int `json:"reorder"`
-	}
-	if err := c.BodyParser(&req); err != nil || req.Reorder == nil {
-		return response.BadRequest(c, "Invalid request body: reorder point is required")
-	}
-	if *req.Reorder < 0 {
-		return response.BadRequest(c, "Reorder point must be greater than or equal to 0")
-	}
-	s, err := h.resolveProductByID(c, c.Params("id"))
-	if err != nil {
-		return response.NotFound(c, "Product not found")
-	}
-	s.ReorderPoint = *req.Reorder
-	s.UpdatedAt = time.Now()
-	if err := h.db.WithContext(c.Context()).Save(s).Error; err != nil {
-		return response.InternalServerError(c, "Failed to update product reorder point")
-	}
-	return response.OK(c, fiber.Map{"id": s.ID, "sku": s.SKU, "reorder": s.ReorderPoint}, "Reorder point updated successfully")
-}
-
-// DeleteProductByID deletes a product by numeric record ID (reference-safe).
-func (h *WorkspaceHandler) DeleteProductByID(c *fiber.Ctx) error {
-	s, err := h.resolveProductByID(c, c.Params("id"))
-	if err != nil {
-		return response.NotFound(c, "Product not found")
-	}
-	return h.deleteProductRecord(c, s)
-}
-
-// UpdateProductReorder updates a product's reorder point by SKU code.
-func (h *WorkspaceHandler) UpdateProductReorder(c *fiber.Ctx) error {
-	code := strings.TrimSpace(c.Params("code"))
-	if code == "" {
-		return response.BadRequest(c, "Product SKU is required")
-	}
-
-	var req struct {
-		Reorder *int `json:"reorder"`
-	}
-	if err := c.BodyParser(&req); err != nil || req.Reorder == nil {
-		return response.BadRequest(c, "Invalid request body: reorder point is required")
-	}
-	if *req.Reorder < 0 {
-		return response.BadRequest(c, "Reorder point must be greater than or equal to 0")
-	}
-
-	var s domainSKU.SKU
-	if err := h.db.WithContext(c.Context()).Where("UPPER(sku) = ?", strings.ToUpper(code)).First(&s).Error; err != nil {
-		return response.NotFound(c, "Product not found")
-	}
-
-	s.ReorderPoint = *req.Reorder
-	s.UpdatedAt = time.Now()
-	if err := h.db.WithContext(c.Context()).Save(&s).Error; err != nil {
-		return response.InternalServerError(c, "Failed to update product reorder point")
-	}
-
-	return response.OK(c, fiber.Map{
-		"sku":     s.SKU,
-		"reorder": s.ReorderPoint,
-	}, "Reorder point updated successfully")
-}
-
-func (h *WorkspaceHandler) UpdateProductStatus(c *fiber.Ctx) error {
-	code := strings.TrimSpace(c.Params("code"))
-	if code == "" {
-		return response.BadRequest(c, "Product SKU is required")
-	}
-
-	var req struct {
-		Status string `json:"status"`
-	}
-	if err := c.BodyParser(&req); err != nil {
-		return response.BadRequest(c, "Invalid request body")
-	}
-
-	var s domainSKU.SKU
-	// FULL-12 v2: the :code param is always a SKU string. Numeric-looking SKUs
-	// are matched as SKU, never as record ID — the frontend sends SKU values in
-	// the path, so interpreting "42" as an ID mutated/deleted the wrong target.
-	// Callers that need ID-based access use /products/id/:id routes.
-	if err := h.db.WithContext(c.Context()).Where("UPPER(sku) = ?", strings.ToUpper(code)).First(&s).Error; err != nil {
-		return response.NotFound(c, "Product not found")
-	}
-
-	newStatus := strings.ToLower(strings.TrimSpace(req.Status))
-	if newStatus != "active" && newStatus != "inactive" {
-		if newStatus == "archived" {
-			newStatus = "inactive"
-		} else {
-			newStatus = "active"
-		}
-	}
-
-	s.Status = newStatus
-	s.UpdatedAt = time.Now()
-	if err := h.db.WithContext(c.Context()).Save(&s).Error; err != nil {
-		return response.InternalServerError(c, "Failed to update product status")
-	}
-
-	return response.OK(c, fiber.Map{
-		"sku":    s.SKU,
-		"status": s.Status,
-	}, "Product status updated successfully")
-}
-
-func (h *WorkspaceHandler) UpdateProduct(c *fiber.Ctx) error {
-	code := strings.TrimSpace(c.Params("code"))
-	if code == "" {
-		return response.BadRequest(c, "Product SKU is required")
-	}
-
-	var req struct {
-		SKU         *string  `json:"sku"`
-		Name        *string  `json:"name"`
-		Barcode     *string  `json:"barcode"`
-		Type        *string  `json:"type"`
-		RetailPrice *float64 `json:"retailPrice"`
-		Cost        *float64 `json:"cost"`
-		IsBundle    *bool    `json:"isBundle"`
-		Image       *string  `json:"image"`
-		Status      *string  `json:"status"`
-		Components  []struct {
-			ComponentSKU string `json:"componentSku"`
-			SKU          string `json:"sku"`
-			Quantity     int    `json:"quantity"`
-			Qty          int    `json:"qty"`
-			Note         string `json:"note"`
-		} `json:"components"`
-		Accessories []struct {
-			AccessorySKU string `json:"accessorySku"`
-			SKU          string `json:"sku"`
-			Quantity     int    `json:"quantity"`
-			Qty          int    `json:"qty"`
-			Note         string `json:"note"`
-		} `json:"accessories"`
-	}
-	if err := c.BodyParser(&req); err != nil {
-		return response.BadRequest(c, "Invalid request body")
-	}
-
-	var s domainSKU.SKU
-	// FULL-12 v2: :code is always a SKU string (see UpdateProductStatus).
-	if err := h.db.WithContext(c.Context()).Where("UPPER(sku) = ?", strings.ToUpper(code)).First(&s).Error; err != nil {
-		return response.NotFound(c, "Product not found")
-	}
-
-	oldSKU := s.SKU
-	skuChanged := false
-
-	if req.SKU != nil {
-		newSKU := strings.ToUpper(strings.TrimSpace(*req.SKU))
-		if newSKU != "" && newSKU != strings.ToUpper(oldSKU) {
-			// Check uniqueness
-			var dup domainSKU.SKU
-			if err := h.db.WithContext(c.Context()).Where("UPPER(sku) = ? AND id != ?", newSKU, s.ID).First(&dup).Error; err == nil {
-				return response.BadRequest(c, "รหัส SKU '"+newSKU+"' ถูกใช้งานแล้ว กรุณาใช้รหัสอื่น", "SKU_ALREADY_EXISTS")
-			}
-			s.SKU = newSKU
-			skuChanged = true
-		}
-	}
-
-	// FULL-11: only fields present in the payload are applied; omitted fields
-	// keep their stored values (cost, bundle flag, image survive partial updates).
-	if req.Name != nil && *req.Name != "" {
-		s.Name = *req.Name
-	}
-	if req.Barcode != nil {
-		s.Barcode = strings.TrimSpace(*req.Barcode)
-	}
-	if req.Type != nil {
-		s.Category = *req.Type
-	}
-	if req.RetailPrice != nil && *req.RetailPrice > 0 {
-		s.Price = *req.RetailPrice
-	}
-	if req.Cost != nil && *req.Cost >= 0 {
-		s.CostPrice = *req.Cost
-	}
-	// Spec: SKU ใหม่และการแก้ไข SKU ถูกบังคับเป็นสินค้าปกติ
-	s.IsBundle = false
-	if req.Image != nil {
-		s.Image = *req.Image
-	}
-	if req.Status != nil && *req.Status != "" {
-		s.Status = strings.ToLower(strings.TrimSpace(*req.Status))
-	}
-	s.UpdatedAt = time.Now()
-
-	// Validate accessories if provided for non-bundle product
-	if !s.IsBundle && req.Accessories != nil {
-		for _, acc := range req.Accessories {
-			aSKU := acc.AccessorySKU
-			if aSKU == "" && acc.SKU != "" {
-				aSKU = acc.SKU
-			}
-			aSKU = strings.ToUpper(strings.TrimSpace(aSKU))
-			if aSKU == "" {
-				return response.BadRequest(c, "Accessory SKU cannot be empty")
-			}
-			if aSKU == strings.ToUpper(s.SKU) {
-				return response.BadRequest(c, "สินค้าไม่สามารถผูกตนเองเป็น Accessory ได้")
-			}
-			qty := acc.Quantity
-			if qty <= 0 && acc.Qty > 0 {
-				qty = acc.Qty
-			}
-			if qty <= 0 {
-				return response.BadRequest(c, fmt.Sprintf("จำนวน Accessory สำหรับ SKU %s ต้องมากกว่า 0", aSKU))
-			}
-
-			// Validate accessory SKU exists
-			var accExists domainSKU.SKU
-			if err := h.db.WithContext(c.Context()).Where("UPPER(sku) = ?", aSKU).First(&accExists).Error; err != nil {
-				return response.BadRequest(c, fmt.Sprintf("ไม่พบ SKU Accessory '%s' ในระบบ", aSKU), "ACCESSORY_NOT_FOUND")
-			}
-			// Cycle check: accessory cannot have this SKU as its accessory
-			var cycleCount int64
-			_ = h.db.WithContext(c.Context()).Model(&domainSKU.SKUAccessory{}).
-				Where("UPPER(sku) = ? AND UPPER(accessory_sku) = ?", aSKU, strings.ToUpper(s.SKU)).
-				Count(&cycleCount).Error
-			if cycleCount > 0 {
-				return response.BadRequest(c, fmt.Sprintf("เกิด Cycle: SKU %s ผูกกับ %s อยู่แล้ว", aSKU, s.SKU), "ACCESSORY_CYCLE")
-			}
-		}
-	}
-
-	// Use the OLD sku for cleanup when SKU was renamed,
-	// because cascade hasn't run yet at that point.
-	cleanupSKU := oldSKU
-
-	var updatedAccessories []SKUAccessoryRecord
-	err := h.db.WithContext(c.Context()).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Save(&s).Error; err != nil {
-			return err
-		}
-
-		// Cascade SKU rename to all referencing tables
-		if skuChanged {
-			if err := h.cascadeSKURename(tx, oldSKU, s.SKU); err != nil {
-				return err
-			}
-			cleanupSKU = s.SKU
-		}
-
-		if s.IsBundle {
-			// If product is bundle, remove any accessories it might have previously had
-			_ = tx.Where("sku = ?", cleanupSKU).Delete(&domainSKU.SKUAccessory{}).Error
-
-			if req.Components != nil {
-				// Replace existing bundle components with the updated list
-				if err := tx.Where("bundle_sku = ?", cleanupSKU).Delete(&domainBundle.BundleItem{}).Error; err != nil {
-					return err
-				}
-				for _, comp := range req.Components {
-					compSKU := comp.ComponentSKU
-					if compSKU == "" && comp.SKU != "" {
-						compSKU = comp.SKU
-					}
-					compSKU = strings.ToUpper(strings.TrimSpace(compSKU))
-					if compSKU == "" {
-						continue
-					}
-
-					qty := comp.Quantity
-					if qty <= 0 && comp.Qty > 0 {
-						qty = comp.Qty
-					}
-					if qty <= 0 {
-						qty = 1
-					}
-
-					bundleItem := domainBundle.BundleItem{
-						BundleSKU:    s.SKU,
-						ComponentSKU: compSKU,
-						Quantity:     qty,
-						Note:         comp.Note,
-						CreatedAt:    time.Now(),
-						UpdatedAt:    time.Now(),
-					}
-					if err := tx.Create(&bundleItem).Error; err != nil {
-						return err
-					}
-				}
-			}
-		} else {
-			// If product is non-bundle, remove any bundle_items it might have had
-			_ = tx.Where("bundle_sku = ?", cleanupSKU).Delete(&domainBundle.BundleItem{}).Error
-
-			if req.Accessories != nil {
-				// Replace existing accessories
-				if err := tx.Where("sku = ?", cleanupSKU).Delete(&domainSKU.SKUAccessory{}).Error; err != nil {
-					return err
-				}
-				for _, acc := range req.Accessories {
-					aSKU := acc.AccessorySKU
-					if aSKU == "" && acc.SKU != "" {
-						aSKU = acc.SKU
-					}
-					aSKU = strings.ToUpper(strings.TrimSpace(aSKU))
-					if aSKU == "" {
-						continue
-					}
-
-					qty := acc.Quantity
-					if qty <= 0 && acc.Qty > 0 {
-						qty = acc.Qty
-					}
-					if qty <= 0 {
-						qty = 1
-					}
-
-					accItem := domainSKU.SKUAccessory{
-						SKU:          s.SKU,
-						AccessorySKU: aSKU,
-						Quantity:     qty,
-						Note:         acc.Note,
-						CreatedAt:    time.Now(),
-						UpdatedAt:    time.Now(),
-					}
-					if err := tx.Create(&accItem).Error; err != nil {
-						return err
-					}
-					updatedAccessories = append(updatedAccessories, SKUAccessoryRecord{
-						ID:           accItem.ID,
-						SKU:          accItem.SKU,
-						AccessorySKU: accItem.AccessorySKU,
-						Quantity:     accItem.Quantity,
-						Note:         accItem.Note,
-					})
-				}
-			}
-		}
-		return nil
-	})
-
-	if err != nil {
-		return response.InternalServerError(c, "Failed to update product: "+err.Error())
-	}
-
-	// If accessories weren't passed in update, fetch existing
-	if !s.IsBundle && req.Accessories == nil {
-		var accItems []domainSKU.SKUAccessory
-		_ = h.db.WithContext(c.Context()).Where("sku = ?", s.SKU).Find(&accItems).Error
-		for _, ai := range accItems {
-			updatedAccessories = append(updatedAccessories, SKUAccessoryRecord{
-				ID:           ai.ID,
-				SKU:          ai.SKU,
-				AccessorySKU: ai.AccessorySKU,
-				Quantity:     ai.Quantity,
-				Note:         ai.Note,
-			})
-		}
-	}
-
-	rec := ProductRecord{
-		ID:          s.ID,
-		SKU:         s.SKU,
-		Name:        s.Name,
-		Type:        s.Category,
-		RetailPrice: s.Price,
-		Cost:        s.CostPrice,
-		IsBundle:    s.IsBundle,
-		IsActive:    s.Status == "active",
-		Image:       s.Image,
-		Accessories: updatedAccessories,
-	}
-	return response.OK(c, rec, "Product updated successfully")
-}
-
-// cascadeSKURename updates all tables that reference the old SKU string to use
-// the new SKU string. Must be called inside a transaction. Tables that reference
-// by sku_id (numeric FK) don't need updating because the record ID stays the same.
-func (h *WorkspaceHandler) cascadeSKURename(tx *gorm.DB, oldSKU, newSKU string) error {
-	// bundle_items: both bundle_sku and component_sku columns
-	if err := tx.Exec("UPDATE bundle_items SET bundle_sku = ? WHERE bundle_sku = ?", newSKU, oldSKU).Error; err != nil {
-		return fmt.Errorf("cascade bundle_items.bundle_sku: %w", err)
-	}
-	if err := tx.Exec("UPDATE bundle_items SET component_sku = ? WHERE component_sku = ?", newSKU, oldSKU).Error; err != nil {
-		return fmt.Errorf("cascade bundle_items.component_sku: %w", err)
-	}
-
-	// sku_accessories: both sku and accessory_sku columns
-	if err := tx.Exec("UPDATE sku_accessories SET sku = ? WHERE sku = ?", newSKU, oldSKU).Error; err != nil {
-		return fmt.Errorf("cascade sku_accessories.sku: %w", err)
-	}
-	if err := tx.Exec("UPDATE sku_accessories SET accessory_sku = ? WHERE accessory_sku = ?", newSKU, oldSKU).Error; err != nil {
-		return fmt.Errorf("cascade sku_accessories.accessory_sku: %w", err)
-	}
-
-	// order_items
-	if err := tx.Exec("UPDATE order_items SET sku = ? WHERE sku = ?", newSKU, oldSKU).Error; err != nil {
-		return fmt.Errorf("cascade order_items.sku: %w", err)
-	}
-
-	// po_items
-	if err := tx.Exec("UPDATE po_items SET sku = ? WHERE sku = ?", newSKU, oldSKU).Error; err != nil {
-		return fmt.Errorf("cascade po_items.sku: %w", err)
-	}
-
-	// quotation_lines
-	if err := tx.Exec("UPDATE quotation_lines SET sku = ? WHERE sku = ?", newSKU, oldSKU).Error; err != nil {
-		return fmt.Errorf("cascade quotation_lines.sku: %w", err)
-	}
-
-	return nil
-}
-
-func (h *WorkspaceHandler) DeleteProduct(c *fiber.Ctx) error {
-	code := strings.TrimSpace(c.Params("code"))
-	if code == "" {
-		return response.BadRequest(c, "Product SKU is required")
-	}
-
-	s, err := h.resolveProductByCode(c, code)
-	if err != nil {
-		return response.NotFound(c, "Product not found")
-	}
-	return h.deleteProductRecord(c, s)
-}
-
-// deleteProductRecord deletes a resolved SKU with the FULL-13 reference check
-// running in ONE transaction.
-func (h *WorkspaceHandler) deleteProductRecord(c *fiber.Ctx, s *domainSKU.SKU) error {
-	// FULL-13: reference check + delete run in ONE transaction; the reference
-	// query error is no longer discarded. Concurrent reference creation after
-	// the check is still possible until FK restrictions exist, but the check
-	// itself can no longer fail-open.
-	var inUse bool
-	var inUseMsg string
-	err := h.db.WithContext(c.Context()).Transaction(func(tx *gorm.DB) error {
-		// Re-lock the SKU row inside the tx so the product cannot be deleted
-		// twice or mutated while we inspect references.
-		var locked domainSKU.SKU
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, s.ID).Error; err != nil {
-			return err
-		}
-
-		type refCount struct {
-			PositiveStock int64 `gorm:"column:positive_stock"`
-			Movements     int64 `gorm:"column:movements"`
-			OrderItems    int64 `gorm:"column:order_items"`
-			POItems       int64 `gorm:"column:po_items"`
-			QuotationLn   int64 `gorm:"column:quotation_lines"`
-			UsedAsComp    int64 `gorm:"column:used_as_comp"`
-			UsedAsAcc     int64 `gorm:"column:used_as_acc"`
-		}
-		var refs refCount
-
-		// For bundle products, stock and movements are virtual (derived from child components),
-		// so we only check if the bundle itself was used in orders, POs, quotations, or child of another bundle/accessory.
-		if s.IsBundle {
-			if err := tx.Raw(`
-				SELECT
-					0 AS positive_stock,
-					0 AS movements,
-					(SELECT COUNT(*) FROM order_items WHERE sku = ?) AS order_items,
-					(SELECT COUNT(*) FROM po_items WHERE sku = ?) AS po_items,
-					(SELECT COUNT(*) FROM quotation_lines WHERE sku = ?) AS quotation_lines,
-					(SELECT COUNT(*) FROM bundle_items WHERE component_sku = ?) AS used_as_comp,
-					(SELECT COUNT(*) FROM sku_accessories WHERE accessory_sku = ?) AS used_as_acc
-			`, s.SKU, s.SKU, s.SKU, s.SKU, s.SKU).Scan(&refs).Error; err != nil {
-				return fmt.Errorf("reference check failed: %w", err)
-			}
-		} else {
-			if err := tx.Raw(`
-				SELECT
-					(SELECT COUNT(*) FROM stocks WHERE sku_id = ? AND (quantity > 0 OR available_qty > 0)) AS positive_stock,
-					(SELECT COUNT(*) FROM stock_movements WHERE sku_id = ?) AS movements,
-					(SELECT COUNT(*) FROM order_items WHERE sku = ?) AS order_items,
-					(SELECT COUNT(*) FROM po_items WHERE sku = ?) AS po_items,
-					(SELECT COUNT(*) FROM quotation_lines WHERE sku = ?) AS quotation_lines,
-					(SELECT COUNT(*) FROM bundle_items WHERE component_sku = ?) AS used_as_comp,
-					(SELECT COUNT(*) FROM sku_accessories WHERE accessory_sku = ?) AS used_as_acc
-			`, s.ID, s.ID, s.SKU, s.SKU, s.SKU, s.SKU, s.SKU).Scan(&refs).Error; err != nil {
-				return fmt.Errorf("reference check failed: %w", err)
-			}
-		}
-
-		var inUseReasons []string
-		if refs.PositiveStock > 0 {
-			inUseReasons = append(inUseReasons, fmt.Sprintf("มีสต็อกคงเหลือ (%d รายการ)", refs.PositiveStock))
-		}
-		if refs.Movements > 0 {
-			inUseReasons = append(inUseReasons, fmt.Sprintf("มีประวัติการเคลื่อนไหวสต็อก (%d รายการ)", refs.Movements))
-		}
-		if refs.OrderItems > 0 {
-			inUseReasons = append(inUseReasons, fmt.Sprintf("อยู่ในรายการคำสั่งซื้อ (%d รายการ)", refs.OrderItems))
-		}
-		if refs.POItems > 0 {
-			inUseReasons = append(inUseReasons, fmt.Sprintf("อยู่ในใบสั่งซื้อ PO (%d รายการ)", refs.POItems))
-		}
-		if refs.QuotationLn > 0 {
-			inUseReasons = append(inUseReasons, fmt.Sprintf("อยู่ในใบเสนอราคา (%d รายการ)", refs.QuotationLn))
-		}
-		if refs.UsedAsComp > 0 {
-			inUseReasons = append(inUseReasons, fmt.Sprintf("ถูกใช้เป็นส่วนประกอบในชุด Bundle อื่น (%d รายการ)", refs.UsedAsComp))
-		}
-		if refs.UsedAsAcc > 0 {
-			inUseReasons = append(inUseReasons, fmt.Sprintf("ถูกใช้เป็นบรรจุภัณฑ์/Accessory ในสินค้าอื่น (%d รายการ)", refs.UsedAsAcc))
-		}
-
-		if len(inUseReasons) > 0 {
-			inUse = true
-			inUseMsg = strings.Join(inUseReasons, ", ")
-			return nil
-		}
-
-		// Clean up initial zero-stock records, bundle definitions, and accessories owned by this SKU
-		if err := tx.Where("sku_id = ?", s.ID).Delete(&domainStock.Stock{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("bundle_sku = ?", s.SKU).Delete(&domainBundle.BundleItem{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("sku = ?", s.SKU).Delete(&domainSKU.SKUAccessory{}).Error; err != nil {
-			return err
-		}
-
-		return tx.Delete(&domainSKU.SKU{}, s.ID).Error
-	})
-
-	if err != nil {
-		return response.InternalServerError(c, "Failed to delete product: "+err.Error())
-	}
-	if inUse {
-		return response.BadRequest(c, "ไม่สามารถลบสินค้านี้ได้: "+inUseMsg+" กรุณาปิดการใช้งาน (Inactive) แทน", "PRODUCT_IN_USE")
-	}
-
-	return response.OK(c, nil, "Product deleted successfully")
 }
 
 // OrderRecord matching erp-web-v2 features/erp/types/records.ts
@@ -1584,65 +139,24 @@ func (h *WorkspaceHandler) GetOrders(c *fiber.Ctx) error {
 		paymentStatus = strings.TrimSpace(c.Query("paymentStatus", ""))
 	}
 
-	var orders []domainOrder.Order
-	var total int64
-	query := h.db.WithContext(c.Context()).Model(&domainOrder.Order{})
-
-	if search != "" {
-		s := "%" + search + "%"
-		query = query.Where("order_no ILIKE ? OR customer_name ILIKE ?", s, s)
+	items, total, err := h.orderUsecase.ListSales(c.Context(), domainOrder.SalesQuery{
+		Search:        search,
+		Status:        status,
+		Channel:       channel,
+		PaymentStatus: paymentStatus,
+		Page:          page,
+		Limit:         limit,
+	})
+	if err != nil {
+		return response.InternalServerError(c, "Failed to load sales orders")
 	}
 
-	if status != "" && !strings.EqualFold(status, "all") {
-		stUpper := strings.ToUpper(status)
-		if stUpper == "COMPLETED" {
-			query = query.Where("UPPER(status) IN ('COMPLETED', 'SHIPPED')")
-		} else {
-			query = query.Where("UPPER(status) = ?", stUpper)
-		}
-	}
-
-	if channel != "" && !strings.EqualFold(channel, "all") {
-		cLower := strings.ToLower(channel)
-		if cLower == "manual" {
-			query = query.Where("LOWER(channel) IN (?) OR channel IS NULL OR channel = ''", []string{"manual", "direct"})
-		} else {
-			query = query.Where("LOWER(channel) LIKE ?", "%"+cLower+"%")
-		}
-	}
-
-	if strings.EqualFold(paymentStatus, "paid") {
-		// Paid orders have an invoice with status PAID
-		query = query.Where("id IN (SELECT order_id FROM invoices WHERE order_id IS NOT NULL AND status = 'PAID')")
-	} else if strings.EqualFold(paymentStatus, "unpaid") {
-		// Unpaid orders have either no invoice or an unpaid invoice
-		query = query.Where("id NOT IN (SELECT order_id FROM invoices WHERE order_id IS NOT NULL AND status = 'PAID')")
-	}
-
-	query.Count(&total)
-	query.Preload("Items").Offset((page - 1) * limit).Limit(limit).Order("id DESC").Find(&orders)
-
-	// Preload invoice map to populate invRef
-	var invoices []domainInvoice.Invoice
-	orderIDs := make([]uint, len(orders))
-	for i, o := range orders {
-		orderIDs[i] = o.ID
-	}
-	invoiceMap := make(map[uint]domainInvoice.Invoice)
-	if len(orderIDs) > 0 {
-		h.db.WithContext(c.Context()).Where("order_id IN ?", orderIDs).Find(&invoices)
-		for _, inv := range invoices {
-			if inv.OrderID != nil {
-				invoiceMap[*inv.OrderID] = inv
-			}
-		}
-	}
-
-	records := make([]OrderRecord, len(orders))
-	for i, o := range orders {
-		invRef := "—"
-		if inv, ok := invoiceMap[o.ID]; ok {
-			invRef = string(inv.Status)
+	records := make([]OrderRecord, len(items))
+	for i, item := range items {
+		o := item.Order
+		invRef := "â€”"
+		if item.InvoiceStatus != "" {
+			invRef = item.InvoiceStatus
 		}
 
 		records[i] = OrderRecord{
@@ -1731,17 +245,12 @@ func (h *WorkspaceHandler) CreateSalesOrder(c *fiber.Ctx) error {
 }
 
 func (h *WorkspaceHandler) GetSalesOrderByID(c *fiber.Ctx) error {
-	param := c.Params("id")
-	var ord domainOrder.Order
-	query := h.db.WithContext(c.Context()).Preload("Items")
-	if id, err := strconv.ParseUint(param, 10, 32); err == nil {
-		if err := query.Where("id = ? OR order_no = ?", id, param).First(&ord).Error; err != nil {
-			return response.NotFound(c, "Sales order not found")
-		}
-	} else {
-		if err := query.Where("order_no = ?", param).First(&ord).Error; err != nil {
-			return response.NotFound(c, "Sales order not found")
-		}
+	ord, err := h.orderUsecase.GetByRef(c.Context(), c.Params("id"))
+	if err != nil {
+		return response.InternalServerError(c, "Failed to load sales order")
+	}
+	if ord == nil {
+		return response.NotFound(c, "Sales order not found")
 	}
 
 	type LineItem struct {
@@ -1783,62 +292,20 @@ func (h *WorkspaceHandler) GetSalesOrderByID(c *fiber.Ctx) error {
 }
 
 func (h *WorkspaceHandler) ExportSalesOrderPDF(c *fiber.Ctx) error {
-	param := c.Params("id")
-	var ord domainOrder.Order
-	query := h.db.WithContext(c.Context()).Preload("Items")
-	if id, err := strconv.ParseUint(param, 10, 32); err == nil {
-		if err := query.Where("id = ? OR order_no = ?", id, param).First(&ord).Error; err != nil {
-			return response.NotFound(c, "Sales order not found")
-		}
-	} else {
-		if err := query.Where("order_no = ?", param).First(&ord).Error; err != nil {
-			return response.NotFound(c, "Sales order not found")
-		}
+	ord, err := h.orderUsecase.GetByRef(c.Context(), c.Params("id"))
+	if err != nil {
+		return response.InternalServerError(c, "Failed to load sales order")
+	}
+	if ord == nil {
+		return response.NotFound(c, "Sales order not found")
 	}
 
-	// Company settings
-	companyName := "Chawy ERP"
-	companyAddress := "–"
-	companyTaxID := "–"
-	companyPhone := "–"
-	companyEmail := "–"
-
-	type CompanySettingsModel struct {
-		Name    string `gorm:"column:name"`
-		TaxID   string `gorm:"column:tax_id"`
-		Address string `gorm:"column:address"`
-		Phone   string `gorm:"column:phone"`
-		Email   string `gorm:"column:email"`
-		LogoURL string `gorm:"column:logo_url"`
-	}
-	var cs CompanySettingsModel
-	companyLogo := ""
-	if err := h.db.WithContext(c.Context()).Table("company_settings").First(&cs).Error; err == nil {
-		if cs.Name != "" {
-			companyName = cs.Name
-		}
-		if cs.Address != "" {
-			companyAddress = cs.Address
-		}
-		if cs.TaxID != "" {
-			companyTaxID = cs.TaxID
-		}
-		if cs.Phone != "" {
-			companyPhone = cs.Phone
-		}
-		if cs.Email != "" {
-			companyEmail = cs.Email
-		}
-		if cs.LogoURL != "" {
-			companyLogo = cs.LogoURL
-		}
-	}
+	company := h.loadCompanyInfo(c.Context())
 
 	var customerAddress string
 	var customerTaxID string
 	if ord.CustomerID > 0 {
-		var cust domainCustomer.Customer
-		if err := h.db.WithContext(c.Context()).First(&cust, ord.CustomerID).Error; err == nil {
+		if cust, err := h.customerUsecase.GetByID(c.Context(), ord.CustomerID); err == nil && cust != nil {
 			customerAddress = cust.Address
 			customerTaxID = cust.TaxID
 		}
@@ -1863,12 +330,12 @@ func (h *WorkspaceHandler) ExportSalesOrderPDF(c *fiber.Ctx) error {
 		Code:            ord.OrderNo,
 		Date:            ord.CreatedAt.Format("02/01/2006"),
 		Channel:         ord.Channel,
-		CompanyName:     companyName,
-		CompanyAddress:  companyAddress,
-		CompanyTaxID:    companyTaxID,
-		CompanyPhone:    companyPhone,
-		CompanyEmail:    companyEmail,
-		CompanyLogo:     companyLogo,
+		CompanyName:     company.Name,
+		CompanyAddress:  company.Address,
+		CompanyTaxID:    company.TaxID,
+		CompanyPhone:    company.Phone,
+		CompanyEmail:    company.Email,
+		CompanyLogo:     company.Logo,
 		CustomerName:    ord.CustomerName,
 		CustomerAddress: customerAddress,
 		CustomerTaxID:   customerTaxID,
@@ -1892,7 +359,6 @@ func (h *WorkspaceHandler) ExportSalesOrderPDF(c *fiber.Ctx) error {
 }
 
 func (h *WorkspaceHandler) UpdateSalesOrderStatus(c *fiber.Ctx) error {
-	param := c.Params("id")
 	var req struct {
 		Status string `json:"status"`
 		Note   string `json:"note"`
@@ -1901,61 +367,23 @@ func (h *WorkspaceHandler) UpdateSalesOrderStatus(c *fiber.Ctx) error {
 		return response.BadRequest(c, "Invalid request body")
 	}
 
-	var ord domainOrder.Order
-	if id, err := strconv.ParseUint(param, 10, 32); err == nil {
-		if err := h.db.WithContext(c.Context()).Where("id = ? OR order_no = ?", id, param).First(&ord).Error; err != nil {
-			return response.NotFound(c, "Sales order not found")
+	ord, already, err := h.orderUsecase.UpdateStatusByRef(c.Context(), c.Params("id"), req.Status, req.Note)
+	if err != nil {
+		if appErr := asAppError(err); appErr != nil {
+			return respondAppError(c, appErr)
 		}
-	} else {
-		if err := h.db.WithContext(c.Context()).Where("order_no = ?", param).First(&ord).Error; err != nil {
-			return response.NotFound(c, "Sales order not found")
-		}
-	}
-
-	targetStatus := strings.ToUpper(strings.TrimSpace(req.Status))
-	if targetStatus == "COMPLETED" {
-		targetStatus = "SHIPPED"
-	}
-
-	targetDomainStatus := domainOrder.Status(targetStatus)
-	if !domainOrder.IsValidStatus(targetDomainStatus) {
-		return response.BadRequest(c, fmt.Sprintf("Invalid order status: %s", req.Status))
-	}
-
-	// Idempotency: same status
-	if ord.Status == targetDomainStatus {
-		return response.OK(c, ord, fmt.Sprintf("Sales order is already %s", targetStatus))
-	}
-
-	// Guard transition map according to design doc
-	if !domainOrder.CanTransition(ord.Status, targetDomainStatus) {
-		return response.BadRequest(c, fmt.Sprintf("Cannot transition order from %s to %s", ord.Status, targetStatus))
-	}
-
-	// Target: Cancel order
-	if targetDomainStatus == domainOrder.StatusCancelled {
-		cancelledOrder, err := h.orderUsecase.CancelOrder(c.Context(), ord.ID)
-		if err != nil {
-			return response.BadRequest(c, err.Error())
-		}
-		return response.OK(c, cancelledOrder, "Sales order cancelled successfully")
-	}
-
-	// Target: Ship / Complete order
-	if targetDomainStatus == domainOrder.StatusShipped {
-		shippedOrder, err := h.orderUsecase.ShipOrder(c.Context(), ord.ID, 1)
-		if err != nil {
-			return response.BadRequest(c, fmt.Sprintf("ไม่สามารถตัดสต็อกได้: %s", err.Error()))
-		}
-		return response.OK(c, shippedOrder, "Sales order completed and stock deducted successfully")
-	}
-
-	ord.Status = targetDomainStatus
-	if req.Note != "" {
-		ord.Note = req.Note
-	}
-	if err := h.db.WithContext(c.Context()).Save(&ord).Error; err != nil {
 		return response.InternalServerError(c, "Failed to update order status")
+	}
+
+	if already {
+		return response.OK(c, ord, fmt.Sprintf("Sales order is already %s", ord.Status))
+	}
+
+	switch ord.Status {
+	case domainOrder.StatusCancelled:
+		return response.OK(c, ord, "Sales order cancelled successfully")
+	case domainOrder.StatusShipped:
+		return response.OK(c, ord, "Sales order completed and stock deducted successfully")
 	}
 
 	return response.OK(c, ord, "Sales order status updated")
@@ -2015,28 +443,24 @@ func (h *WorkspaceHandler) GetInvoices(c *fiber.Ctx) error {
 		statusQuery = strings.TrimSpace(c.Query("status", ""))
 	}
 
-	var invoices []domainInvoice.Invoice
-	var total int64
-	query := h.db.WithContext(c.Context()).Model(&domainInvoice.Invoice{})
+	query := domainInvoice.Query{
+		Search: search,
+		Page:   page,
+		Limit:  limit,
+	}
+	if strings.EqualFold(statusQuery, "overdue") {
+		// Overdue: balance > 0 and due_date < today and not PAID/CANCELLED
+		query.OverdueOnly = true
+	} else if statusQuery != "" && !strings.EqualFold(statusQuery, "all") {
+		query.Status = strings.ToUpper(statusQuery)
+	}
 
-	if search != "" {
-		s := "%" + search + "%"
-		query = query.Where("invoice_no ILIKE ? OR customer_name ILIKE ? OR order_no ILIKE ?", s, s, s)
+	invoices, total, err := h.invoiceUsecase.List(c.Context(), query)
+	if err != nil {
+		return response.InternalServerError(c, "Failed to load invoices")
 	}
 
 	today := time.Now().Truncate(24 * time.Hour)
-
-	if statusQuery != "" && !strings.EqualFold(statusQuery, "all") {
-		if strings.EqualFold(statusQuery, "overdue") {
-			// Overdue: balance > 0 and due_date < today and not PAID/CANCELLED
-			query = query.Where("status != 'PAID' AND status != 'CANCELLED' AND due_date IS NOT NULL AND due_date < ? AND (amount - paid_amount) > 0", today)
-		} else {
-			query = query.Where("UPPER(status) = ?", strings.ToUpper(statusQuery))
-		}
-	}
-
-	query.Count(&total)
-	query.Offset((page - 1) * limit).Limit(limit).Order("id DESC").Find(&invoices)
 
 	records := make([]InvoiceRecord, len(invoices))
 	for i, inv := range invoices {
@@ -2082,84 +506,51 @@ func (h *WorkspaceHandler) GetInvoices(c *fiber.Ctx) error {
 }
 
 func (h *WorkspaceHandler) CreateInvoiceFromSO(c *fiber.Ctx) error {
-	soRef := c.Params("soRef")
-	var order domainOrder.Order
-	err := h.db.WithContext(c.Context()).Where("order_no = ?", soRef).First(&order).Error
+	inv, existed, err := h.invoiceUsecase.CreateFromSalesOrderRef(c.Context(), c.Params("soRef"))
 	if err != nil {
-		// Try by ID
-		orderID, _ := strconv.Atoi(soRef)
-		if err := h.db.WithContext(c.Context()).First(&order, orderID).Error; err != nil {
+		if appErr := asAppError(err); appErr != nil {
+			return respondAppError(c, appErr)
+		}
+		if errors.Is(err, appErrors.ErrNotFound) {
 			return response.NotFound(c, "Sales order not found")
 		}
+		return response.InternalServerError(c, "Failed to create invoice")
 	}
 
-	orderID := order.ID
-	dueDate := time.Now().AddDate(0, 0, 30)
-
-	// Idempotency check: return existing invoice if one already exists for this order
-	var existingInv domainInvoice.Invoice
-	if err := h.db.WithContext(c.Context()).Where("order_id = ? OR order_no = ?", orderID, order.OrderNo).First(&existingInv).Error; err == nil {
-		dueDateStr := ""
-		if existingInv.DueDate != nil {
-			dueDateStr = existingInv.DueDate.Format("2006-01-02")
-		}
-		paid := existingInv.PaidAmount
-		if existingInv.Status == domainInvoice.StatusPaid && paid <= 0 {
-			paid = existingInv.Amount
-		}
-		return response.OK(c, InvoiceRecord{
-			ID:        existingInv.ID,
-			Code:      existingInv.InvoiceNo,
-			SORef:     order.OrderNo,
-			Customer:  existingInv.CustomerName,
-			IssueDate: existingInv.CreatedAt.Format("2006-01-02"),
-			DueDate:   dueDateStr,
-			Subtotal:  existingInv.Amount / 1.07,
-			VATAmount: existingInv.Amount - (existingInv.Amount / 1.07),
-			Amount:    existingInv.Amount,
-			Paid:      paid,
-			Status:    string(existingInv.Status),
-		}, "Existing invoice retrieved")
+	soRef := inv.OrderNo
+	if soRef == "" && inv.OrderID != nil {
+		soRef = fmt.Sprintf("ORD-%04d", *inv.OrderID)
 	}
-
-	invNo := fmt.Sprintf("INV-%s", time.Now().Format("20060102150405"))
-	if h.seqUsecase != nil {
-		if genNo, err := h.seqUsecase.Generate(c.Context(), "INV", nil); err == nil && genNo != "" {
-			invNo = genNo
-		}
+	dueDateStr := ""
+	if inv.DueDate != nil {
+		dueDateStr = inv.DueDate.Format("2006-01-02")
 	}
-
-	inv := domainInvoice.Invoice{
-		InvoiceNo:    invNo,
-		OrderID:      &orderID,
-		OrderNo:      order.OrderNo,
-		CustomerID:   order.CustomerID,
-		CustomerName: order.CustomerName,
-		Amount:       order.TotalAmount,
-
-		PaidAmount: 0,
-		Status:     domainInvoice.StatusUnpaid,
-		DueDate:    &dueDate,
-		CreatedAt:  time.Now(),
-		UpdatedAt:  time.Now(),
+	paid := inv.PaidAmount
+	if inv.Status == domainInvoice.StatusPaid && paid <= 0 {
+		paid = inv.Amount
 	}
-
-	if err := h.db.WithContext(c.Context()).Create(&inv).Error; err != nil {
-		return err
+	balance := inv.Amount - paid
+	if balance < 0 {
+		balance = 0
 	}
 
 	rec := InvoiceRecord{
 		ID:        inv.ID,
 		Code:      inv.InvoiceNo,
-		SORef:     order.OrderNo,
+		SORef:     soRef,
 		Customer:  inv.CustomerName,
 		IssueDate: inv.CreatedAt.Format("2006-01-02"),
-		DueDate:   dueDate.Format("2006-01-02"),
+		DueDate:   dueDateStr,
 		Subtotal:  inv.Amount / 1.07,
 		VATAmount: inv.Amount - (inv.Amount / 1.07),
 		Amount:    inv.Amount,
-		Paid:      0,
+		Paid:      paid,
+		Balance:   balance,
 		Status:    string(inv.Status),
+	}
+
+	if existed {
+		return response.OK(c, rec, "Existing invoice retrieved")
 	}
 	return response.Created(c, rec, "Invoice created successfully")
 }
@@ -2170,36 +561,36 @@ func (h *WorkspaceHandler) GetInvoiceByID(c *fiber.Ctx) error {
 		return response.BadRequest(c, "Invalid invoice ID")
 	}
 
-	var inv domainInvoice.Invoice
-	if err := h.db.WithContext(c.Context()).First(&inv, id).Error; err != nil {
+	inv, order, cust, err := h.invoiceUsecase.GetInvoiceDetailForPDF(c.Context(), uint(id))
+	if err != nil {
+		if errors.Is(err, appErrors.ErrNotFound) {
+			return response.NotFound(c, "Invoice not found")
+		}
+		return response.InternalServerError(c, "Failed to load invoice")
+	}
+	if inv == nil {
 		return response.NotFound(c, "Invoice not found")
 	}
 
-	var order domainOrder.Order
 	var lines []fiber.Map
 	var customerAddress string
 	var customerLogo string
 
-	if inv.OrderID != nil && *inv.OrderID > 0 {
-		if err := h.db.WithContext(c.Context()).Preload("Items").First(&order, *inv.OrderID).Error; err == nil {
-			for _, it := range order.Items {
-				lines = append(lines, fiber.Map{
-					"sku":       it.SKU,
-					"name":      it.Name,
-					"qty":       it.Quantity,
-					"price":     it.Price,
-					"unitPrice": it.Price,
-					"subtotal":  it.Subtotal,
-				})
-			}
-			if order.CustomerID > 0 {
-				var cust domainCustomer.Customer
-				if err := h.db.WithContext(c.Context()).First(&cust, order.CustomerID).Error; err == nil {
-					customerAddress = cust.Address
-					customerLogo = cust.Logo
-				}
-			}
+	if order != nil {
+		for _, it := range order.Items {
+			lines = append(lines, fiber.Map{
+				"sku":       it.SKU,
+				"name":      it.Name,
+				"qty":       it.Quantity,
+				"price":     it.Price,
+				"unitPrice": it.Price,
+				"subtotal":  it.Subtotal,
+			})
 		}
+	}
+	if cust != nil {
+		customerAddress = cust.Address
+		customerLogo = cust.Logo
 	}
 
 	dueDateStr := ""
@@ -2249,188 +640,6 @@ func (h *WorkspaceHandler) GetInvoiceByID(c *fiber.Ctx) error {
 	})
 }
 
-// CustomerRecord matching erp-web-v2 features/erp/types/records.ts
-type CustomerRecord struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	ContactPerson string `json:"contactPerson"`
-	Email         string `json:"email"`
-	Phone         string `json:"phone"`
-	TaxID         string `json:"taxId"`
-	Address       string `json:"address"`
-	Province      string `json:"province"`
-	Logo          string `json:"logo"`
-}
-
-func (h *WorkspaceHandler) GetCustomers(c *fiber.Ctx) error {
-	var bodyReq struct {
-		Page   int    `json:"page"`
-		Limit  int    `json:"limit"`
-		Search string `json:"search"`
-	}
-	if c.Method() == fiber.MethodPost {
-		_ = c.BodyParser(&bodyReq)
-	}
-
-	page := bodyReq.Page
-	if page < 1 {
-		page, _ = strconv.Atoi(c.Query("page", "1"))
-	}
-	if page < 1 {
-		page = 1
-	}
-
-	limit := bodyReq.Limit
-	if limit <= 0 {
-		limit, _ = strconv.Atoi(c.Query("limit", "50"))
-	}
-	if limit < 1 || limit > 100 {
-		limit = 50
-	}
-
-	search := strings.TrimSpace(bodyReq.Search)
-	if search == "" {
-		search = strings.TrimSpace(c.Query("search", ""))
-	}
-
-	var customers []domainCustomer.Customer
-	var total int64
-	query := h.db.WithContext(c.Context()).Model(&domainCustomer.Customer{})
-
-	if search != "" {
-		s := "%" + search + "%"
-		query = query.Where("name ILIKE ? OR email ILIKE ? OR phone ILIKE ? OR contact_person ILIKE ?", s, s, s, s)
-	}
-
-	query.Count(&total)
-	query.Offset((page - 1) * limit).Limit(limit).Order("id DESC").Find(&customers)
-
-	records := make([]CustomerRecord, len(customers))
-	for i, cust := range customers {
-		cp := cust.ContactPerson
-		if cp == "" {
-			cp = cust.Name
-		}
-		records[i] = CustomerRecord{
-			ID:            strconv.Itoa(int(cust.ID)),
-			Name:          cust.Name,
-			ContactPerson: cp,
-			Email:         cust.Email,
-			Phone:         cust.Phone,
-			TaxID:         cust.TaxID,
-			Address:       cust.Address,
-			Province:      cust.Province,
-			Logo:          cust.Logo,
-		}
-	}
-
-	return response.List(c, records, page, limit, total)
-}
-
-func (h *WorkspaceHandler) CreateCustomer(c *fiber.Ctx) error {
-	var req struct {
-		Name          string `json:"name"`
-		ContactPerson string `json:"contactPerson"`
-		Email         string `json:"email"`
-		Phone         string `json:"phone"`
-		TaxID         string `json:"taxId"`
-		Address       string `json:"address"`
-		Logo          string `json:"logo"`
-	}
-	if err := c.BodyParser(&req); err != nil {
-		return response.BadRequest(c, "Invalid request body")
-	}
-
-	cust := domainCustomer.Customer{
-		Code:          fmt.Sprintf("CUST-%s", time.Now().Format("20060102150405")),
-		Name:          req.Name,
-		ContactPerson: req.ContactPerson,
-		Email:         req.Email,
-		Phone:         req.Phone,
-		TaxID:         req.TaxID,
-		Address:       req.Address,
-		Logo:          req.Logo,
-		Status:        "active",
-		CreatedAt:     time.Now(),
-		UpdatedAt:     time.Now(),
-	}
-
-	if err := h.db.WithContext(c.Context()).Create(&cust).Error; err != nil {
-		return err
-	}
-
-	rec := CustomerRecord{
-		ID:            strconv.Itoa(int(cust.ID)),
-		Name:          cust.Name,
-		ContactPerson: cust.ContactPerson,
-		Email:         cust.Email,
-		Phone:         cust.Phone,
-		TaxID:         cust.TaxID,
-		Address:       cust.Address,
-		Logo:          cust.Logo,
-	}
-	return response.Created(c, rec, "Customer created successfully")
-}
-
-func (h *WorkspaceHandler) GetCustomerByID(c *fiber.Ctx) error {
-	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
-	if err != nil {
-		return response.BadRequest(c, "Invalid customer ID")
-	}
-
-	var cust domainCustomer.Customer
-	if err := h.db.WithContext(c.Context()).First(&cust, id).Error; err != nil {
-		return response.NotFound(c, "Customer not found")
-	}
-
-	cp := cust.ContactPerson
-	if cp == "" {
-		cp = cust.Name
-	}
-
-	return response.OK(c, fiber.Map{
-		"id":            cust.ID,
-		"code":          cust.Code,
-		"name":          cust.Name,
-		"contactPerson": cp,
-		"phone":         cust.Phone,
-		"email":         cust.Email,
-		"address":       cust.Address,
-		"taxId":         cust.TaxID,
-		"logo":          cust.Logo,
-		"channel":       cust.Channel,
-		"status":        cust.Status,
-		"createdAt":     cust.CreatedAt.Format("2006-01-02 15:04"),
-	})
-}
-
-func (h *WorkspaceHandler) UpdateCustomerStatus(c *fiber.Ctx) error {
-	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
-	if err != nil {
-		return response.BadRequest(c, "Invalid customer ID")
-	}
-
-	var req struct {
-		Status string `json:"status"`
-	}
-	if err := c.BodyParser(&req); err != nil {
-		return response.BadRequest(c, "Invalid request body")
-	}
-
-	var cust domainCustomer.Customer
-	if err := h.db.WithContext(c.Context()).First(&cust, id).Error; err != nil {
-		return response.NotFound(c, "Customer not found")
-	}
-
-	cust.Status = req.Status
-	cust.UpdatedAt = time.Now()
-	if err := h.db.WithContext(c.Context()).Save(&cust).Error; err != nil {
-		return response.InternalServerError(c, "Failed to update customer status")
-	}
-
-	return response.OK(c, cust, "Customer status updated")
-}
-
 // PurchaseRecord matching erp-web-v2 features/erp/types/records.ts
 type PurchaseRecord struct {
 	ID        uint    `json:"id"`
@@ -2474,22 +683,21 @@ func (h *WorkspaceHandler) GetPurchaseOrders(c *fiber.Ctx) error {
 	if page < 1 {
 		page = 1
 	}
-
-	var pos []domainPurchasing.PurchaseOrder
-	var total int64
-	query := h.db.WithContext(c.Context()).Model(&domainPurchasing.PurchaseOrder{})
-
-	if search != "" {
-		s := "%" + search + "%"
-		query = query.Where("po_no ILIKE ? OR supplier_name ILIKE ?", s, s)
+	if limit < 1 || limit > 100 {
+		limit = 50
 	}
 
+	query := domainPurchasing.POQuery{Search: search, Page: page, Limit: limit}
 	if statusQuery != "" && !strings.EqualFold(statusQuery, "all") {
-		query = query.Where("LOWER(status) = ?", strings.ToLower(statusQuery))
+		// The repository matches the stored status exactly; the screen sends
+		// lower-case values, so normalise the casing here.
+		query.Status = strings.ToUpper(statusQuery)
 	}
 
-	query.Count(&total)
-	query.Offset((page - 1) * limit).Limit(limit).Order("id DESC").Find(&pos)
+	pos, total, err := h.purchasingUsecase.ListPOs(c.Context(), query)
+	if err != nil {
+		return response.InternalServerError(c, "Failed to load purchase orders")
+	}
 
 	records := make([]PurchaseRecord, len(pos))
 	for i, po := range pos {
@@ -2521,9 +729,12 @@ func (h *WorkspaceHandler) GetPurchaseOrderByID(c *fiber.Ctx) error {
 		return response.BadRequest(c, "Invalid purchase order ID")
 	}
 
-	var po domainPurchasing.PurchaseOrder
-	if err := h.db.WithContext(c.Context()).Preload("Items").First(&po, id).Error; err != nil {
-		return response.NotFound(c, "Purchase order not found")
+	po, err := h.purchasingUsecase.GetPOByID(c.Context(), uint(id))
+	if err != nil {
+		if errors.Is(err, appErrors.ErrNotFound) {
+			return response.NotFound(c, "Purchase order not found")
+		}
+		return response.InternalServerError(c, "Failed to load purchase order")
 	}
 
 	items := make([]fiber.Map, len(po.Items))
@@ -2578,97 +789,35 @@ func (h *WorkspaceHandler) CreatePurchaseOrder(c *fiber.Ctx) error {
 		return response.BadRequest(c, "Invalid request body")
 	}
 
-	if len(req.Items) == 0 {
-		return response.BadRequest(c, "Purchase order must contain at least one item")
-	}
-
-	var supplierName string
-	supplierID := req.SupplierID
-	if supplierID > 0 {
-		var sup domainPurchasing.Supplier
-		if err := h.db.WithContext(c.Context()).First(&sup, supplierID).Error; err == nil {
-			supplierName = sup.Name
-		}
-	} else if req.Supplier != "" {
-		supplierName = req.Supplier
-		var sup domainPurchasing.Supplier
-		if err := h.db.WithContext(c.Context()).Where("name = ?", req.Supplier).First(&sup).Error; err == nil {
-			supplierID = sup.ID
-		} else {
-			newSup := domainPurchasing.Supplier{
-				Code:      fmt.Sprintf("SUP-%s", time.Now().Format("20060102150405")),
-				Name:      req.Supplier,
-				Status:    "active",
-				CreatedAt: time.Now(),
-				UpdatedAt: time.Now(),
-			}
-			if err := h.db.WithContext(c.Context()).Create(&newSup).Error; err == nil {
-				supplierID = newSup.ID
-			}
-		}
-	}
-
-	poNo := fmt.Sprintf("PO-%s-%04d", time.Now().Format("2006/01/02"), time.Now().Unix()%10000)
-	var total float64
-	poItems := make([]domainPurchasing.POItem, len(req.Items))
+	items := make([]usecasePurchasing.CreatePurchaseOrderItem, len(req.Items))
 	for i, it := range req.Items {
-		qty := it.Quantity
-		if qty <= 0 && it.Qty > 0 {
-			qty = it.Qty
-		}
-		if qty <= 0 {
-			return response.BadRequest(c, fmt.Sprintf("Item quantity for SKU %s must be greater than 0", it.SKU))
-		}
-		if it.UnitCost < 0 {
-			return response.BadRequest(c, fmt.Sprintf("Item unit cost for SKU %s cannot be negative", it.SKU))
-		}
-
-		sub := it.UnitCost * float64(qty)
-		total += sub
-		poItems[i] = domainPurchasing.POItem{
-			SKU:       it.SKU,
-			Name:      it.Name,
-			UnitCost:  it.UnitCost,
-			Quantity:  qty,
-			Subtotal:  sub,
-			CreatedAt: time.Now(),
+		items[i] = usecasePurchasing.CreatePurchaseOrderItem{
+			SKU:      it.SKU,
+			Name:     it.Name,
+			Quantity: it.Quantity,
+			Qty:      it.Qty,
+			UnitCost: it.UnitCost,
 		}
 	}
 
-	note := req.Note
-	if req.ETADate != "" && !strings.Contains(note, "ETA:") {
-		if note != "" {
-			note += " "
+	po, err := h.purchasingUsecase.CreatePurchaseOrder(c.Context(), usecasePurchasing.CreatePurchaseOrderInput{
+		Supplier:             req.Supplier,
+		SupplierID:           req.SupplierID,
+		Note:                 req.Note,
+		ETADate:              req.ETADate,
+		ExpectedDeliveryDays: req.ExpectedDeliveryDays,
+		Items:                items,
+	})
+	if err != nil {
+		if appErr := asAppError(err); appErr != nil {
+			return respondAppError(c, appErr)
 		}
-		note += fmt.Sprintf("ETA:%s", req.ETADate)
-	}
-
-	etaDate := req.ETADate
-	if etaDate == "" {
-		// ETA computation stays on the backend: clients may send an explicit
-		// etaDate or a lead-time in days, never a pre-computed date.
-		leadDays := req.ExpectedDeliveryDays
-		if leadDays <= 0 {
-			leadDays = 7
-		}
-		etaDate = time.Now().AddDate(0, 0, leadDays).Format("2006-01-02")
-	}
-
-	po := domainPurchasing.PurchaseOrder{
-		PONo:         poNo,
-		SupplierID:   supplierID,
-		SupplierName: supplierName,
-		Status:       domainPurchasing.StatusPending,
-		TotalAmount:  total,
-		Note:         note,
-		ETADate:      etaDate,
-		Items:        poItems,
-		CreatedAt:    time.Now(),
-		UpdatedAt:    time.Now(),
-	}
-
-	if err := h.db.WithContext(c.Context()).Create(&po).Error; err != nil {
 		return response.InternalServerError(c, "Failed to create purchase order: "+err.Error())
+	}
+
+	etaDate := po.ETADate
+	if etaDate == "" {
+		etaDate = po.CreatedAt.AddDate(0, 0, 7).Format("2006-01-02")
 	}
 
 	return response.Created(c, PurchaseRecord{
@@ -2695,14 +844,11 @@ func (h *WorkspaceHandler) UpdatePurchaseOrderStatus(c *fiber.Ctx) error {
 		return response.BadRequest(c, "Invalid request body")
 	}
 
-	var po domainPurchasing.PurchaseOrder
-	if err := h.db.WithContext(c.Context()).First(&po, id).Error; err != nil {
-		return response.NotFound(c, "Purchase order not found")
-	}
-
-	po.Status = domainPurchasing.POStatus(strings.ToUpper(req.Status))
-	po.UpdatedAt = time.Now()
-	if err := h.db.WithContext(c.Context()).Save(&po).Error; err != nil {
+	po, err := h.purchasingUsecase.UpdatePOStatus(c.Context(), uint(id), req.Status)
+	if err != nil {
+		if appErr := asAppError(err); appErr != nil {
+			return respondAppError(c, appErr)
+		}
 		return response.InternalServerError(c, "Failed to update purchase order status")
 	}
 
@@ -2759,28 +905,20 @@ func (h *WorkspaceHandler) GetQuotations(c *fiber.Ctx) error {
 		statusQuery = strings.TrimSpace(c.Query("status", ""))
 	}
 
+	query := domainQuotation.Query{Search: search, Page: page, Limit: limit}
+	if strings.EqualFold(statusQuery, "expired") {
+		// Expired: valid_until < today AND status IN ('Pending', 'Draft', 'Sent', 'Approved')
+		query.ExpiredOnly = true
+	} else if statusQuery != "" && !strings.EqualFold(statusQuery, "all") {
+		query.Status = statusQuery
+	}
+
+	quotations, total, err := h.quotationUsecase.ListFiltered(c.Context(), query)
+	if err != nil {
+		return response.InternalServerError(c, "Failed to load quotations")
+	}
+
 	today := time.Now().Format("2006-01-02")
-
-	var quotations []domainQuotation.Quotation
-	var total int64
-	query := h.db.WithContext(c.Context()).Model(&domainQuotation.Quotation{})
-
-	if search != "" {
-		s := "%" + search + "%"
-		query = query.Where("code ILIKE ? OR customer_name ILIKE ?", s, s)
-	}
-
-	if statusQuery != "" && !strings.EqualFold(statusQuery, "all") {
-		if strings.EqualFold(statusQuery, "expired") {
-			// Expired: valid_until < today AND status IN ('Pending', 'Draft', 'Sent', 'Approved')
-			query = query.Where("valid_until != '' AND valid_until < ? AND status IN ('Pending', 'Draft', 'Sent', 'Approved')", today)
-		} else {
-			query = query.Where("LOWER(status) = ?", strings.ToLower(statusQuery))
-		}
-	}
-
-	query.Count(&total)
-	query.Offset((page - 1) * limit).Limit(limit).Order("id DESC").Find(&quotations)
 
 	records := make([]QuotationRecord, len(quotations))
 	for i, q := range quotations {
@@ -2833,53 +971,11 @@ func (h *WorkspaceHandler) ResolveSKUs(c *fiber.Ctx) error {
 		return response.BadRequest(c, "skus cannot be empty")
 	}
 
-	var skus []domainSKU.SKU
-	if err := h.db.WithContext(c.Context()).
-		Where("UPPER(TRIM(sku)) IN ?", normalized).
-		Find(&skus).Error; err != nil {
-		return response.InternalServerError(c, "Failed to resolve SKUs")
-	}
-
-	found := make(map[string]domainSKU.SKU, len(skus))
-	for _, s := range skus {
-		found[strings.ToUpper(strings.TrimSpace(s.SKU))] = s
-	}
-
-	// For codes not found in SKU master, check active Inventory Formulas (e.g. FI-01)
-	var missingCodes []string
-	for _, code := range normalized {
-		if _, ok := found[code]; !ok {
-			missingCodes = append(missingCodes, code)
-		}
-	}
-
-	foundFormulas := make(map[string]domainFormula.InventoryFormula)
-	if len(missingCodes) > 0 {
-		var formulas []domainFormula.InventoryFormula
-		if err := h.db.WithContext(c.Context()).
-			Where("UPPER(TRIM(code)) IN ? AND is_active = ?", missingCodes, true).
-			Find(&formulas).Error; err == nil {
-			for _, f := range formulas {
-				foundFormulas[strings.ToUpper(strings.TrimSpace(f.Code))] = f
-			}
-		}
-	}
-
-	type ResolvedSKU struct {
-		Sku   string `json:"sku"`
-		Id    uint   `json:"id"`
-		Name  string `json:"name"`
-		Found bool   `json:"found"`
-	}
-	records := make([]ResolvedSKU, 0, len(normalized))
-	for _, code := range normalized {
-		if s, ok := found[code]; ok {
-			records = append(records, ResolvedSKU{Sku: s.SKU, Id: s.ID, Name: s.Name, Found: true})
-		} else if f, ok := foundFormulas[code]; ok {
-			records = append(records, ResolvedSKU{Sku: f.Code, Id: f.ID, Name: f.Name, Found: true})
-		} else {
-			records = append(records, ResolvedSKU{Sku: code, Found: false})
-		}
+	// Resolution (SKU master + active Inventory Formula fallback) lives in the
+	// catalog usecase; the handler keeps request validation and normalization.
+	records, err := h.catalogUsecase.Resolve(c.Context(), normalized)
+	if err != nil {
+		return respondCatalogError(c, err)
 	}
 
 	return response.OK(c, records)
@@ -2999,49 +1095,12 @@ func (h *WorkspaceHandler) ExportQuotationPDF(c *fiber.Ctx) error {
 		return err
 	}
 
-	// Company settings
-	companyName := "Chawy ERP"
-	companyAddress := "–"
-	companyTaxID := "–"
-	companyPhone := "–"
-	companyEmail := "–"
-
-	type CompanySettingsModel struct {
-		Name    string `gorm:"column:name"`
-		TaxID   string `gorm:"column:tax_id"`
-		Address string `gorm:"column:address"`
-		Phone   string `gorm:"column:phone"`
-		Email   string `gorm:"column:email"`
-		LogoURL string `gorm:"column:logo_url"`
-	}
-	var cs CompanySettingsModel
-	companyLogo := ""
-	if err := h.db.WithContext(c.Context()).Table("company_settings").First(&cs).Error; err == nil {
-		if cs.Name != "" {
-			companyName = cs.Name
-		}
-		if cs.Address != "" {
-			companyAddress = cs.Address
-		}
-		if cs.TaxID != "" {
-			companyTaxID = cs.TaxID
-		}
-		if cs.Phone != "" {
-			companyPhone = cs.Phone
-		}
-		if cs.Email != "" {
-			companyEmail = cs.Email
-		}
-		if cs.LogoURL != "" {
-			companyLogo = cs.LogoURL
-		}
-	}
+	company := h.loadCompanyInfo(c.Context())
 
 	var customerAddress string
 	var customerTaxID string
 	if q.CustomerID > 0 {
-		var cust domainCustomer.Customer
-		if err := h.db.WithContext(c.Context()).First(&cust, q.CustomerID).Error; err == nil {
+		if cust, err := h.customerUsecase.GetByID(c.Context(), q.CustomerID); err == nil && cust != nil {
 			customerAddress = cust.Address
 			customerTaxID = cust.TaxID
 		}
@@ -3064,12 +1123,12 @@ func (h *WorkspaceHandler) ExportQuotationPDF(c *fiber.Ctx) error {
 		Date:            q.Date,
 		ValidUntil:      q.ValidUntil,
 		LeadSource:      q.LeadSource,
-		CompanyName:     companyName,
-		CompanyAddress:  companyAddress,
-		CompanyTaxID:    companyTaxID,
-		CompanyPhone:    companyPhone,
-		CompanyEmail:    companyEmail,
-		CompanyLogo:     companyLogo,
+		CompanyName:     company.Name,
+		CompanyAddress:  company.Address,
+		CompanyTaxID:    company.TaxID,
+		CompanyPhone:    company.Phone,
+		CompanyEmail:    company.Email,
+		CompanyLogo:     company.Logo,
 		CustomerName:    q.CustomerName,
 		CustomerAddress: customerAddress,
 		CustomerTaxID:   customerTaxID,
@@ -3161,21 +1220,23 @@ func (h *WorkspaceHandler) GetGoodsReceives(c *fiber.Ctx) error {
 	if limit <= 0 {
 		limit, _ = strconv.Atoi(c.Query("limit", "50"))
 	}
+	if limit < 1 || limit > 100 {
+		limit = 50
+	}
 
 	search := strings.TrimSpace(bodyReq.Search)
 	if search == "" {
 		search = strings.TrimSpace(c.Query("search", ""))
 	}
 
-	var grs []domainPurchasing.GoodsReceive
-	var total int64
-	query := h.db.WithContext(c.Context()).Model(&domainPurchasing.GoodsReceive{})
-	if search != "" {
-		s := "%" + search + "%"
-		query = query.Where("code ILIKE ? OR po_ref ILIKE ? OR supplier_name ILIKE ?", s, s, s)
+	grs, total, err := h.purchasingUsecase.ListGoodsReceives(c.Context(), domainPurchasing.GoodsReceiveQuery{
+		Search: search,
+		Page:   page,
+		Limit:  limit,
+	})
+	if err != nil {
+		return response.InternalServerError(c, "Failed to load goods receives")
 	}
-	query.Count(&total)
-	query.Offset((page - 1) * limit).Limit(limit).Order("id DESC").Find(&grs)
 
 	records := make([]ReceiptRecord, len(grs))
 	for i, gr := range grs {
@@ -3201,9 +1262,12 @@ func (h *WorkspaceHandler) GetGoodsReceiveByID(c *fiber.Ctx) error {
 		return response.BadRequest(c, "Invalid goods receive ID")
 	}
 
-	var gr domainPurchasing.GoodsReceive
-	if err := h.db.WithContext(c.Context()).Preload("Items").First(&gr, id).Error; err != nil {
-		return response.NotFound(c, "Goods receive not found")
+	gr, err := h.purchasingUsecase.GetGoodsReceive(c.Context(), uint(id))
+	if err != nil {
+		if appErr := asAppError(err); appErr != nil {
+			return respondAppError(c, appErr)
+		}
+		return response.InternalServerError(c, "Failed to load goods receive")
 	}
 
 	items := make([]fiber.Map, len(gr.Items))
@@ -3259,403 +1323,39 @@ func (h *WorkspaceHandler) CreateGoodsReceive(c *fiber.Ctx) error {
 		return response.BadRequest(c, "Invalid request body")
 	}
 
-	receiveDate := req.ReceiveDate
-	if receiveDate == "" {
-		receiveDate = time.Now().Format("2006-01-02")
-	}
-
-	hasPO := strings.TrimSpace(req.PORef) != ""
-	var po domainPurchasing.PurchaseOrder
-	if hasPO {
-		if err := h.db.WithContext(c.Context()).Where("po_no = ? OR id::text = ?", req.PORef, req.PORef).Preload("Items").First(&po).Error; err != nil {
-			return response.NotFound(c, "Purchase order not found")
-		}
-
-		if po.Status == domainPurchasing.StatusReceived {
-			return response.BadRequest(c, fmt.Sprintf("Purchase order %s has already been received in full", po.PONo))
-		}
-		if po.Status == domainPurchasing.StatusCancelled {
-			return response.BadRequest(c, fmt.Sprintf("Purchase order %s is cancelled", po.PONo))
+	items := make([]usecasePurchasing.GoodsReceiveItemInput, len(req.Items))
+	for i, it := range req.Items {
+		items[i] = usecasePurchasing.GoodsReceiveItemInput{
+			SKU:         it.SKU,
+			QtyReceived: it.QtyReceived,
+			Quantity:    it.Quantity,
+			UnitCost:    it.UnitCost,
+			RetailPrice: it.RetailPrice,
+			ExpiryDate:  it.ExpiryDate,
+			SupplierLot: it.SupplierLot,
+			QCStatus:    it.QCStatus,
 		}
 	}
 
-	type receiveItem struct {
-		SKU         string
-		Quantity    int
-		UnitCost    float64
-		RetailPrice float64
-		SupplierLot string
-		ExpiryDate  string
-		QCStatus    string
-	}
-	var itemsToReceive []receiveItem
-
-	if len(req.Items) > 0 {
-		for _, it := range req.Items {
-			qty := it.QtyReceived
-			if qty <= 0 && it.Quantity > 0 {
-				qty = it.Quantity
-			}
-			if it.SKU != "" && qty > 0 {
-				qc := it.QCStatus
-				if qc == "" {
-					qc = "Accepted"
-				}
-				expiry := strings.TrimSpace(it.ExpiryDate)
-				if expiry == "" {
-					if parsedDate, err := time.Parse("2006-01-02", receiveDate); err == nil {
-						expiry = parsedDate.AddDate(1, 6, 0).Format("2006-01-02")
-					} else {
-						expiry = time.Now().AddDate(1, 6, 0).Format("2006-01-02")
-					}
-				}
-
-				unitCost := 0.0
-				if it.UnitCost != nil {
-					unitCost = *it.UnitCost
-				} else if hasPO {
-					// Fallback to PO unit cost if not explicitly passed
-					for _, poi := range po.Items {
-						if strings.EqualFold(poi.SKU, it.SKU) && poi.UnitCost > 0 {
-							unitCost = poi.UnitCost
-							break
-						}
-					}
-				}
-
-				if unitCost <= 0 {
-					return response.BadRequest(c, fmt.Sprintf("กรุณาระบุราคาต้นทุนต่อหน่วยที่มากกว่า 0 สำหรับ SKU %s", it.SKU))
-				}
-
-				retailPrice := 0.0
-				if it.RetailPrice != nil {
-					retailPrice = *it.RetailPrice
-				}
-
-				itemsToReceive = append(itemsToReceive, receiveItem{
-					SKU:         strings.ToUpper(strings.TrimSpace(it.SKU)),
-					Quantity:    qty,
-					UnitCost:    unitCost,
-					RetailPrice: retailPrice,
-					SupplierLot: it.SupplierLot,
-					ExpiryDate:  expiry,
-					QCStatus:    qc,
-				})
-			}
-		}
-	} else if hasPO {
-		defaultExpiry := time.Now().AddDate(1, 6, 0).Format("2006-01-02")
-		if parsedDate, err := time.Parse("2006-01-02", receiveDate); err == nil {
-			defaultExpiry = parsedDate.AddDate(1, 6, 0).Format("2006-01-02")
-		}
-		for _, it := range po.Items {
-			remaining := it.Quantity - it.ReceivedQty
-			if remaining > 0 {
-				itemsToReceive = append(itemsToReceive, receiveItem{
-					SKU:         strings.ToUpper(strings.TrimSpace(it.SKU)),
-					Quantity:    remaining,
-					UnitCost:    it.UnitCost,
-					RetailPrice: 0,
-					ExpiryDate:  defaultExpiry,
-					QCStatus:    "Accepted",
-				})
-			}
-		}
-	}
-
-	if len(itemsToReceive) == 0 {
-		return response.BadRequest(c, "No remaining items to receive")
-	}
-
-	var createdGR domainPurchasing.GoodsReceive
-
-	err := h.db.WithContext(c.Context()).Transaction(func(tx *gorm.DB) error {
-		refID := req.PORef
-		if refID == "" {
-			refID = fmt.Sprintf("GR-%d", time.Now().Unix())
-		}
-
-		var poIDPtr *uint
-		supplierName := ""
-
-		if hasPO {
-			// Lock the PO row for update to prevent concurrent double receive
-			var lockedPO domainPurchasing.PurchaseOrder
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Preload("Items").First(&lockedPO, po.ID).Error; err != nil {
-				return err
-			}
-
-			if lockedPO.Status == domainPurchasing.StatusReceived {
-				return errors.New("Purchase order has already been received")
-			}
-
-			poIDPtr = &lockedPO.ID
-			supplierName = lockedPO.SupplierName
-
-			// FULL-14: map PO lines to a slice so duplicate SKUs on separate
-			// lines are honored instead of collapsing to the last line.
-			poLineIndex := make(map[string][]*domainPurchasing.POItem)
-			for i := range lockedPO.Items {
-				skuKey := strings.ToUpper(strings.TrimSpace(lockedPO.Items[i].SKU))
-				poLineIndex[skuKey] = append(poLineIndex[skuKey], &lockedPO.Items[i])
-			}
-
-			// Validate all receive items: must exist in PO and must not exceed
-			// remaining quantity, aggregating across duplicate PO lines.
-			// FULL-10: QC-rejected units are also validated against the PO
-			// (they physically arrive against this PO) but are not counted as
-			// received for fulfillment purposes — see receivedAccepted below.
-			receivedAgg := make(map[string]int)
-			for _, recIt := range itemsToReceive {
-				lines, exists := poLineIndex[recIt.SKU]
-				if !exists || len(lines) == 0 {
-					return fmt.Errorf("SKU %s does not belong to purchase order %s", recIt.SKU, lockedPO.PONo)
-				}
-				remaining := 0
-				for _, poIt := range lines {
-					remaining += poIt.Quantity - poIt.ReceivedQty
-				}
-				receivedAgg[recIt.SKU] += recIt.Quantity
-				if receivedAgg[recIt.SKU] > remaining {
-					return fmt.Errorf("quantity to receive for SKU %s (%d) exceeds remaining PO quantity (%d)", recIt.SKU, receivedAgg[recIt.SKU], remaining)
-				}
-			}
-
-			// FULL-10: only QC-accepted units advance PO fulfillment; rejected
-			// units keep the line open so the supplier can re-deliver.
-			receivedAccepted := make(map[string]int)
-			for _, recIt := range itemsToReceive {
-				qcUpper := strings.ToUpper(strings.TrimSpace(recIt.QCStatus))
-				if qcUpper == "" || qcUpper == "ACCEPTED" || qcUpper == "PASS" || qcUpper == "PASSED" {
-					receivedAccepted[recIt.SKU] += recIt.Quantity
-				}
-			}
-
-			// FULL-14: distribute received quantities across the PO's duplicate
-			// lines in order, filling each line's remaining amount first.
-			// Only QC-accepted quantities advance fulfillment (FULL-10).
-			for skuKey, qtyAdded := range receivedAccepted {
-				left := qtyAdded
-				for _, poIt := range poLineIndex[skuKey] {
-					if left <= 0 {
-						break
-					}
-					lineRemaining := poIt.Quantity - poIt.ReceivedQty
-					if lineRemaining <= 0 {
-						continue
-					}
-					take := lineRemaining
-					if left < take {
-						take = left
-					}
-					poIt.ReceivedQty += take
-					left -= take
-					if err := tx.Model(&domainPurchasing.POItem{}).Where("id = ?", poIt.ID).
-						Update("received_qty", poIt.ReceivedQty).Error; err != nil {
-						return err
-					}
-				}
-			}
-
-			// Check if all items are fully received
-			allDone := true
-			for i := range lockedPO.Items {
-				if lockedPO.Items[i].ReceivedQty < lockedPO.Items[i].Quantity {
-					allDone = false
-					break
-				}
-			}
-
-			if allDone {
-				lockedPO.Status = domainPurchasing.StatusReceived
-			}
-			lockedPO.UpdatedAt = time.Now()
-			if req.Note != "" {
-				lockedPO.Note = req.Note
-			}
-			if err := tx.Save(&lockedPO).Error; err != nil {
-				return err
-			}
-			po = lockedPO
-		}
-
-		grCode := fmt.Sprintf("GR-%s-%04d", time.Now().Format("2006/01/02"), time.Now().UnixNano()%10000)
-		if h.seqUsecase != nil {
-			var docDate *time.Time
-			if parsed, err := time.Parse("2006-01-02", receiveDate); err == nil {
-				docDate = &parsed
-			}
-			if genCode, err := h.seqUsecase.Generate(database.WithTxContext(c.Context(), tx), "GR", docDate); err == nil && genCode != "" {
-				grCode = genCode
-			}
-		}
-		createdGR = domainPurchasing.GoodsReceive{
-			Code:         grCode,
-			POID:         poIDPtr,
-			PORef:        req.PORef,
-			SupplierName: supplierName,
-			ReceiveDate:  receiveDate,
-			Note:         req.Note,
-			CreatedAt:    time.Now(),
-			UpdatedAt:    time.Now(),
-		}
-
-		if err := tx.Create(&createdGR).Error; err != nil {
-			return err
-		}
-
-		for _, it := range itemsToReceive {
-			var s domainSKU.SKU
-			if err := tx.Where("UPPER(TRIM(sku)) = ?", it.SKU).First(&s).Error; err != nil {
-				return fmt.Errorf("SKU %s not found in system", it.SKU)
-			}
-
-			grItem := domainPurchasing.GoodsReceiveItem{
-				GRID:        createdGR.ID,
-				SKU:         s.SKU,
-				Name:        s.Name,
-				Quantity:    it.Quantity,
-				UnitCost:    it.UnitCost,
-				RetailPrice: it.RetailPrice,
-				SupplierLot: it.SupplierLot,
-				ExpiryDate:  it.ExpiryDate,
-				QCStatus:    it.QCStatus,
-				CreatedAt:   time.Now(),
-			}
-			if err := tx.Create(&grItem).Error; err != nil {
-				return err
-			}
-
-			// FULL-10: only QC-Accepted units become sellable stock. Rejected
-			// units are recorded on the GR for traceability but never added to
-			// Quantity/AvailableQty.
-			qcUpper := strings.ToUpper(strings.TrimSpace(it.QCStatus))
-			qcAccepted := qcUpper == "" || qcUpper == "ACCEPTED" || qcUpper == "PASS" || qcUpper == "PASSED"
-
-			var stk domainStock.Stock
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("sku_id = ? AND warehouse_id = ?", s.ID, 1).First(&stk).Error; err != nil {
-				if errors.Is(err, gorm.ErrRecordNotFound) {
-					if qcAccepted {
-						stk = domainStock.Stock{
-							SKUID:        s.ID,
-							SKUCode:      s.SKU,
-							WarehouseID:  1,
-							Quantity:     it.Quantity,
-							AvailableQty: it.Quantity,
-							UpdatedAt:    time.Now(),
-						}
-						if err := tx.Create(&stk).Error; err != nil {
-							return err
-						}
-					}
-				} else {
-					return err
-				}
-			} else if qcAccepted {
-				stk.Quantity += it.Quantity
-				stk.AvailableQty += it.Quantity
-				stk.UpdatedAt = time.Now()
-				if err := tx.Save(&stk).Error; err != nil {
-					return err
-				}
-			}
-
-			var stockLotID *uint
-			if qcAccepted {
-				// Generate Lot Number if not provided
-				lotNumber := it.SupplierLot
-				if lotNumber == "" {
-					lotNumber = fmt.Sprintf("LOT-%s-%d", time.Now().Format("20060102"), grItem.ID)
-				}
-
-				stockLot := domainStock.StockLot{
-					SKUID:        s.ID,
-					SKUCode:      s.SKU,
-					WarehouseID:  1,
-					LotNumber:    lotNumber,
-					SupplierLot:  it.SupplierLot,
-					ExpiryDate:   it.ExpiryDate,
-					Quantity:     it.Quantity,
-					AvailableQty: it.Quantity,
-					UnitCost:     it.UnitCost,
-					RetailPrice:  it.RetailPrice,
-					ReceivedAt:   time.Now(),
-					CreatedAt:    time.Now(),
-					UpdatedAt:    time.Now(),
-				}
-				if err := tx.Create(&stockLot).Error; err != nil {
-					return err
-				}
-				stockLotID = &stockLot.ID
-
-				// Update SKU Master with latest unit cost and selling price
-				skuUpdates := map[string]interface{}{
-					"updated_at": time.Now(),
-				}
-				if it.UnitCost > 0 {
-					skuUpdates["cost_price"] = it.UnitCost
-				}
-				if it.RetailPrice > 0 {
-					skuUpdates["price"] = it.RetailPrice
-				}
-				if err := tx.Model(&domainSKU.SKU{}).Where("id = ?", s.ID).Updates(skuUpdates).Error; err != nil {
-					return err
-				}
-			}
-
-			note := req.Note
-			if it.SupplierLot != "" || it.ExpiryDate != "" {
-				note = fmt.Sprintf("%s [Lot: %s, Exp: %s]", note, it.SupplierLot, it.ExpiryDate)
-			}
-			if it.UnitCost > 0 || it.RetailPrice > 0 {
-				note = fmt.Sprintf("%s [Cost: %.2f, Price: %.2f]", note, it.UnitCost, it.RetailPrice)
-			}
-			if !qcAccepted {
-				if note != "" {
-					note += " "
-				}
-				note += fmt.Sprintf("[QC %s — not added to sellable stock]", it.QCStatus)
-			}
-
-			// Rejected units still generate a movement trail, but as a
-			// QC_REJECT type with zero stock effect.
-			movementType := domainStock.MovementIn
-			movementQty := it.Quantity
-			if !qcAccepted {
-				movementType = domainStock.MovementType("QC_REJECT")
-				movementQty = 0
-			}
-
-			if err := tx.Create(&domainStock.StockMovement{
-				SKUID:         s.ID,
-				SKUCode:       s.SKU,
-				WarehouseID:   1,
-				StockLotID:    stockLotID,
-				Type:          movementType,
-				Quantity:      movementQty,
-				BeforeQty:     stk.Quantity,
-				AfterQty:      stk.Quantity,
-				ReferenceType: "GOODS_RECEIVE",
-				ReferenceID:   createdGR.Code,
-				Note:          strings.TrimSpace(note),
-				CreatedAt:     time.Now(),
-			}).Error; err != nil {
-				return err
-			}
-		}
-		return nil
+	gr, err := h.purchasingUsecase.CreateGoodsReceive(c.Context(), usecasePurchasing.CreateGoodsReceiveInput{
+		PORef:       req.PORef,
+		ReceiveDate: req.ReceiveDate,
+		Note:        req.Note,
+		Items:       items,
 	})
-
 	if err != nil {
+		if appErr := asAppError(err); appErr != nil {
+			return respondAppError(c, appErr)
+		}
 		return response.BadRequest(c, "Failed to receive goods: "+err.Error())
 	}
 
 	return response.Created(c, ReceiptRecord{
-		ID:          createdGR.ID,
-		Code:        createdGR.Code,
-		PORef:       createdGR.PORef,
-		ReceiveDate: createdGR.ReceiveDate,
-		Note:        createdGR.Note,
+		ID:          gr.ID,
+		Code:        gr.Code,
+		PORef:       gr.PORef,
+		ReceiveDate: gr.ReceiveDate,
+		Note:        gr.Note,
 	}, "Goods received successfully")
 }
 
@@ -3700,6 +1400,81 @@ func formatMovementChannel(channel, orderRef string) string {
 	return channel
 }
 
+// asAppError returns the *AppError carried by err, or nil when err is not an
+// application error (i.e. an unexpected/internal failure).
+func asAppError(err error) *appErrors.AppError {
+	var appErr *appErrors.AppError
+	if errors.As(err, &appErr) {
+		return appErr
+	}
+	return nil
+}
+
+// respondAppError maps an application error to the matching HTTP response so
+// callers keep the same status codes and messages they had before.
+// companyInfo carries the company header fields printed on PDF documents.
+type companyInfo struct {
+	Name    string
+	Address string
+	TaxID   string
+	Phone   string
+	Email   string
+	Logo    string
+}
+
+// loadCompanyInfo reads the company profile through the settings usecase so
+// the handler never touches the database directly. Missing values fall back to
+// the same placeholders the PDFs used before.
+func (h *WorkspaceHandler) loadCompanyInfo(ctx context.Context) companyInfo {
+	info := companyInfo{
+		Name:    "Chawy ERP",
+		Address: "â€“",
+		TaxID:   "â€“",
+		Phone:   "â€“",
+		Email:   "â€“",
+	}
+	if h.settingsUsecase == nil {
+		return info
+	}
+	settings, err := h.settingsUsecase.GetSettings(ctx)
+	if err != nil || settings == nil {
+		return info
+	}
+	company := settings.Company
+	if company.Name != "" {
+		info.Name = company.Name
+	}
+	if company.Address != "" {
+		info.Address = company.Address
+	}
+	if company.TaxID != "" {
+		info.TaxID = company.TaxID
+	}
+	if company.Phone != "" {
+		info.Phone = company.Phone
+	}
+	if company.Email != "" {
+		info.Email = company.Email
+	}
+	if company.LogoURL != "" {
+		info.Logo = company.LogoURL
+	}
+	return info
+}
+
+// respondAppError maps an application error to the matching HTTP response so
+// callers keep the same status codes and messages they had before.
+func respondAppError(c *fiber.Ctx, appErr *appErrors.AppError) error {
+	switch appErr.StatusCode {
+	case fiber.StatusNotFound:
+		return response.NotFound(c, appErr.Message)
+	case fiber.StatusInternalServerError:
+		return response.InternalServerError(c, appErr.Message)
+	default:
+		return response.BadRequest(c, appErr.Message)
+	}
+}
+
 func (h *WorkspaceHandler) GetGoodsIssues(c *fiber.Ctx) error {
 	var bodyReq struct {
 		Page   int    `json:"page"`
@@ -3722,23 +1497,24 @@ func (h *WorkspaceHandler) GetGoodsIssues(c *fiber.Ctx) error {
 	if limit <= 0 {
 		limit, _ = strconv.Atoi(c.Query("limit", "50"))
 	}
+	if limit < 1 || limit > 100 {
+		limit = 50
+	}
 
 	search := strings.TrimSpace(bodyReq.Search)
 	if search == "" {
 		search = strings.TrimSpace(c.Query("search", ""))
 	}
 
-	// Fetch OUT stock movements for goods issue history
-	var movements []domainStock.StockMovement
-	var total int64
-	query := h.db.WithContext(c.Context()).Model(&domainStock.StockMovement{}).
-		Where("type = ?", domainStock.MovementOut)
-	if search != "" {
-		s := "%" + search + "%"
-		query = query.Where("sku_code ILIKE ? OR note ILIKE ? OR reference_id ILIKE ?", s, s, s)
+	// Goods issue history is backed by OUT stock movements.
+	movements, total, err := h.purchasingUsecase.ListGoodsIssues(c.Context(), domainPurchasing.GoodsIssueQuery{
+		Search: search,
+		Page:   page,
+		Limit:  limit,
+	})
+	if err != nil {
+		return response.InternalServerError(c, "Failed to load goods issues")
 	}
-	query.Count(&total)
-	query.Offset((page - 1) * limit).Limit(limit).Order("id DESC").Find(&movements)
 
 	records := make([]IssueRecord, len(movements))
 	for i, m := range movements {
@@ -3764,9 +1540,12 @@ func (h *WorkspaceHandler) GetGoodsIssueByID(c *fiber.Ctx) error {
 		return response.BadRequest(c, "Invalid goods issue ID")
 	}
 
-	var m domainStock.StockMovement
-	if err := h.db.WithContext(c.Context()).First(&m, id).Error; err != nil {
-		return response.NotFound(c, "Goods issue not found")
+	m, err := h.purchasingUsecase.GetGoodsIssue(c.Context(), uint(id))
+	if err != nil {
+		if appErr := asAppError(err); appErr != nil {
+			return respondAppError(c, appErr)
+		}
+		return response.InternalServerError(c, "Failed to load goods issue")
 	}
 
 	return response.OK(c, fiber.Map{
@@ -3798,56 +1577,17 @@ func (h *WorkspaceHandler) CreateGoodsIssue(c *fiber.Ctx) error {
 		return response.BadRequest(c, "SKU and positive quantity are required")
 	}
 
-	var s domainSKU.SKU
-	if err := h.db.WithContext(c.Context()).Where("UPPER(TRIM(sku)) = ?", strings.ToUpper(strings.TrimSpace(req.SKU))).First(&s).Error; err != nil {
-		return response.NotFound(c, "SKU not found")
-	}
-
-	refType := req.Channel
-	if refType == "" {
-		refType = "MANUAL_ISSUE"
-	}
-
-	var movement domainStock.StockMovement
-	err := h.db.WithContext(c.Context()).Transaction(func(tx *gorm.DB) error {
-		var stk domainStock.Stock
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("sku_id = ? AND warehouse_id = ?", s.ID, 1).First(&stk).Error; err != nil {
-			return errors.New("Stock not found for SKU")
-		}
-
-		if stk.Quantity < req.Qty {
-			return fmt.Errorf("insufficient total stock: current %d, required %d", stk.Quantity, req.Qty)
-		}
-
-		if stk.AvailableQty < req.Qty {
-			return fmt.Errorf("insufficient available stock (allocated for reservations): available %d, required %d", stk.AvailableQty, req.Qty)
-		}
-
-		before := stk.Quantity
-		stk.Quantity -= req.Qty
-		stk.AvailableQty -= req.Qty
-		stk.UpdatedAt = time.Now()
-		if err := tx.Save(&stk).Error; err != nil {
-			return err
-		}
-
-		movement = domainStock.StockMovement{
-			SKUID:         s.ID,
-			SKUCode:       s.SKU,
-			WarehouseID:   1,
-			Type:          domainStock.MovementOut,
-			Quantity:      req.Qty,
-			BeforeQty:     before,
-			AfterQty:      stk.Quantity,
-			ReferenceType: refType,
-			ReferenceID:   req.OrderRef,
-			Note:          req.Reason,
-			CreatedAt:     time.Now(),
-		}
-		return tx.Create(&movement).Error
+	movement, err := h.purchasingUsecase.CreateGoodsIssue(c.Context(), usecasePurchasing.CreateGoodsIssueInput{
+		SKU:      req.SKU,
+		Qty:      req.Qty,
+		Reason:   req.Reason,
+		Channel:  req.Channel,
+		OrderRef: req.OrderRef,
 	})
-
 	if err != nil {
+		if appErr := asAppError(err); appErr != nil {
+			return respondAppError(c, appErr)
+		}
 		return response.BadRequest(c, "Failed to create goods issue: "+err.Error())
 	}
 
@@ -3902,12 +1642,15 @@ type BundleComponentRecord struct {
 
 func (h *WorkspaceHandler) GetBundleComponents(c *fiber.Ctx) error {
 	sku := c.Params("sku")
+
 	var items []domainBundle.BundleItem
-	query := h.db.WithContext(c.Context()).Model(&domainBundle.BundleItem{})
-	if sku != "" {
-		query = query.Where("bundle_sku = ?", strings.ToUpper(strings.TrimSpace(sku)))
+	var err error
+	if sku == "" {
+		items, err = h.bundleUsecase.ListComponents(c.Context())
+	} else {
+		items, err = h.bundleUsecase.GetComponents(c.Context(), strings.ToUpper(strings.TrimSpace(sku)))
 	}
-	if err := query.Find(&items).Error; err != nil {
+	if err != nil {
 		return response.InternalServerError(c, "Failed to fetch bundle components: "+err.Error())
 	}
 
@@ -3925,331 +1668,3 @@ func (h *WorkspaceHandler) GetBundleComponents(c *fiber.Ctx) error {
 	return response.OK(c, records)
 }
 
-func (h *WorkspaceHandler) GetSKUAccessories(c *fiber.Ctx) error {
-	sku := c.Params("sku")
-	var items []domainSKU.SKUAccessory
-	query := h.db.WithContext(c.Context()).Model(&domainSKU.SKUAccessory{})
-	if sku != "" {
-		query = query.Where("UPPER(sku) = ?", strings.ToUpper(strings.TrimSpace(sku)))
-	}
-	if err := query.Find(&items).Error; err != nil {
-		return response.InternalServerError(c, "Failed to fetch SKU accessories: "+err.Error())
-	}
-
-	records := make([]SKUAccessoryRecord, len(items))
-	for i, item := range items {
-		records[i] = SKUAccessoryRecord{
-			ID:           item.ID,
-			SKU:          item.SKU,
-			AccessorySKU: item.AccessorySKU,
-			Quantity:     item.Quantity,
-			Note:         item.Note,
-		}
-	}
-
-	return response.OK(c, records)
-}
-
-// DownloadProductTemplate generates and downloads an Excel (.xlsx) template for importing SKUs
-func (h *WorkspaceHandler) DownloadProductTemplate(c *fiber.Ctx) error {
-	f := excelize.NewFile()
-	defer f.Close()
-
-	sheet := "SKU_Import"
-	f.SetSheetName("Sheet1", sheet)
-
-	headers := []string{
-		"รหัส SKU (จำเป็น)*",
-		"ชื่อสินค้า (จำเป็น)*",
-		"บาร์โค้ด",
-		"หมวดหมู่",
-		"ราคาขาย (บาท)",
-		"ราคาต้นทุน (บาท)",
-		"จำนวนสต็อกเริ่มต้น",
-		"จุดสั่งซื้อซ้ำ (Reorder Point)",
-	}
-
-	for colIdx, header := range headers {
-		cell, _ := excelize.CoordinatesToCellName(colIdx+1, 1)
-		f.SetCellValue(sheet, cell, header)
-	}
-
-	// Sample rows
-	sampleData := [][]interface{}{
-		{"SAMPLE-SKU-001", "สินค้าตัวอย่าง 1", "885000000001", "Finished Product", 299.00, 150.00, 50, 10},
-		{"SAMPLE-SKU-002", "สินค้าตัวอย่าง 2", "885000000002", "Finished Product", 590.00, 300.00, 20, 5},
-	}
-
-	for rowIdx, row := range sampleData {
-		for colIdx, val := range row {
-			cell, _ := excelize.CoordinatesToCellName(colIdx+1, rowIdx+2)
-			f.SetCellValue(sheet, cell, val)
-		}
-	}
-
-	// Styling: Header style
-	headerStyle, err := f.NewStyle(&excelize.Style{
-		Font:      &excelize.Font{Bold: true, Color: "#FFFFFF"},
-		Fill:      excelize.Fill{Type: "pattern", Color: []string{"#2563EB"}, Pattern: 1},
-		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
-	})
-	if err == nil {
-		_ = f.SetRowStyle(sheet, 1, 1, headerStyle)
-	}
-
-	// Auto column widths
-	f.SetColWidth(sheet, "A", "A", 22)
-	f.SetColWidth(sheet, "B", "B", 35)
-	f.SetColWidth(sheet, "C", "C", 20)
-	f.SetColWidth(sheet, "D", "D", 20)
-	f.SetColWidth(sheet, "E", "F", 18)
-	f.SetColWidth(sheet, "G", "H", 25)
-
-	c.Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-	c.Set("Content-Disposition", "attachment; filename=sku_import_template.xlsx")
-	return f.Write(c.Response().BodyWriter())
-}
-
-// ImportProductsXLSX handles bulk importing SKUs from an uploaded .xlsx file
-func (h *WorkspaceHandler) ImportProductsXLSX(c *fiber.Ctx) error {
-	file, err := c.FormFile("file")
-	if err != nil {
-		return response.BadRequest(c, "กรุณาเลือกไฟล์ Excel (.xlsx) ที่ต้องการอัปโหลด")
-	}
-
-	// Validate extension
-	ext := strings.ToLower(file.Filename)
-	if !strings.HasSuffix(ext, ".xlsx") {
-		return response.BadRequest(c, "รองรับเฉพาะไฟล์ Excel นามสกุล .xlsx เท่านั้น")
-	}
-
-	src, err := file.Open()
-	if err != nil {
-		return response.BadRequest(c, "ไม่สามารถเปิดไฟล์ Excel ได้: "+err.Error())
-	}
-	defer src.Close()
-
-	excelFile, err := excelize.OpenReader(src)
-	if err != nil {
-		return response.BadRequest(c, "โครงสร้างไฟล์ Excel ไม่ถูกต้อง: "+err.Error())
-	}
-	defer excelFile.Close()
-
-	sheets := excelFile.GetSheetList()
-	if len(sheets) == 0 {
-		return response.BadRequest(c, "ไม่พบ Sheet ในไฟล์ Excel")
-	}
-
-	sheetName := sheets[0]
-	rows, err := excelFile.GetRows(sheetName)
-	if err != nil {
-		return response.BadRequest(c, "ไม่สามารถอ่านแถวข้อมูลในไฟล์ Excel ได้: "+err.Error())
-	}
-
-	if len(rows) <= 1 {
-		return response.BadRequest(c, "ไฟล์ไม่มีข้อมูลสำหรับนำเข้า (พบเฉพาะหัวตารางหรือว่างเปล่า)")
-	}
-
-	type RowError struct {
-		Row   int    `json:"row"`
-		SKU   string `json:"sku"`
-		Error string `json:"error"`
-	}
-
-	type ImportSummary struct {
-		TotalRows int        `json:"totalRows"`
-		Created   int        `json:"created"`
-		Updated   int        `json:"updated"`
-		Failed    int        `json:"failed"`
-		Errors    []RowError `json:"errors"`
-	}
-
-	summary := ImportSummary{
-		TotalRows: len(rows) - 1,
-		Errors:    make([]RowError, 0),
-	}
-
-	// Check column count
-	if len(rows[0]) < 8 {
-		return response.BadRequest(c, "ไฟล์ Excel ไม่ถูกต้อง: ต้องมีอย่างน้อย 8 คอลัมน์")
-	}
-
-	// Track SKUs to prevent duplicates within the Excel file
-	seenSKU := make(map[string]int)
-
-	// Process each row inside a safe single-pass flow
-	for i := 1; i < len(rows); i++ {
-		rowNum := i + 1
-		row := rows[i]
-
-		if len(row) == 0 {
-			summary.TotalRows--
-			continue
-		}
-
-		getCol := func(idx int) string {
-			if idx < len(row) {
-				return strings.TrimSpace(row[idx])
-			}
-			return ""
-		}
-
-		skuCode := strings.ToUpper(getCol(0))
-		name := getCol(1)
-		barcode := getCol(2)
-		category := getCol(3)
-		priceStr := getCol(4)
-		costStr := getCol(5)
-		stockStr := getCol(6)
-		reorderStr := getCol(7)
-
-		// If entire row is blank, skip
-		if skuCode == "" && name == "" && barcode == "" {
-			summary.TotalRows--
-			continue
-		}
-
-		// 1. Check SKU is not empty
-		if skuCode == "" {
-			summary.Failed++
-			summary.Errors = append(summary.Errors, RowError{
-				Row:   rowNum,
-				SKU:   skuCode,
-				Error: "รหัส SKU ไม่สามารถเป็นค่าว่างได้",
-			})
-			continue
-		}
-
-		// 2. Check SKU is not duplicate within Excel file
-		if firstRow, exists := seenSKU[skuCode]; exists {
-			summary.Failed++
-			summary.Errors = append(summary.Errors, RowError{
-				Row:   rowNum,
-				SKU:   skuCode,
-				Error: fmt.Sprintf("รหัส SKU ซ้ำกับแถวที่ %d ในไฟล์ Excel", firstRow),
-			})
-			continue
-		}
-		seenSKU[skuCode] = rowNum
-
-		// 3. Check SKU does not already exist in database (ห้ามซ้ำกับในระบบ)
-		var dbCount int64
-		_ = h.db.WithContext(c.Context()).Model(&domainSKU.SKU{}).
-			Where("UPPER(sku) = ?", skuCode).
-			Count(&dbCount).Error
-		if dbCount > 0 {
-			summary.Failed++
-			summary.Errors = append(summary.Errors, RowError{
-				Row:   rowNum,
-				SKU:   skuCode,
-				Error: fmt.Sprintf("รหัส SKU '%s' มีอยู่ในระบบแล้ว (ห้ามซ้ำ)", skuCode),
-			})
-			continue
-		}
-
-		// 4. Check Product Name is not empty
-		if name == "" {
-			summary.Failed++
-			summary.Errors = append(summary.Errors, RowError{
-				Row:   rowNum,
-				SKU:   skuCode,
-				Error: "ชื่อสินค้าไม่สามารถเป็นค่าว่างได้",
-			})
-			continue
-		}
-
-		if category == "" {
-			category = "Finished Product"
-		}
-
-		price, _ := strconv.ParseFloat(priceStr, 64)
-		cost, _ := strconv.ParseFloat(costStr, 64)
-		initialStock, _ := strconv.Atoi(stockStr)
-		if initialStock < 0 {
-			initialStock = 0
-		}
-		reorder, _ := strconv.Atoi(reorderStr)
-		if reorder < 0 {
-			reorder = 10
-		}
-
-		// Perform Creation inside transaction
-		txErr := h.db.WithContext(c.Context()).Transaction(func(tx *gorm.DB) error {
-			// Double check uniqueness with lock
-			var existing domainSKU.SKU
-			if err := tx.Where("UPPER(sku) = ?", skuCode).First(&existing).Error; err == nil {
-				return fmt.Errorf("รหัส SKU '%s' มีอยู่ในระบบแล้ว", skuCode)
-			}
-
-			// New SKU -> Create SKU + Stock + Movement (if stock > 0)
-			newSKU := domainSKU.SKU{
-				SKU:          skuCode,
-				Name:         name,
-				Barcode:      barcode,
-				Category:     category,
-				Price:        price,
-				CostPrice:    cost,
-				IsBundle:     false,
-				Status:       "active",
-				ReorderPoint: reorder,
-				CreatedAt:    time.Now(),
-				UpdatedAt:    time.Now(),
-			}
-
-			if err := tx.Create(&newSKU).Error; err != nil {
-				return err
-			}
-
-			// Initial Stock
-			stockEntity := domainStock.Stock{
-				SKUID:        newSKU.ID,
-				SKUCode:      newSKU.SKU,
-				WarehouseID:  1,
-				Quantity:     initialStock,
-				AvailableQty: initialStock,
-				UpdatedAt:    time.Now(),
-			}
-			if err := tx.Create(&stockEntity).Error; err != nil {
-				return err
-			}
-
-			if initialStock > 0 {
-				movement := domainStock.StockMovement{
-					SKUID:         newSKU.ID,
-					SKUCode:       newSKU.SKU,
-					WarehouseID:   1,
-					Type:          domainStock.MovementIn,
-					Quantity:      initialStock,
-					BeforeQty:     0,
-					AfterQty:      initialStock,
-					ReferenceType: "opening_stock",
-					ReferenceID:   newSKU.SKU,
-					Note:          "Initial stock from XLSX import",
-					CreatedAt:     time.Now(),
-				}
-				if err := tx.Create(&movement).Error; err != nil {
-					return err
-				}
-			}
-
-			summary.Created++
-			return nil
-		})
-
-		if txErr != nil {
-			summary.Failed++
-			summary.Errors = append(summary.Errors, RowError{
-				Row:   rowNum,
-				SKU:   skuCode,
-				Error: txErr.Error(),
-			})
-		}
-	}
-
-	msg := fmt.Sprintf("นำเข้าข้อมูลสำเร็จ: สร้างใหม่ %d รายการ, อัปเดต %d รายการ", summary.Created, summary.Updated)
-	if summary.Failed > 0 {
-		msg += fmt.Sprintf(", ไม่สำเร็จ %d รายการ", summary.Failed)
-	}
-
-	return response.OK(c, summary, msg)
-}

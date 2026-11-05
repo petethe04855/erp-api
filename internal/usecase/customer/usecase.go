@@ -58,14 +58,26 @@ type Usecase interface {
 	List(ctx context.Context, query domainCustomer.Query) ([]domainCustomer.Customer, int64, error)
 	Update(ctx context.Context, id uint, input UpdateInput) (*domainCustomer.Customer, error)
 	Delete(ctx context.Context, id uint) error
+
+	// Workspace endpoints (erp-web-v2) keep the historical backend behavior.
+	ListForWorkspace(ctx context.Context, q domainCustomer.WorkspaceQuery) ([]domainCustomer.Customer, int64, error)
+	CreateForWorkspace(ctx context.Context, in WorkspaceCreateInput) (*domainCustomer.Customer, error)
+	SetStatusForWorkspace(ctx context.Context, id uint, status string) (*domainCustomer.Customer, error)
 }
 
 type customerUsecase struct {
-	repo domainCustomer.Repository
+	repo   domainCustomer.Repository
+	wsRepo domainCustomer.WorkspaceRepository
 }
 
 func NewCustomerUsecase(repo domainCustomer.Repository) Usecase {
-	return &customerUsecase{repo: repo}
+	uc := &customerUsecase{repo: repo}
+	// The postgres repository also implements the workspace read contract;
+	// probe it so the constructor signature stays compatible.
+	if ws, ok := repo.(domainCustomer.WorkspaceRepository); ok {
+		uc.wsRepo = ws
+	}
+	return uc
 }
 
 func (u *customerUsecase) Create(ctx context.Context, in CreateInput) (*domainCustomer.Customer, error) {

@@ -54,6 +54,8 @@ type BundleFinder interface {
 
 type Usecase interface {
 	List(ctx context.Context, page, limit int) ([]domainQuotation.Quotation, int64, error)
+	// ListFiltered returns the workspace quotation list with its screen filters.
+	ListFiltered(ctx context.Context, q domainQuotation.Query) ([]domainQuotation.Quotation, int64, error)
 	Create(ctx context.Context, input CreateInput) (*domainQuotation.Quotation, error)
 	GetByID(ctx context.Context, id uint) (*domainQuotation.Quotation, error)
 	UpdateStatus(ctx context.Context, id uint, newStatus domainQuotation.Status) (*domainQuotation.Quotation, error)
@@ -113,6 +115,17 @@ func (u *quotationUsecase) List(ctx context.Context, page, limit int) ([]domainQ
 		limit = 50
 	}
 	return u.repo.List(ctx, page, limit)
+}
+
+// ListFiltered returns the workspace quotation list with its screen filters.
+func (u *quotationUsecase) ListFiltered(ctx context.Context, q domainQuotation.Query) ([]domainQuotation.Quotation, int64, error) {
+	if q.Page < 1 {
+		q.Page = 1
+	}
+	if q.Limit < 1 || q.Limit > 100 {
+		q.Limit = 50
+	}
+	return u.repo.ListFiltered(ctx, q)
 }
 
 // Create validates client business data server-side and persists a quotation.

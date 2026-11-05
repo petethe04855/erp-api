@@ -18,6 +18,8 @@ type ComponentInput struct {
 type Usecase interface {
 	SetComponents(ctx context.Context, bundleSKU string, components []ComponentInput) error
 	GetComponents(ctx context.Context, bundleSKU string) ([]domainBundle.BundleItem, error)
+	// ListComponents returns every bundle component row.
+	ListComponents(ctx context.Context) ([]domainBundle.BundleItem, error)
 	ExplodeBundle(ctx context.Context, bundleSKU string, orderQty int, warehouseID uint) ([]domainBundle.ExplodedItem, bool, error)
 }
 
@@ -73,6 +75,10 @@ func (u *bundleUsecase) SetComponents(ctx context.Context, bundleSKU string, com
 
 func (u *bundleUsecase) GetComponents(ctx context.Context, bundleSKU string) ([]domainBundle.BundleItem, error) {
 	return u.bundleRepo.GetItemsByBundleSKU(ctx, bundleSKU)
+}
+
+func (u *bundleUsecase) ListComponents(ctx context.Context) ([]domainBundle.BundleItem, error) {
+	return u.bundleRepo.ListItems(ctx)
 }
 
 func (u *bundleUsecase) ExplodeBundle(

@@ -34,6 +34,7 @@ import (
 	usecaseCRM "chawy-erp-api/internal/usecase/crm"
 	usecaseBundle "chawy-erp-api/internal/usecase/bundle"
 	usecaseCustomer "chawy-erp-api/internal/usecase/customer"
+	usecaseCatalog "chawy-erp-api/internal/usecase/catalog"
 	usecaseFinance "chawy-erp-api/internal/usecase/finance"
 	usecaseFormula "chawy-erp-api/internal/usecase/formula"
 	usecaseInvoice "chawy-erp-api/internal/usecase/invoice"
@@ -241,7 +242,12 @@ func main() {
 	invoiceHdl := handler.NewInvoiceHandler(invoiceUsecase, settingsUsecase)
 	reportHdl := handler.NewReportHandler(reportUsecase)
 	financeHdl := handler.NewFinanceHandler(financeUsecase, cfg.GeminiAPIKey)
-	workspaceHdl := handler.NewWorkspaceHandler(db, orderUsecase, quotationUsecase, stockUsecase, skuRepo, sequenceUsecase)
+	// Catalog (workspace product catalog) — Phase 4: handler no longer touches
+	// the database; all SQL lives in the catalog repository.
+	catalogRepo := postgres.NewCatalogRepository(db)
+	catalogUsecase := usecaseCatalog.NewCatalogUsecase(catalogRepo, skuRepo, txManager)
+
+	workspaceHdl := handler.NewWorkspaceHandler(catalogUsecase, orderUsecase, quotationUsecase, stockUsecase, skuRepo, bundleUsecase, purchasingUsecase, invoiceUsecase, customerUsecase, settingsUsecase, sequenceUsecase)
 
 	tiktokHdl := handler.NewTikTokHandler(tiktokUsecase)
 	settingsHdl := handler.NewSettingsHandler(settingsUsecase)

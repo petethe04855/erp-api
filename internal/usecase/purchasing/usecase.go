@@ -64,6 +64,18 @@ type Usecase interface {
 	ListPOs(ctx context.Context, q domainPurchasing.POQuery) ([]domainPurchasing.PurchaseOrder, int64, error)
 	ApprovePO(ctx context.Context, id uint) (*domainPurchasing.PurchaseOrder, error)
 	ReceiveGoods(ctx context.Context, in ReceiveGoodsInput) (*domainPurchasing.PurchaseOrder, error)
+
+	// Goods receive / issue documents (workspace screens)
+	CreateGoodsReceive(ctx context.Context, in CreateGoodsReceiveInput) (*domainPurchasing.GoodsReceive, error)
+	CreateGoodsIssue(ctx context.Context, in CreateGoodsIssueInput) (*domainStock.StockMovement, error)
+	ListGoodsReceives(ctx context.Context, q domainPurchasing.GoodsReceiveQuery) ([]domainPurchasing.GoodsReceive, int64, error)
+	GetGoodsReceive(ctx context.Context, id uint) (*domainPurchasing.GoodsReceive, error)
+	ListGoodsIssues(ctx context.Context, q domainPurchasing.GoodsIssueQuery) ([]domainStock.StockMovement, int64, error)
+	GetGoodsIssue(ctx context.Context, id uint) (*domainStock.StockMovement, error)
+
+	// Workspace purchase-order screens
+	CreatePurchaseOrder(ctx context.Context, in CreatePurchaseOrderInput) (*domainPurchasing.PurchaseOrder, error)
+	UpdatePOStatus(ctx context.Context, id uint, status string) (*domainPurchasing.PurchaseOrder, error)
 }
 
 type purchasingUsecase struct {

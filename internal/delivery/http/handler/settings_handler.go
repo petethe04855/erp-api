@@ -21,7 +21,7 @@ func (h *SettingsHandler) GetSettings(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	return response.OK(c, res)
+	return response.OK(c, dto.NewSettingsResponse(res))
 }
 
 func (h *SettingsHandler) UpdateSettings(c *fiber.Ctx) error {
@@ -40,5 +40,5 @@ func (h *SettingsHandler) UpdateSettings(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.OK(c, res, "Settings updated successfully")
+	return response.OK(c, dto.NewSettingsResponse(res), "Settings updated successfully")
 }

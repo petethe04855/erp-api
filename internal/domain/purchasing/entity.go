@@ -3,6 +3,8 @@ package purchasing
 import (
 	"context"
 	"time"
+
+	domainStock "chawy-erp-api/internal/domain/stock"
 )
 
 type POStatus string
@@ -101,6 +103,20 @@ type POQuery struct {
 	Limit      int
 }
 
+// GoodsReceiveQuery carries the workspace goods-receive list filters.
+type GoodsReceiveQuery struct {
+	Search string
+	Page   int
+	Limit  int
+}
+
+// GoodsIssueQuery carries the workspace goods-issue list filters.
+type GoodsIssueQuery struct {
+	Search string
+	Page   int
+	Limit  int
+}
+
 type Repository interface {
 	// Supplier
 	CreateSupplier(ctx context.Context, supplier *Supplier) error
@@ -112,6 +128,8 @@ type Repository interface {
 	// Purchase Order
 	CreatePO(ctx context.Context, po *PurchaseOrder) error
 	FindPOByID(ctx context.Context, id uint) (*PurchaseOrder, error)
+	// FindPOByRef resolves a PO by its document number (po_no) or numeric id.
+	FindPOByRef(ctx context.Context, ref string) (*PurchaseOrder, error)
 	// FindPOByIDForUpdate locks the PO row (SELECT ... FOR UPDATE) within the
 	// caller's transaction so concurrent receives serialize (FULL-09).
 	FindPOByIDForUpdate(ctx context.Context, id uint) (*PurchaseOrder, error)
@@ -122,4 +140,10 @@ type Repository interface {
 
 	// Goods Receive documents
 	CreateGoodsReceiveDoc(ctx context.Context, gr *GoodsReceive, items []GoodsReceiveItem) error
+	FindAllGoodsReceives(ctx context.Context, query GoodsReceiveQuery) ([]GoodsReceive, int64, error)
+	FindGoodsReceiveByID(ctx context.Context, id uint) (*GoodsReceive, error)
+
+	// Goods Issue documents (backed by OUT stock movements)
+	FindAllGoodsIssues(ctx context.Context, query GoodsIssueQuery) ([]domainStock.StockMovement, int64, error)
+	FindGoodsIssueByID(ctx context.Context, id uint) (*domainStock.StockMovement, error)
 }

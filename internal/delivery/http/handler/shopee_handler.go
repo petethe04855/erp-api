@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"chawy-erp-api/internal/delivery/http/dto"
 	domainShopee "chawy-erp-api/internal/domain/shopee"
 	usecaseShopee "chawy-erp-api/internal/usecase/shopee"
 	"chawy-erp-api/pkg/response"
@@ -35,6 +36,65 @@ func NewShopeeHandler(
 	}
 }
 
+func toShopeeDuplicateDetailResponses(items []usecaseShopee.DuplicateDetail) []dto.ShopeeDuplicateDetailResponse {
+	if items == nil {
+		return nil
+	}
+	out := make([]dto.ShopeeDuplicateDetailResponse, len(items))
+	for i, d := range items {
+		out[i] = dto.ShopeeDuplicateDetailResponse{
+			Identifier:    d.Identifier,
+			RowIndex:      d.RowIndex,
+			DuplicateType: d.DuplicateType,
+			Message:       d.Message,
+		}
+	}
+	return out
+}
+
+func toShopeeOrderPreviewResponse(res *usecaseShopee.OrderPreviewResult) dto.ShopeeOrderPreviewResponse {
+	if res == nil {
+		return dto.ShopeeOrderPreviewResponse{}
+	}
+	return dto.ShopeeOrderPreviewResponse{
+		TotalRows:        res.TotalRows,
+		TotalOrders:      res.TotalOrders,
+		BlankSKUCount:    res.BlankSKUCount,
+		DuplicateCount:   res.DuplicateCount,
+		DuplicateOrders:  res.DuplicateOrders,
+		DuplicateDetails: toShopeeDuplicateDetailResponses(res.DuplicateDetails),
+		SampleRows:       dto.NewShopeeOrderItemResponses(res.SampleRows),
+		SampleOrders:     dto.NewShopeeOrderResponses(res.SampleOrders),
+	}
+}
+
+func toShopeeIncomePreviewResponse(res *usecaseShopee.IncomePreviewResult) dto.ShopeeIncomePreviewResponse {
+	if res == nil {
+		return dto.ShopeeIncomePreviewResponse{}
+	}
+	return dto.ShopeeIncomePreviewResponse{
+		TotalRows:        res.TotalRows,
+		TotalNetAmount:   res.TotalNetAmount,
+		DuplicateCount:   res.DuplicateCount,
+		DuplicateOrders:  res.DuplicateOrders,
+		DuplicateDetails: toShopeeDuplicateDetailResponses(res.DuplicateDetails),
+		SampleRows:       dto.NewShopeeIncomeResponses(res.SampleRows),
+	}
+}
+
+func toShopeeDashboardResponse(res *usecaseShopee.DashboardAnalyticsResult) dto.ShopeeDashboardResponse {
+	if res == nil {
+		return dto.ShopeeDashboardResponse{}
+	}
+	return dto.ShopeeDashboardResponse{
+		FromMonth:     res.FromMonth,
+		ToMonth:       res.ToMonth,
+		YTDSummary:    dto.NewShopeeMonthlySummaryResponse(&res.YTDSummary),
+		MonthlyTrends: dto.NewShopeeMonthlySummaryResponses(res.MonthlyTrends),
+		TopSKUs:       dto.NewShopeeTopSKUStatResponses(res.TopSKUs),
+	}
+}
+
 // PreviewOrders parses uploaded orders file and returns preview
 func (h *ShopeeHandler) PreviewOrders(c *fiber.Ctx) error {
 	file, err := c.FormFile("file")
@@ -53,7 +113,7 @@ func (h *ShopeeHandler) PreviewOrders(c *fiber.Ctx) error {
 		return response.BadRequest(c, err.Error())
 	}
 
-	return response.OK(c, res)
+	return response.OK(c, toShopeeOrderPreviewResponse(res))
 }
 
 // ImportOrders parses uploaded orders file and commits to DB
@@ -163,7 +223,7 @@ func (h *ShopeeHandler) GetOrders(c *fiber.Ctx) error {
 		return response.InternalServerError(c, err.Error())
 	}
 
-	return response.List(c, orders, page, limit, total)
+	return response.List(c, dto.NewShopeeOrderResponses(orders), page, limit, total)
 }
 
 // GetOrderByID returns single order details
@@ -176,7 +236,7 @@ func (h *ShopeeHandler) GetOrderByID(c *fiber.Ctx) error {
 	if ord == nil {
 		return response.NotFound(c, "Shopee order not found")
 	}
-	return response.OK(c, ord)
+	return response.OK(c, dto.NewShopeeOrderResponse(ord))
 }
 
 type updateSKUReq struct {
@@ -230,7 +290,7 @@ func (h *ShopeeHandler) PreviewIncome(c *fiber.Ctx) error {
 		return response.BadRequest(c, err.Error())
 	}
 
-	return response.OK(c, res)
+	return response.OK(c, toShopeeIncomePreviewResponse(res))
 }
 
 // ImportIncome parses and commits income file
@@ -324,7 +384,15 @@ func (h *ShopeeHandler) GetIncomes(c *fiber.Ctx) error {
 		return response.InternalServerError(c, err.Error())
 	}
 
-	return response.List(c, items, page, limit, total)
+	list := make([]dto.ShopeeIncomeListItemResponse, len(items))
+	for i := range items {
+		list[i] = dto.ShopeeIncomeListItemResponse{
+			ShopeeIncomeResponse: dto.NewShopeeIncomeResponse(&items[i].ShopeeIncome),
+			IsMatched:            items[i].IsMatched,
+		}
+	}
+
+	return response.List(c, list, page, limit, total)
 }
 
 // DeleteIncome deletes an income record
@@ -378,9 +446,15 @@ func (h *ShopeeHandler) GetMatching(c *fiber.Ctx) error {
 		return response.InternalServerError(c, err.Error())
 	}
 
+	var summaryResp *dto.ShopeeMonthlySummaryResponse
+	if summary != nil {
+		mapped := dto.NewShopeeMonthlySummaryResponse(summary)
+		summaryResp = &mapped
+	}
+
 	return response.OK(c, fiber.Map{
-		"summary": summary,
-		"items":   rows,
+		"summary": summaryResp,
+		"items":   dto.NewShopeeMatchingItemRowResponses(rows),
 	})
 }
 
@@ -427,5 +501,5 @@ func (h *ShopeeHandler) GetDashboard(c *fiber.Ctx) error {
 		return response.InternalServerError(c, err.Error())
 	}
 
-	return response.OK(c, res)
+	return response.OK(c, toShopeeDashboardResponse(res))
 }

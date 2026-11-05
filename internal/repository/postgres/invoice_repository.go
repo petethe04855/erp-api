@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"time"
 
 	"chawy-erp-api/internal/domain/invoice"
 
@@ -60,6 +61,20 @@ func (r *InvoiceRepository) FindByOrderID(ctx context.Context, orderID uint) (*i
 	return &inv, nil
 }
 
+// FindByOrderRef resolves the invoice attached to an order by order id or
+// order number, mirroring the workspace invoice lookup.
+func (r *InvoiceRepository) FindByOrderRef(ctx context.Context, orderID uint, orderNo string) (*invoice.Invoice, error) {
+	var inv invoice.Invoice
+	err := r.db.WithContext(ctx).Where("order_id = ? OR order_no = ?", orderID, orderNo).First(&inv).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &inv, nil
+}
+
 func (r *InvoiceRepository) FindByInvoiceNo(ctx context.Context, no string) (*invoice.Invoice, error) {
 	var inv invoice.Invoice
 	err := r.db.WithContext(ctx).Where("invoice_no = ?", no).First(&inv).Error
@@ -81,6 +96,10 @@ func (r *InvoiceRepository) FindAll(ctx context.Context, q invoice.Query) ([]inv
 	if q.Search != "" {
 		pat := "%" + q.Search + "%"
 		tx = tx.Where("invoice_no ILIKE ? OR order_no ILIKE ? OR customer_name ILIKE ?", pat, pat, pat)
+	}
+	if q.OverdueOnly {
+		today := time.Now().Truncate(24 * time.Hour)
+		tx = tx.Where("status != 'PAID' AND status != 'CANCELLED' AND due_date IS NOT NULL AND due_date < ? AND (amount - paid_amount) > 0", today)
 	}
 	if q.Status != "" {
 		tx = tx.Where("status = ?", q.Status)

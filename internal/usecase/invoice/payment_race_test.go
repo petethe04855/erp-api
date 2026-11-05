@@ -23,8 +23,7 @@ func (r *paymentRaceRepo) FindByIDForUpdate(ctx context.Context, id uint) (*doma
 	return r.mockInvoiceRepo.FindByID(ctx, id)
 }
 
-func (r *paymentRaceRepo) Update(ctx context.Context, inv *domainInvoice.Invoice) error {
-	err := r.mockInvoiceRepo.Update(ctx, inv)
+func (r *paymentRaceRepo) Update(ctx context.Context, inv *domainInvoice.Invoice) error {	err := r.mockInvoiceRepo.Update(ctx, inv)
 	r.seq <- struct{}{} // release the "row lock"
 	return err
 }

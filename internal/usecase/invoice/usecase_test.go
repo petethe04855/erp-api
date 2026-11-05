@@ -2,6 +2,7 @@ package invoice_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	domainInvoice "chawy-erp-api/internal/domain/invoice"
@@ -38,6 +39,18 @@ func (m *mockInvoiceRepo) FindByIDForUpdate(ctx context.Context, id uint) (*doma
 func (m *mockInvoiceRepo) FindByOrderID(ctx context.Context, orderID uint) (*domainInvoice.Invoice, error) {
 	for _, inv := range m.invoices {
 		if inv.OrderID != nil && *inv.OrderID == orderID {
+			return inv, nil
+		}
+	}
+	return nil, nil
+}
+
+func (m *mockInvoiceRepo) FindByOrderRef(ctx context.Context, orderID uint, orderNo string) (*domainInvoice.Invoice, error) {
+	for _, inv := range m.invoices {
+		if inv.OrderID != nil && *inv.OrderID == orderID {
+			return inv, nil
+		}
+		if orderNo != "" && inv.OrderNo == orderNo {
 			return inv, nil
 		}
 	}
@@ -101,6 +114,19 @@ func (m *mockOrderRepo) FindByOrderNo(ctx context.Context, orderNo string) (*dom
 		}
 	}
 	return nil, nil
+}
+
+func (m *mockOrderRepo) FindByRef(ctx context.Context, ref string) (*domainOrder.Order, error) {
+	for _, o := range m.orders {
+		if o.OrderNo == ref || fmt.Sprintf("%d", o.ID) == ref {
+			return o, nil
+		}
+	}
+	return nil, nil
+}
+
+func (m *mockOrderRepo) FindAllForSales(ctx context.Context, q domainOrder.SalesQuery) ([]domainOrder.Order, int64, error) {
+	return m.FindAll(ctx, domainOrder.Query{Page: q.Page, Limit: q.Limit})
 }
 
 func (m *mockOrderRepo) FindAll(ctx context.Context, q domainOrder.Query) ([]domainOrder.Order, int64, error) {

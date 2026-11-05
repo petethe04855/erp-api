@@ -78,14 +78,31 @@ type Query struct {
 	Limit     int
 }
 
+// SalesQuery carries the filters used by the workspace sales-order list screen.
+// Status and Channel accept the screen's pseudo values (COMPLETED / manual) and
+// PaymentStatus filters on the linked invoice state.
+type SalesQuery struct {
+	Search        string
+	Status        string
+	Channel       string
+	PaymentStatus string
+	Page          int
+	Limit         int
+}
+
 type Repository interface {
 	Create(ctx context.Context, order *Order) error
 	FindByID(ctx context.Context, id uint) (*Order, error)
+	// FindByRef resolves an order by numeric id or document number.
+	FindByRef(ctx context.Context, ref string) (*Order, error)
 	// FindByIDForUpdate locks the order row (SELECT ... FOR UPDATE) to prevent
 	// concurrent ship/cancel races.
 	FindByIDForUpdate(ctx context.Context, id uint) (*Order, error)
 	FindByOrderNo(ctx context.Context, orderNo string) (*Order, error)
 	FindAll(ctx context.Context, query Query) ([]Order, int64, error)
+	// FindAllForSales applies the workspace sales-list filters (pseudo status
+	// COMPLETED, manual channel bucket, invoice payment state).
+	FindAllForSales(ctx context.Context, query SalesQuery) ([]Order, int64, error)
 	UpdateStatus(ctx context.Context, id uint, status Status) error
 	Update(ctx context.Context, order *Order) error
 }
