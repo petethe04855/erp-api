@@ -60,7 +60,7 @@ func (h *FinanceHandler) ListJournalEntries(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.List(c, entries, page, limit, total)
+	return response.List(c, dto.NewJournalEntryResponses(entries), page, limit, total)
 }
 
 func (h *FinanceHandler) GetJournalEntryByID(c *fiber.Ctx) error {
@@ -74,7 +74,7 @@ func (h *FinanceHandler) GetJournalEntryByID(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.OK(c, entry)
+	return response.OK(c, dto.NewJournalEntryResponse(entry))
 }
 
 // Expenses
@@ -100,7 +100,7 @@ func (h *FinanceHandler) ListExpenses(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.List(c, expenses, page, limit, total)
+	return response.List(c, dto.NewExpenseResponses(expenses), page, limit, total)
 }
 
 func (h *FinanceHandler) CreateExpense(c *fiber.Ctx) error {
@@ -135,7 +135,7 @@ func (h *FinanceHandler) CreateExpense(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.Created(c, exp, "Expense created successfully")
+	return response.Created(c, dto.NewExpenseResponse(exp), "Expense created successfully")
 }
 
 func (h *FinanceHandler) UpdateExpense(c *fiber.Ctx) error {
@@ -166,7 +166,7 @@ func (h *FinanceHandler) UpdateExpense(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.OK(c, exp, "Expense updated successfully")
+	return response.OK(c, dto.NewExpenseResponse(exp), "Expense updated successfully")
 }
 
 func (h *FinanceHandler) DeleteExpense(c *fiber.Ctx) error {

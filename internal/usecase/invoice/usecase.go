@@ -3,6 +3,7 @@ package invoice
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	domainCustomer "chawy-erp-api/internal/domain/customer"
@@ -26,6 +27,10 @@ type MarkPaidInput struct {
 
 type Usecase interface {
 	CreateFromOrder(ctx context.Context, in CreateInvoiceFromOrderInput) (*domainInvoice.Invoice, error)
+	// CreateFromSalesOrderRef creates (or returns) the invoice for a sales
+	// order referenced by document number or id. The bool reports whether an
+	// invoice already existed.
+	CreateFromSalesOrderRef(ctx context.Context, soRef string) (*domainInvoice.Invoice, bool, error)
 	GetByID(ctx context.Context, id uint) (*domainInvoice.Invoice, error)
 	List(ctx context.Context, q domainInvoice.Query) ([]domainInvoice.Invoice, int64, error)
 	MarkAsPaid(ctx context.Context, in MarkPaidInput) (*domainInvoice.Invoice, error)
@@ -145,6 +150,41 @@ func (u *invoiceUsecase) CreateFromOrder(ctx context.Context, in CreateInvoiceFr
 		return nil, err
 	}
 	return inv, nil
+}
+
+// CreateFromSalesOrderRef creates (or returns) the invoice for a sales order
+// referenced by document number or id. The bool reports whether an invoice
+// already existed.
+func (u *invoiceUsecase) CreateFromSalesOrderRef(ctx context.Context, soRef string) (*domainInvoice.Invoice, bool, error) {
+	ord, err := u.orderRepo.FindByRef(ctx, soRef)
+	if err != nil {
+		return nil, false, err
+	}
+	if ord == nil {
+		if id, parseErr := strconv.ParseUint(soRef, 10, 32); parseErr == nil {
+			ord, err = u.orderRepo.FindByID(ctx, uint(id))
+			if err != nil {
+				return nil, false, err
+			}
+		}
+	}
+	if ord == nil {
+		return nil, false, appErrors.NewAppError("ORDER_NOT_FOUND", "Sales order not found", 404)
+	}
+
+	existing, err := u.invRepo.FindByOrderRef(ctx, ord.ID, ord.OrderNo)
+	if err != nil {
+		return nil, false, err
+	}
+	if existing != nil {
+		return existing, true, nil
+	}
+
+	inv, err := u.CreateFromOrder(ctx, CreateInvoiceFromOrderInput{OrderID: ord.ID})
+	if err != nil {
+		return nil, false, err
+	}
+	return inv, false, nil
 }
 
 func (u *invoiceUsecase) GetByID(ctx context.Context, id uint) (*domainInvoice.Invoice, error) {

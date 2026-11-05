@@ -54,6 +54,10 @@ func (f *fakeQuotationRepo) List(ctx context.Context, page, limit int) ([]domain
 	return nil, 0, nil
 }
 
+func (f *fakeQuotationRepo) ListFiltered(ctx context.Context, q domainQuotation.Query) ([]domainQuotation.Quotation, int64, error) {
+	return nil, 0, nil
+}
+
 func (f *fakeQuotationRepo) Save(ctx context.Context, q *domainQuotation.Quotation) error {
 	cp := *q
 	f.saved = &cp

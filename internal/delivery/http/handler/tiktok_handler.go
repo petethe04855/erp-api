@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"chawy-erp-api/internal/delivery/http/dto"
 	domainTikTok "chawy-erp-api/internal/domain/tiktok"
 	usecaseTikTok "chawy-erp-api/internal/usecase/tiktok"
 	"chawy-erp-api/pkg/response"
@@ -99,7 +100,7 @@ func (h *TikTokHandler) GetSyncRuns(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	return response.OK(c, runs)
+	return response.OK(c, dto.NewTikTokSyncRunResponses(runs))
 }
 
 // GetOrders returns TikTok orders with filtering and pagination
@@ -150,7 +151,7 @@ func (h *TikTokHandler) GetOrders(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	return response.List(c, orders, page, limit, total)
+	return response.List(c, dto.NewTikTokOrderResponses(orders), page, limit, total)
 }
 
 // GetProducts searches products on TikTok Shop
@@ -225,16 +226,7 @@ func (h *TikTokHandler) ListMappings(c *fiber.Ctx) error {
 		return err
 	}
 
-	result := make([]fiber.Map, len(mappings))
-	for i, m := range mappings {
-		result[i] = fiber.Map{
-			"id":        m.ID,
-			"tiktokSku": m.TikTokSKU,
-			"erpSku":    m.LocalSKU,
-			"ratio":     1,
-			"createdAt": m.CreatedAt.Format("2006-01-02 15:04"),
-		}
-	}
+	result := dto.NewTikTokSKUMappingResponses(mappings)
 
 	return response.OK(c, result)
 }
@@ -264,5 +256,5 @@ func (h *TikTokHandler) GetSyncLogs(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	return response.OK(c, logs)
+	return response.OK(c, dto.NewTikTokSyncLogResponses(logs))
 }

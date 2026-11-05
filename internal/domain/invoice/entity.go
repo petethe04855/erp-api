@@ -40,6 +40,9 @@ type Query struct {
 	EndDate   string
 	Page      int
 	Limit     int
+	// OverdueOnly restricts the result to invoices with an outstanding balance
+	// whose due date has passed and that are neither PAID nor CANCELLED.
+	OverdueOnly bool
 }
 
 type Repository interface {
@@ -49,6 +52,9 @@ type Repository interface {
 	// concurrent payments cannot read the same PaidAmount snapshot.
 	FindByIDForUpdate(ctx context.Context, id uint) (*Invoice, error)
 	FindByOrderID(ctx context.Context, orderID uint) (*Invoice, error)
+	// FindByOrderRef resolves the invoice attached to an order by order id or
+	// order number.
+	FindByOrderRef(ctx context.Context, orderID uint, orderNo string) (*Invoice, error)
 	FindByInvoiceNo(ctx context.Context, no string) (*Invoice, error)
 	FindAll(ctx context.Context, q Query) ([]Invoice, int64, error)
 	Update(ctx context.Context, inv *Invoice) error

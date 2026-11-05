@@ -24,6 +24,9 @@ type ExplodedItem struct {
 
 type Repository interface {
 	GetItemsByBundleSKU(ctx context.Context, bundleSKU string) ([]BundleItem, error)
+	// ListItems returns every stored bundle component row. Used by the
+	// workspace bundle-components screen when no specific bundle is selected.
+	ListItems(ctx context.Context) ([]BundleItem, error)
 	SaveItems(ctx context.Context, bundleSKU string, items []BundleItem) error
 	DeleteItem(ctx context.Context, id uint) error
 }

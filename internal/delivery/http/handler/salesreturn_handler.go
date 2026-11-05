@@ -102,7 +102,7 @@ func (h *SalesReturnHandler) List(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.List(c, items, page, limit, total)
+	return response.List(c, dto.NewSalesReturnResponses(items), page, limit, total)
 }
 
 func (h *SalesReturnHandler) GetByID(c *fiber.Ctx) error {
@@ -116,7 +116,7 @@ func (h *SalesReturnHandler) GetByID(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.OK(c, item)
+	return response.OK(c, dto.NewSalesReturnResponse(item))
 }
 
 func (h *SalesReturnHandler) GetOrderReturnable(c *fiber.Ctx) error {
@@ -180,7 +180,7 @@ func (h *SalesReturnHandler) Create(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.Created(c, item)
+	return response.Created(c, dto.NewSalesReturnResponse(item))
 }
 
 func (h *SalesReturnHandler) Update(c *fiber.Ctx) error {
@@ -227,7 +227,7 @@ func (h *SalesReturnHandler) Update(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.OK(c, item)
+	return response.OK(c, dto.NewSalesReturnResponse(item))
 }
 
 func (h *SalesReturnHandler) Submit(c *fiber.Ctx) error {
@@ -241,7 +241,7 @@ func (h *SalesReturnHandler) Submit(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.OK(c, item)
+	return response.OK(c, dto.NewSalesReturnResponse(item))
 }
 
 func (h *SalesReturnHandler) Approve(c *fiber.Ctx) error {
@@ -256,7 +256,7 @@ func (h *SalesReturnHandler) Approve(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.OK(c, item)
+	return response.OK(c, dto.NewSalesReturnResponse(item))
 }
 
 func (h *SalesReturnHandler) Reject(c *fiber.Ctx) error {
@@ -274,7 +274,7 @@ func (h *SalesReturnHandler) Reject(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.OK(c, item)
+	return response.OK(c, dto.NewSalesReturnResponse(item))
 }
 
 func (h *SalesReturnHandler) Cancel(c *fiber.Ctx) error {
@@ -292,7 +292,7 @@ func (h *SalesReturnHandler) Cancel(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.OK(c, item)
+	return response.OK(c, dto.NewSalesReturnResponse(item))
 }
 
 func (h *SalesReturnHandler) Complete(c *fiber.Ctx) error {
@@ -327,5 +327,5 @@ func (h *SalesReturnHandler) Complete(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.OK(c, item)
+	return response.OK(c, dto.NewSalesReturnResponse(item))
 }

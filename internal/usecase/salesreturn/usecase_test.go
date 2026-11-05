@@ -102,6 +102,17 @@ func (m *MockOrderRepository) FindAll(ctx context.Context, query domainOrder.Que
 	args := m.Called(ctx, query)
 	return args.Get(0).([]domainOrder.Order), args.Get(1).(int64), args.Error(2)
 }
+func (m *MockOrderRepository) FindByRef(ctx context.Context, ref string) (*domainOrder.Order, error) {
+	args := m.Called(ctx, ref)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*domainOrder.Order), args.Error(1)
+}
+func (m *MockOrderRepository) FindAllForSales(ctx context.Context, query domainOrder.SalesQuery) ([]domainOrder.Order, int64, error) {
+	args := m.Called(ctx, query)
+	return args.Get(0).([]domainOrder.Order), args.Get(1).(int64), args.Error(2)
+}
 func (m *MockOrderRepository) Update(ctx context.Context, order *domainOrder.Order) error {
 	return m.Called(ctx, order).Error(0)
 }

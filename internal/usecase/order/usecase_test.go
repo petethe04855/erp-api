@@ -71,6 +71,14 @@ func (m *mockOrderRepo) FindAll(ctx context.Context, q domainOrder.Query) ([]dom
 	return res, int64(len(res)), nil
 }
 
+func (m *mockOrderRepo) FindByRef(ctx context.Context, ref string) (*domainOrder.Order, error) {
+	return m.FindByOrderNo(ctx, ref)
+}
+
+func (m *mockOrderRepo) FindAllForSales(ctx context.Context, q domainOrder.SalesQuery) ([]domainOrder.Order, int64, error) {
+	return m.FindAll(ctx, domainOrder.Query{Page: q.Page, Limit: q.Limit})
+}
+
 func (m *mockOrderRepo) UpdateStatus(ctx context.Context, id uint, status domainOrder.Status) error {
 	if o, ok := m.orders[id]; ok {
 		o.Status = status
@@ -155,6 +163,14 @@ func newMockBundleRepo() *mockBundleRepo {
 
 func (m *mockBundleRepo) GetItemsByBundleSKU(ctx context.Context, bundleSKU string) ([]domainBundle.BundleItem, error) {
 	return m.bundles[bundleSKU], nil
+}
+
+func (m *mockBundleRepo) ListItems(ctx context.Context) ([]domainBundle.BundleItem, error) {
+	var all []domainBundle.BundleItem
+	for _, items := range m.bundles {
+		all = append(all, items...)
+	}
+	return all, nil
 }
 
 func (m *mockBundleRepo) SaveItems(ctx context.Context, bundleSKU string, items []domainBundle.BundleItem) error {

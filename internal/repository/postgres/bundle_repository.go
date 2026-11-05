@@ -27,6 +27,13 @@ func (r *BundleRepository) GetItemsByBundleSKU(ctx context.Context, bundleSKU st
 	return items, err
 }
 
+// ListItems returns every bundle component row (no bundle filter).
+func (r *BundleRepository) ListItems(ctx context.Context) ([]bundle.BundleItem, error) {
+	var items []bundle.BundleItem
+	err := r.handle(ctx).Find(&items).Error
+	return items, err
+}
+
 func (r *BundleRepository) SaveItems(ctx context.Context, bundleSKU string, items []bundle.BundleItem) error {
 	return r.handle(ctx).Transaction(func(tx *gorm.DB) error {
 		// Delete existing components

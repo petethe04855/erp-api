@@ -3,6 +3,7 @@ package handler
 import (
 	"strconv"
 
+	"chawy-erp-api/internal/delivery/http/dto"
 	usecaseSKU "chawy-erp-api/internal/usecase/sku"
 	"chawy-erp-api/pkg/response"
 
@@ -41,7 +42,7 @@ func (h *SKUCostHistoryHandler) AddCostHistory(c *fiber.Ctx) error {
 		return response.BadRequest(c, err.Error())
 	}
 
-	return response.Created(c, res)
+	return response.Created(c, dto.NewSKUCostHistoryResponse(res))
 }
 
 // GetCostHistory returns all cost records for an SKU
@@ -56,7 +57,7 @@ func (h *SKUCostHistoryHandler) GetCostHistory(c *fiber.Ctx) error {
 		return response.InternalServerError(c, err.Error())
 	}
 
-	return response.OK(c, list)
+	return response.OK(c, dto.NewSKUCostHistoryResponses(list))
 }
 
 // DeleteCostHistory deletes a cost history record

@@ -52,7 +52,7 @@ func (h *LiveHandler) CreateSession(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.Created(c, result, "Live session recorded successfully")
+	return response.Created(c, dto.NewLiveSessionResponse(result), "Live session recorded successfully")
 }
 
 // UpdateSession godoc
@@ -90,7 +90,7 @@ func (h *LiveHandler) UpdateSession(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.OK(c, result, "Live session updated successfully")
+	return response.OK(c, dto.NewLiveSessionResponse(result), "Live session updated successfully")
 }
 
 // GetSessionByID godoc
@@ -106,7 +106,7 @@ func (h *LiveHandler) GetSessionByID(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.OK(c, result)
+	return response.OK(c, dto.NewLiveSessionResponse(result))
 }
 
 // ListSessions godoc
@@ -172,7 +172,7 @@ func (h *LiveHandler) ListSessions(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.List(c, sessions, page, limit, total)
+	return response.List(c, dto.NewLiveSessionResponses(sessions), page, limit, total)
 }
 
 // ApproveSession godoc
@@ -194,7 +194,7 @@ func (h *LiveHandler) ApproveSession(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.OK(c, result, "Live session approved successfully")
+	return response.OK(c, dto.NewLiveSessionResponse(result), "Live session approved successfully")
 }
 
 // RejectSession godoc
@@ -220,7 +220,7 @@ func (h *LiveHandler) RejectSession(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.OK(c, result, "Live session rejected")
+	return response.OK(c, dto.NewLiveSessionResponse(result), "Live session rejected")
 }
 
 // GetPayrollSummary godoc
@@ -318,7 +318,7 @@ func (h *LiveHandler) ListContentItems(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.List(c, items, page, limit, total)
+	return response.List(c, dto.NewContentItemResponses(items), page, limit, total)
 }
 
 // CreateContentItem godoc
@@ -351,7 +351,7 @@ func (h *LiveHandler) CreateContentItem(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.Created(c, result, "Content item created successfully")
+	return response.Created(c, dto.NewContentItemResponse(result), "Content item created successfully")
 }
 
 // UpdateContentItem godoc
@@ -382,7 +382,7 @@ func (h *LiveHandler) UpdateContentItem(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.OK(c, result, "Content item updated successfully")
+	return response.OK(c, dto.NewContentItemResponse(result), "Content item updated successfully")
 }
 
 // DeleteContentItem godoc

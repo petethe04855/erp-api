@@ -3,6 +3,8 @@ package postgres
 import (
 	"context"
 	"errors"
+	"strings"
+	"time"
 
 	domainQuotation "chawy-erp-api/internal/domain/quotation"
 	pkgDatabase "chawy-erp-api/pkg/database"
@@ -87,6 +89,38 @@ func (r *QuotationRepository) List(ctx context.Context, page, limit int) ([]doma
 		return nil, 0, err
 	}
 	return items, total, nil
+}
+
+// ListFiltered applies the workspace quotation-list filters.
+func (r *QuotationRepository) ListFiltered(ctx context.Context, q domainQuotation.Query) ([]domainQuotation.Quotation, int64, error) {
+	var items []domainQuotation.Quotation
+	var total int64
+
+	tx := r.handle(ctx).Model(&domainQuotation.Quotation{})
+
+	if q.Search != "" {
+		pat := "%" + q.Search + "%"
+		tx = tx.Where("code ILIKE ? OR customer_name ILIKE ?", pat, pat)
+	}
+
+	if q.ExpiredOnly {
+		today := time.Now().Format("2006-01-02")
+		tx = tx.Where("valid_until != '' AND valid_until < ? AND status IN ('Pending', 'Draft', 'Sent', 'Approved')", today)
+	} else if q.Status != "" && !strings.EqualFold(q.Status, "all") {
+		tx = tx.Where("LOWER(status) = ?", strings.ToLower(q.Status))
+	}
+
+	if err := tx.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	offset := (q.Page - 1) * q.Limit
+	if offset < 0 {
+		offset = 0
+	}
+
+	err := tx.Offset(offset).Limit(q.Limit).Order("id DESC").Find(&items).Error
+	return items, total, err
 }
 
 func (r *QuotationRepository) Save(ctx context.Context, q *domainQuotation.Quotation) error {

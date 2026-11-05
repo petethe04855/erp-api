@@ -56,7 +56,7 @@ func (h *BundleHandler) GetComponents(c *fiber.Ctx) error {
 		return err
 	}
 
-	return response.OK(c, items)
+	return response.OK(c, dto.NewBundleItemResponses(items))
 }
 
 func (h *BundleHandler) Explode(c *fiber.Ctx) error {

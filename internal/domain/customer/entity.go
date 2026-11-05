@@ -38,3 +38,19 @@ type Repository interface {
 	Update(ctx context.Context, customer *Customer) error
 	Delete(ctx context.Context, id uint) error
 }
+
+// WorkspaceQuery mirrors the workspace customer-list filters. It is kept
+// separate from Query because the workspace search also matches
+// contact_person (and not the code), preserving the original API behavior.
+type WorkspaceQuery struct {
+	Page   int
+	Limit  int
+	Search string
+}
+
+// WorkspaceRepository is the workspace-scoped read contract. It is a separate
+// interface so the standard Repository (and the fakes implementing it) stay
+// untouched.
+type WorkspaceRepository interface {
+	FindAllForWorkspace(ctx context.Context, q WorkspaceQuery) ([]Customer, int64, error)
+}
