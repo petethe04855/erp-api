@@ -28,7 +28,7 @@ func defaultCompanySettings() domainSettings.CompanySettings {
 		VatRate:       7,
 		InvoicePrefix: "INV-2026-",
 		SoPrefix:      "SO-2026-",
-		LogoURL:       "",
+		LogoURL:       "/uploads/logos/chawy.jpg",
 	}
 }
 

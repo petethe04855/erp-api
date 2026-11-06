@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"math"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/jung-kurt/gofpdf"
@@ -62,39 +60,7 @@ func GenerateInvoicePDF(data InvoicePDFData) ([]byte, error) {
 	// Left: Company Logo (18x18mm) + Company Info beside it
 	logoW := 18.0
 	logoH := 18.0
-	logoRendered := false
-
-	if data.CompanyLogo != "" {
-		logoTarget := resolveLocalImagePath(data.CompanyLogo)
-		if logoTarget != "" {
-			// Register and render image
-			imageType := ""
-			lower := strings.ToLower(logoTarget)
-			if strings.HasSuffix(lower, ".png") {
-				imageType = "PNG"
-			} else if strings.HasSuffix(lower, ".jpg") || strings.HasSuffix(lower, ".jpeg") {
-				imageType = "JPG"
-			}
-			pdf.ImageOptions(logoTarget, 12, startY, logoW, logoH, false, gofpdf.ImageOptions{ImageType: imageType, ReadDpi: true}, 0, "")
-			if pdf.Error() == nil {
-				logoRendered = true
-			} else {
-				pdf.ClearError()
-			}
-		}
-	}
-
-	if !logoRendered {
-		// Placeholder logo box matching InvoicePrintTemplate.tsx
-		pdf.SetFillColor(243, 244, 246)
-		pdf.SetDrawColor(209, 213, 219)
-		pdf.SetLineWidth(0.2)
-		pdf.RoundedRect(12, startY, logoW, logoH, 1.5, "1234", "FD")
-		pdf.SetXY(12, startY+6)
-		pdf.SetFont(fontName, "B", 8)
-		pdf.SetTextColor(107, 114, 128)
-		pdf.CellFormat(logoW, 6, "LOGO", "", 0, "C", false, 0, "")
-	}
+	RenderCompanyLogo(pdf, fontName, startY, data.CompanyLogo)
 
 	// Company Info Left Box beside logo (starts at X=34, width ~88mm)
 	textStartX := 12.0 + logoW + 3.5
@@ -420,7 +386,8 @@ func toBahtText(num float64) string {
 				res.WriteString("เอ็ด")
 				continue
 			}
-			res.WriteString(digits[d] + places[pl])
+			res.WriteString(digits[d])
+			res.WriteString(places[pl])
 		}
 		return res.String()
 	}
@@ -443,32 +410,4 @@ func toBahtText(num float64) string {
 	}
 
 	return prefix + bahtPart + satangPart
-}
-
-// resolveLocalImagePath checks various possible locations for an image path
-func resolveLocalImagePath(logoPath string) string {
-	clean := strings.TrimSpace(logoPath)
-	if clean == "" {
-		return ""
-	}
-	// If it's a full URL like http://.../uploads/images/abc.png, extract the relative path
-	if idx := strings.Index(clean, "/uploads/"); idx != -1 {
-		clean = clean[idx:]
-	}
-	clean = strings.TrimPrefix(clean, "/")
-
-	candidates := []string{
-		clean,
-		filepath.Join(".", clean),
-		filepath.Join("uploads", "logos", filepath.Base(clean)),
-		filepath.Join("uploads", "images", filepath.Base(clean)),
-		filepath.Join("erp-api", clean),
-	}
-
-	for _, cand := range candidates {
-		if stat, err := os.Stat(cand); err == nil && !stat.IsDir() {
-			return cand
-		}
-	}
-	return ""
 }

@@ -3,7 +3,6 @@ package pdf
 import (
 	"bytes"
 	"fmt"
-	"strings"
 
 	"github.com/jung-kurt/gofpdf"
 )
@@ -54,37 +53,7 @@ func GenerateQuotationPDF(data QuotationPDFData) ([]byte, error) {
 	// Left: Company Logo (18x18mm) + Company Info beside it
 	logoW := 18.0
 	logoH := 18.0
-	logoRendered := false
-
-	if data.CompanyLogo != "" {
-		logoTarget := resolveLocalImagePath(data.CompanyLogo)
-		if logoTarget != "" {
-			imageType := ""
-			lower := strings.ToLower(logoTarget)
-			if strings.HasSuffix(lower, ".png") {
-				imageType = "PNG"
-			} else if strings.HasSuffix(lower, ".jpg") || strings.HasSuffix(lower, ".jpeg") {
-				imageType = "JPG"
-			}
-			pdf.ImageOptions(logoTarget, 12, startY, logoW, logoH, false, gofpdf.ImageOptions{ImageType: imageType, ReadDpi: true}, 0, "")
-			if pdf.Error() == nil {
-				logoRendered = true
-			} else {
-				pdf.ClearError()
-			}
-		}
-	}
-
-	if !logoRendered {
-		pdf.SetFillColor(243, 244, 246)
-		pdf.SetDrawColor(209, 213, 219)
-		pdf.SetLineWidth(0.2)
-		pdf.RoundedRect(12, startY, logoW, logoH, 1.5, "1234", "FD")
-		pdf.SetXY(12, startY+6)
-		pdf.SetFont(fontName, "B", 8)
-		pdf.SetTextColor(107, 114, 128)
-		pdf.CellFormat(logoW, 6, "LOGO", "", 0, "C", false, 0, "")
-	}
+	RenderCompanyLogo(pdf, fontName, startY, data.CompanyLogo)
 
 	textStartX := 12.0 + logoW + 3.5
 	textWidth := 94.0
