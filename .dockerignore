@@ -1,0 +1,19 @@
+# Binaries / build output
+*.exe
+*.exe~
+bin/
+dist/
+tmp/
+
+# Local uploads (mount เป็น volume แทน)
+uploads/
+
+# Secrets — ห้ามเข้า image เด็ดขาด
+.env
+.env.*
+.env.example
+
+# Git / IDE
+.git/
+.idea/
+.vscode/
