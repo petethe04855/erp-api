@@ -27,9 +27,24 @@ jobs:
           set -eu
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/id_rsa
+          python3 - <<'EOF'
+          import os, sys
+          k = os.environ.get("SSH_KEY", "").strip()
+          if not k:
+              sys.stderr.write("::error::VPS_SSH_PRIVATE_KEY secret is empty.\n")
+              sys.exit(1)
+          if "\\n" in k and "\n" not in k:
+              k = k.replace("\\n", "\n")
+          k = k.replace("\r\n", "\n").replace("\r", "\n").strip()
+          if not k.startswith("-----BEGIN"):
+              sys.stderr.write("::error::VPS_SSH_PRIVATE_KEY must start with '-----BEGIN'. You may have pasted the public key (.pub) instead of the private key!\n")
+              sys.exit(1)
+          for path in ["~/.ssh/id_ed25519", "~/.ssh/id_rsa"]:
+              p = os.path.expanduser(path)
+              with open(p, "w", encoding="utf-8") as f:
+                  f.write(k + "\n")
+              os.chmod(p, 0o600)
+          EOF
           if [ -n "$KNOWN_HOSTS" ]; then
             printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
           fi
