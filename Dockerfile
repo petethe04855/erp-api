@@ -1,34 +1,32 @@
-# Build stage
+# syntax=docker/dockerfile:1
+
+# ---------- Build ----------
 FROM golang:1.26-alpine AS builder
+ENV GOTOOLCHAIN=auto \
+    CGO_ENABLED=0 \
+    GOOS=linux
 
-# Install build dependencies
-RUN apk add --no-cache git gcc musl-dev
-
-WORKDIR /app
-
-# Download dependencies
+WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
-
-# Copy source code
 COPY . .
+RUN go build -trimpath -ldflags="-s -w" -o /out/api ./cmd/api
 
-# Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -o server ./cmd/server/main.go
-
-# Production stage
-FROM alpine:latest
-
-# Install CA certificates for TLS/HTTPS requests (e.g., external API calls)
-RUN apk --no-cache add ca-certificates
+# ---------- Runtime ----------
+FROM alpine:3.22
+RUN apk add --no-cache ca-certificates tzdata
 
 WORKDIR /app
+COPY --from=builder /out/api /app/api
+RUN mkdir -p /app/uploads \
+    && addgroup -S app -g 1001 \
+    && adduser -S app -u 1001 -G app \
+    && chown -R app:app /app
+USER app
 
-# Copy binary from builder
-COPY --from=builder /app/server .
-
-# Expose default API port
-EXPOSE 8080
-
-# Command to run
-CMD ["./server"]
+# PORT มีจาก env ตาม main.go (fallback 8084); ค่าตั้งจากรอบรัน: docker run -e PORT=...
+ENV PORT=8084
+# main.go serve static /uploads จาก ./uploads — mount volume ตรงนี้
+VOLUME ["/app/uploads"]
+EXPOSE 8084
+ENTRYPOINT ["/app/api"]

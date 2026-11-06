@@ -1,0 +1,56 @@
+package customer
+
+import (
+	"context"
+	"time"
+)
+
+type Customer struct {
+	ID            uint      `json:"id" gorm:"primaryKey"`
+	Code          string    `json:"code" gorm:"uniqueIndex;size:50"`
+	Name          string    `json:"name" gorm:"not null;size:255"`
+	ContactPerson string    `json:"contact_person" gorm:"size:255"`
+	Phone         string    `json:"phone" gorm:"size:50"`
+	Email         string    `json:"email" gorm:"size:255"`
+	Address       string    `json:"address" gorm:"type:text"`
+	Province      string    `json:"province" gorm:"size:100"` // จังหวัดจัดส่ง (normalize จาก address เมื่อไม่ได้ระบุ)
+	TaxID         string    `json:"tax_id" gorm:"size:50"`
+	Logo          string    `json:"logo" gorm:"size:500"`
+	Channel       string    `json:"channel" gorm:"size:50;default:'direct'"` // tiktok, shopee, direct, etc.
+	Status        string    `json:"status" gorm:"size:50;default:'active'"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+type Query struct {
+	Search  string
+	Channel string
+	Status  string
+	Page    int
+	Limit   int
+}
+
+type Repository interface {
+	Create(ctx context.Context, customer *Customer) error
+	FindByID(ctx context.Context, id uint) (*Customer, error)
+	FindByCode(ctx context.Context, code string) (*Customer, error)
+	FindAll(ctx context.Context, query Query) ([]Customer, int64, error)
+	Update(ctx context.Context, customer *Customer) error
+	Delete(ctx context.Context, id uint) error
+}
+
+// WorkspaceQuery mirrors the workspace customer-list filters. It is kept
+// separate from Query because the workspace search also matches
+// contact_person (and not the code), preserving the original API behavior.
+type WorkspaceQuery struct {
+	Page   int
+	Limit  int
+	Search string
+}
+
+// WorkspaceRepository is the workspace-scoped read contract. It is a separate
+// interface so the standard Repository (and the fakes implementing it) stay
+// untouched.
+type WorkspaceRepository interface {
+	FindAllForWorkspace(ctx context.Context, q WorkspaceQuery) ([]Customer, int64, error)
+}
