@@ -67,9 +67,9 @@ jobs:
             docker rename erp-api erp-api-previous
             had_previous=1
           fi
-          if docker run -d --name erp-api --network erp-network --restart unless-stopped --env-file "$config" -p 127.0.0.1:8084:8084 -v erp-api-images:/app/image "erp-api:$sha" >/dev/null; then
+          if docker run -d --name erp-api --network erp-network --restart unless-stopped --env-file "$config" -p 127.0.0.1:8084:8084 -v erp-api-uploads:/app/uploads "erp-api:$sha" >/dev/null; then
             for attempt in $(seq 1 30); do
-              if curl -fsS http://127.0.0.1:8084/health >/dev/null; then
+              if curl -fsS http://127.0.0.1:8084/api/v1/health >/dev/null; then
                 if [ "$had_previous" = 1 ]; then docker rm erp-api-previous >/dev/null; fi
                 echo 'API health check passed.'
                 exit 0
