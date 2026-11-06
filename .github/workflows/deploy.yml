@@ -1,0 +1,93 @@
+name: Deploy API
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: api-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VPS_SSH_KNOWN_HOSTS }}
+        run: |
+          set -eu
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+      - name: Build and transfer image
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          docker build -t erp-api:${GITHUB_SHA} .
+          docker save erp-api:${GITHUB_SHA} | ssh -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" docker load
+      - name: Deploy and check API
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+        run: |
+          set -euo pipefail
+          test -n "$DB_PASSWORD" && test -n "$JWT_SECRET"
+          umask 077
+          python3 -c 'import os; p=os.environ["DB_PASSWORD"]; j=os.environ["JWT_SECRET"]; assert "\n" not in p and "\r" not in p and "\n" not in j and "\r" not in j; print("ENV=production\nPORT=8084\nDB_HOST=erp-postgres\nDB_PORT=5432\nDB_USER=erp\nDB_NAME=erp\nDB_PASSWORD="+p+"\nJWT_SECRET="+j)' > "$RUNNER_TEMP/api-config"
+          scp -o StrictHostKeyChecking=yes "$RUNNER_TEMP/api-config" "$VPS_USER@$VPS_HOST:/tmp/erp-api-config-$GITHUB_SHA"
+          rm -f "$RUNNER_TEMP/api-config"
+          ssh -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" bash -s -- "$GITHUB_SHA" <<'SCRIPT'
+          set -euo pipefail
+          sha="$1"
+          config="/tmp/erp-api-config-$sha"
+          trap 'rm -f "$config"' EXIT
+          docker network inspect erp-network >/dev/null
+          docker exec erp-postgres pg_isready -U erp -d erp
+          if docker inspect erp-api-previous >/dev/null 2>&1; then
+            echo 'Previous API container exists; resolve it before deploying.' >&2
+            exit 1
+          fi
+          had_previous=0
+          if docker inspect erp-api >/dev/null 2>&1; then
+            docker stop erp-api
+            docker rename erp-api erp-api-previous
+            had_previous=1
+          fi
+          if docker run -d --name erp-api --network erp-network --restart unless-stopped --env-file "$config" -p 127.0.0.1:8084:8084 -v erp-api-uploads:/app/uploads "erp-api:$sha" >/dev/null; then
+            for attempt in $(seq 1 30); do
+              if curl -fsS http://127.0.0.1:8084/api/v1/health >/dev/null; then
+                if [ "$had_previous" = 1 ]; then docker rm erp-api-previous >/dev/null; fi
+                echo 'API health check passed.'
+                exit 0
+              fi
+              sleep 2
+            done
+          fi
+          echo 'Deployment failed; restoring previous container if available.' >&2
+          docker logs --tail 30 erp-api 2>/dev/null || true
+          docker rm -f erp-api >/dev/null 2>&1 || true
+          if [ "$had_previous" = 1 ]; then docker rename erp-api-previous erp-api; docker start erp-api >/dev/null; fi
+          exit 1
+          SCRIPT
+      - name: Notify Discord
+        if: always()
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK_URL" ]; then echo 'Discord webhook is not configured.'; exit 0; fi
+          python3 -c 'import json, os; print(json.dumps({"content": "ERP API deploy: " + os.environ["JOB_STATUS"] + "\nCommit: " + os.environ["GITHUB_SHA"][:12] + "\n" + os.environ["GITHUB_SERVER_URL"] + "/" + os.environ["GITHUB_REPOSITORY"] + "/actions/runs/" + os.environ["GITHUB_RUN_ID"], "allowed_mentions": {"parse": []}}))' > "$RUNNER_TEMP/discord.json"
+          curl -fsS --retry 3 -H 'Content-Type: application/json' --data-binary @"$RUNNER_TEMP/discord.json" "$DISCORD_WEBHOOK_URL" >/dev/null
