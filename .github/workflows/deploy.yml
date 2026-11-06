@@ -39,31 +39,33 @@ jobs:
           if not k.startswith("-----BEGIN"):
               sys.stderr.write("::error::VPS_SSH_PRIVATE_KEY must start with '-----BEGIN'. You may have pasted the public key (.pub) instead of the private key!\n")
               sys.exit(1)
-          for path in ["~/.ssh/id_ed25519", "~/.ssh/id_rsa"]:
+          for path in ["~/.ssh/id_ed25519"]:
               p = os.path.expanduser(path)
               with open(p, "w", encoding="utf-8") as f:
                   f.write(k + "\n")
               os.chmod(p, 0o600)
           EOF
-          if [ -n "$KNOWN_HOSTS" ]; then
-            printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          if ! ssh-keygen -y -P "" -f ~/.ssh/id_ed25519 >/dev/null 2>&1; then
+            echo "::error::VPS_SSH_PRIVATE_KEY must contain a complete OpenSSH private key without a passphrase."
+            exit 1
           fi
-          if [ -n "$VPS_HOST" ]; then
-            ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
-          fi
-          touch ~/.ssh/known_hosts
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
+          if ! ssh-keygen -F "$VPS_HOST" -f ~/.ssh/known_hosts >/dev/null; then
+            echo "::error::VPS_SSH_KNOWN_HOSTS has no entry matching VPS_HOST."
+            exit 1
+          fi
       - name: Build and transfer image
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
           set -euo pipefail
-          ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
+          ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes \
             "$VPS_USER@$VPS_HOST" true
 
           docker build -t erp-api:${GITHUB_SHA} .
-          docker save erp-api:${GITHUB_SHA} | ssh -o StrictHostKeyChecking=accept-new "$VPS_USER@$VPS_HOST" docker load
+          docker save erp-api:${GITHUB_SHA} | ssh -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" docker load
       - name: Deploy and check API
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
@@ -75,9 +77,9 @@ jobs:
           test -n "$DB_PASSWORD" && test -n "$JWT_SECRET"
           umask 077
           python3 -c 'import os; p=os.environ["DB_PASSWORD"]; j=os.environ["JWT_SECRET"]; assert "\n" not in p and "\r" not in p and "\n" not in j and "\r" not in j; print("ENV=production\nPORT=8084\nDB_HOST=erp-postgres\nDB_PORT=5432\nDB_USER=erp\nDB_NAME=erp\nDB_PASSWORD="+p+"\nJWT_SECRET="+j)' > "$RUNNER_TEMP/api-config"
-          scp -o StrictHostKeyChecking=accept-new "$RUNNER_TEMP/api-config" "$VPS_USER@$VPS_HOST:/tmp/erp-api-config-$GITHUB_SHA"
+          scp -o StrictHostKeyChecking=yes "$RUNNER_TEMP/api-config" "$VPS_USER@$VPS_HOST:/tmp/erp-api-config-$GITHUB_SHA"
           rm -f "$RUNNER_TEMP/api-config"
-          ssh -o StrictHostKeyChecking=accept-new "$VPS_USER@$VPS_HOST" bash -s -- "$GITHUB_SHA" <<'SCRIPT'
+          ssh -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" bash -s -- "$GITHUB_SHA" <<'SCRIPT'
           set -euo pipefail
           sha="$1"
           config="/tmp/erp-api-config-$sha"
