@@ -112,12 +112,34 @@ jobs:
           if [ "$had_previous" = 1 ]; then docker rename erp-api-previous erp-api; docker start erp-api >/dev/null; fi
           exit 1
           SCRIPT
+      - name: Check current API status
+        if: always()
+        id: api-status
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          status=$(ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" bash -s <<'SCRIPT'
+          if ! docker inspect erp-api >/dev/null 2>&1; then
+            echo 'ยังไม่มี container API'
+          elif [ "$(docker inspect --format '{{.State.Status}}' erp-api)" != running ]; then
+            echo 'API หยุดทำงานหรือกำลังเริ่มใหม่'
+          elif curl -fsS --max-time 10 http://127.0.0.1:8084/api/v1/health >/dev/null 2>&1; then
+            echo 'API ทำงานอยู่ และ health check ผ่าน'
+          else
+            echo 'Container API ทำงานอยู่ แต่ health check ไม่ผ่าน'
+          fi
+          SCRIPT
+          ) || status='ตรวจสถานะ API ไม่ได้ เพราะเชื่อมต่อ VPS ไม่สำเร็จ'
+          echo "$status"
+          echo "status=$status" >> "$GITHUB_OUTPUT"
       - name: Notify Discord
         if: always()
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           JOB_STATUS: ${{ job.status }}
+          API_STATUS: ${{ steps.api-status.outputs.status }}
         run: |
           if [ -z "$DISCORD_WEBHOOK_URL" ]; then echo 'Discord webhook is not configured.'; exit 0; fi
-          python3 -c 'import json, os; print(json.dumps({"content": "ERP API deploy: " + os.environ["JOB_STATUS"] + "\nCommit: " + os.environ["GITHUB_SHA"][:12] + "\n" + os.environ["GITHUB_SERVER_URL"] + "/" + os.environ["GITHUB_REPOSITORY"] + "/actions/runs/" + os.environ["GITHUB_RUN_ID"], "allowed_mentions": {"parse": []}}))' > "$RUNNER_TEMP/discord.json"
+          python3 -c 'import json, os; print(json.dumps({"content": "ERP API deploy: " + os.environ["JOB_STATUS"] + "\n" + os.environ["API_STATUS"] + "\nCommit: " + os.environ["GITHUB_SHA"][:12] + "\n" + os.environ["GITHUB_SERVER_URL"] + "/" + os.environ["GITHUB_REPOSITORY"] + "/actions/runs/" + os.environ["GITHUB_RUN_ID"], "allowed_mentions": {"parse": []}}))' > "$RUNNER_TEMP/discord.json"
           curl -fsS --retry 3 -H 'Content-Type: application/json' --data-binary @"$RUNNER_TEMP/discord.json" "$DISCORD_WEBHOOK_URL" >/dev/null
