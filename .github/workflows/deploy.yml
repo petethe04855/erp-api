@@ -22,24 +22,45 @@ jobs:
         env:
           SSH_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
           KNOWN_HOSTS: ${{ secrets.VPS_SSH_KNOWN_HOSTS }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
         run: |
           set -eu
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          python3 - <<'EOF'
+          import os, sys
+          k = os.environ.get("SSH_KEY", "").strip()
+          if not k:
+              sys.stderr.write("::error::VPS_SSH_PRIVATE_KEY secret is empty.\n")
+              sys.exit(1)
+          if "\\n" in k and "\n" not in k:
+              k = k.replace("\\n", "\n")
+          k = k.replace("\r\n", "\n").replace("\r", "\n").strip()
+          if not k.startswith("-----BEGIN"):
+              sys.stderr.write("::error::VPS_SSH_PRIVATE_KEY must start with '-----BEGIN'. You may have pasted the public key (.pub) instead of the private key!\n")
+              sys.exit(1)
+          for path in ["~/.ssh/id_ed25519"]:
+              p = os.path.expanduser(path)
+              with open(p, "w", encoding="utf-8") as f:
+                  f.write(k + "\n")
+              os.chmod(p, 0o600)
+          EOF
+          if ! ssh-keygen -y -P "" -f ~/.ssh/id_ed25519 >/dev/null 2>&1; then
+            echo "::error::VPS_SSH_PRIVATE_KEY must contain a complete OpenSSH private key without a passphrase."
+            exit 1
+          fi
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          if ! ssh-keygen -F "$VPS_HOST" -f ~/.ssh/known_hosts >/dev/null; then
+            echo "::error::VPS_SSH_KNOWN_HOSTS has no entry matching VPS_HOST."
+            exit 1
+          fi
       - name: Build and transfer image
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
           set -euo pipefail
-          if ! ssh-keygen -F "$VPS_HOST" -f "$HOME/.ssh/known_hosts" >/dev/null; then
-            echo "::error::VPS_SSH_KNOWN_HOSTS has no entry matching VPS_HOST"
-            exit 1
-          fi
-
           ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes \
             "$VPS_USER@$VPS_HOST" true
 
