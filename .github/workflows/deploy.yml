@@ -79,6 +79,11 @@ jobs:
           TIKTOK_OAUTH_SUCCESS_URL: ${{ vars.TIKTOK_OAUTH_SUCCESS_URL }}
           TIKTOK_TOKEN_ENCRYPTION_KEY: ${{ secrets.TIKTOK_TOKEN_ENCRYPTION_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SMTP_HOST: ${{ vars.SMTP_HOST }}
+          SMTP_PORT: ${{ vars.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_SEND: ${{ vars.EMAIL_SEND }}
         run: |
           set -euo pipefail
           test -n "$DB_PASSWORD" && test -n "$JWT_SECRET"
@@ -98,6 +103,7 @@ jobs:
               "DB_PASSWORD", "JWT_SECRET", "TIKTOK_APP_KEY", "TIKTOK_APP_SECRET",
               "TIKTOK_SERVICE_ID", "TIKTOK_AUTHORIZE_URL", "TIKTOK_OAUTH_SUCCESS_URL",
               "TIKTOK_TOKEN_ENCRYPTION_KEY", "GEMINI_API_KEY",
+              "SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD", "EMAIL_SEND",
           )
           for name in names:
               value = os.environ.get(name, "")
