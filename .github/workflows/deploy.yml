@@ -72,11 +72,42 @@ jobs:
           VPS_USER: ${{ secrets.VPS_USER }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          TIKTOK_APP_KEY: ${{ secrets.TIKTOK_APP_KEY }}
+          TIKTOK_APP_SECRET: ${{ secrets.TIKTOK_APP_SECRET }}
+          TIKTOK_SERVICE_ID: ${{ secrets.TIKTOK_SERVICE_ID }}
+          TIKTOK_AUTHORIZE_URL: ${{ vars.TIKTOK_AUTHORIZE_URL }}
+          TIKTOK_OAUTH_SUCCESS_URL: ${{ vars.TIKTOK_OAUTH_SUCCESS_URL }}
+          TIKTOK_TOKEN_ENCRYPTION_KEY: ${{ secrets.TIKTOK_TOKEN_ENCRYPTION_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           set -euo pipefail
           test -n "$DB_PASSWORD" && test -n "$JWT_SECRET"
           umask 077
-          python3 -c 'import os; p=os.environ["DB_PASSWORD"]; j=os.environ["JWT_SECRET"]; assert "\n" not in p and "\r" not in p and "\n" not in j and "\r" not in j; print("ENV=production\nPORT=8084\nDB_HOST=erp-postgres\nDB_PORT=5432\nDB_USER=erp\nDB_NAME=erp\nDB_PASSWORD="+p+"\nJWT_SECRET="+j)' > "$RUNNER_TEMP/api-config"
+          python3 - <<'PY' > "$RUNNER_TEMP/api-config"
+          import os
+
+          settings = {
+              "ENV": "production",
+              "PORT": "8084",
+              "DB_HOST": "erp-postgres",
+              "DB_PORT": "5432",
+              "DB_USER": "erp",
+              "DB_NAME": "erp",
+          }
+          names = (
+              "DB_PASSWORD", "JWT_SECRET", "TIKTOK_APP_KEY", "TIKTOK_APP_SECRET",
+              "TIKTOK_SERVICE_ID", "TIKTOK_AUTHORIZE_URL", "TIKTOK_OAUTH_SUCCESS_URL",
+              "TIKTOK_TOKEN_ENCRYPTION_KEY", "GEMINI_API_KEY",
+          )
+          for name in names:
+              value = os.environ.get(name, "")
+              if "\n" in value or "\r" in value:
+                  raise ValueError(f"{name} must be a single line")
+              if value:
+                  settings[name] = value
+          for name, value in settings.items():
+              print(f"{name}={value}")
+          PY
           scp -o StrictHostKeyChecking=yes "$RUNNER_TEMP/api-config" "$VPS_USER@$VPS_HOST:/tmp/erp-api-config-$GITHUB_SHA"
           rm -f "$RUNNER_TEMP/api-config"
           ssh -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" bash -s -- "$GITHUB_SHA" <<'SCRIPT'
