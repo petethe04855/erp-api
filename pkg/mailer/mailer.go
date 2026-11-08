@@ -38,8 +38,7 @@ func NewMailer(host, port, username, password, emailSend string) Mailer {
 
 func (m *smtpMailer) SendUserCredentials(recipientEmail, recipientName, generatedPassword, role string) error {
 	if m.host == "" || m.from == "" {
-		log.Printf("[WARN] SMTP is not configured (SMTP_HOST or EMAIL_SEND is missing). Skipping email delivery to %s", recipientEmail)
-		return nil
+		return fmt.Errorf("SMTP is not configured (SMTP_HOST or sender address is missing)")
 	}
 
 	subject := "ยินดีต้อนรับสู่ระบบ Chawy ERP - ข้อมูลบัญชีผู้ใช้งานของคุณ"
