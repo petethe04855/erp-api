@@ -185,34 +185,6 @@ func (h *AuthHandler) GetUserByID(c *fiber.Ctx) error {
 	return response.OK(c, toUserResponse(user))
 }
 
-func (h *AuthHandler) ChangePassword(c *fiber.Ctx) error {
-	userID, ok := c.Locals("userID").(uint)
-	if !ok {
-		return response.Unauthorized(c, "Unauthorized")
-	}
-
-	var req dto.ChangePasswordRequest
-	if err := c.BodyParser(&req); err != nil {
-		return response.BadRequest(c, "Invalid request body")
-	}
-
-	if req.NewPassword == "" {
-		return response.BadRequest(c, "New password is required")
-	}
-
-	if err := h.usecase.ChangePassword(c.Context(), userID, req.NewPassword); err != nil {
-		if errors.Is(err, appErrors.ErrValidation) {
-			return response.BadRequest(c, "Password must be at least 6 characters")
-		}
-		if errors.Is(err, appErrors.ErrNotFound) {
-			return response.NotFound(c, "User not found")
-		}
-		return err
-	}
-
-	return response.OK(c, nil, "Password changed successfully")
-}
-
 // CreateUser handles admin creation of users with assigned roles (API-01)
 func (h *AuthHandler) CreateUser(c *fiber.Ctx) error {
 	var req dto.CreateUserRequest

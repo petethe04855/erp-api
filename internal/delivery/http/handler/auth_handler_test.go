@@ -17,6 +17,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/stretchr/testify/assert"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type mockRepo struct {
@@ -345,4 +346,82 @@ func TestAuthHandler_ChangePassword(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 	})
+}
+
+func TestChangePassword_RouteIntegration(t *testing.T) {
+	repo := newMockRepo()
+	jwtSecret := "test-secret-key-12345"
+	app := setupTestApp(repo, jwtSecret)
+
+	// Create user with mustResetPassword = true
+	hashed, _ := bcrypt.GenerateFromPassword([]byte("initialPass"), bcrypt.DefaultCost)
+	user := &domainAuth.User{
+		ID:                1,
+		Email:             "mustreset@erp.local",
+		Password:          string(hashed),
+		Name:              "Reset User",
+		Role:              "sales",
+		IsActive:          true,
+		MustResetPassword: true,
+	}
+	repo.users[1] = user
+
+	// 1. Login should return mustResetPassword = true in UserResponse
+	loginBody, _ := json.Marshal(dto.LoginRequest{
+		Email:    "mustreset@erp.local",
+		Password: "initialPass",
+	})
+	reqLogin := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(loginBody))
+	reqLogin.Header.Set("Content-Type", "application/json")
+	respLogin, err := app.Test(reqLogin)
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusOK, respLogin.StatusCode)
+
+	var loginRes struct {
+		Data struct {
+			Token string           `json:"token"`
+			User  dto.UserResponse `json:"user"`
+		} `json:"data"`
+	}
+	_ = json.NewDecoder(respLogin.Body).Decode(&loginRes)
+	assert.True(t, loginRes.Data.User.MustResetPassword)
+	token := loginRes.Data.Token
+
+	// 2. Accessing other protected route (e.g. /api/v1/rbac/permission-matrix) should return 403 PASSWORD_RESET_REQUIRED
+	reqBlocked := httptest.NewRequest(http.MethodGet, "/api/v1/rbac/permission-matrix", nil)
+	reqBlocked.Header.Set("Authorization", "Bearer "+token)
+	respBlocked, err := app.Test(reqBlocked)
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusForbidden, respBlocked.StatusCode)
+
+	// 3. /api/v1/auth/change-password should be ALLOWED through middleware even when mustReset is true
+	changeBody, _ := json.Marshal(dto.ChangePasswordRequest{
+		NewPassword: "newpassword123",
+	})
+	reqChange := httptest.NewRequest(http.MethodPost, "/api/v1/auth/change-password", bytes.NewReader(changeBody))
+	reqChange.Header.Set("Authorization", "Bearer "+token)
+	reqChange.Header.Set("Content-Type", "application/json")
+	respChange, err := app.Test(reqChange)
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusOK, respChange.StatusCode)
+
+	// 4. After password change, /api/v1/auth/me should return mustResetPassword = false
+	reqMe := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+	reqMe.Header.Set("Authorization", "Bearer "+token)
+	respMe, err := app.Test(reqMe)
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusOK, respMe.StatusCode)
+
+	var meRes struct {
+		Data dto.UserResponse `json:"data"`
+	}
+	_ = json.NewDecoder(respMe.Body).Decode(&meRes)
+	assert.False(t, meRes.Data.MustResetPassword)
+
+	// 5. Subsequent access to protected routes should now be allowed
+	reqAllowed := httptest.NewRequest(http.MethodGet, "/api/v1/rbac/permission-matrix", nil)
+	reqAllowed.Header.Set("Authorization", "Bearer "+token)
+	respAllowed, err := app.Test(reqAllowed)
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusOK, respAllowed.StatusCode)
 }
