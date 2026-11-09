@@ -67,16 +67,17 @@ type UpdateContentItemRequest struct {
 // LiveUserRefResponse is the nested staff/host reference embedded in live
 // payloads. It mirrors the previous domain user output field-for-field.
 type LiveUserRefResponse struct {
-	ID          uint       `json:"id"`
-	Email       string     `json:"email"`
-	Firstname   string     `json:"firstname"`
-	Lastname    string     `json:"lastname"`
-	Name        string     `json:"name"`
-	Role        string     `json:"role"`
-	IsActive    bool       `json:"isActive"`
-	LastLoginAt *time.Time `json:"lastLoginAt"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	ID                uint       `json:"id"`
+	Email             string     `json:"email"`
+	Firstname         string     `json:"firstname"`
+	Lastname          string     `json:"lastname"`
+	Name              string     `json:"name"`
+	Role              string     `json:"role"`
+	IsActive          bool       `json:"isActive"`
+	MustResetPassword bool       `json:"mustResetPassword"`
+	LastLoginAt       *time.Time `json:"lastLoginAt"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
 }
 
 // LiveSessionResponse is the API contract for a live streaming session.
@@ -112,16 +113,17 @@ func NewLiveUserRefResponse(u *domainAuth.User) *LiveUserRefResponse {
 		return nil
 	}
 	return &LiveUserRefResponse{
-		ID:          u.ID,
-		Email:       u.Email,
-		Firstname:   u.Firstname,
-		Lastname:    u.Lastname,
-		Name:        u.Name,
-		Role:        u.Role,
-		IsActive:    u.IsActive,
-		LastLoginAt: u.LastLoginAt,
-		CreatedAt:   u.CreatedAt,
-		UpdatedAt:   u.UpdatedAt,
+		ID:                u.ID,
+		Email:             u.Email,
+		Firstname:         u.Firstname,
+		Lastname:          u.Lastname,
+		Name:              u.Name,
+		Role:              u.Role,
+		IsActive:          u.IsActive,
+		MustResetPassword: u.MustResetPassword,
+		LastLoginAt:       u.LastLoginAt,
+		CreatedAt:         u.CreatedAt,
+		UpdatedAt:         u.UpdatedAt,
 	}
 }
 

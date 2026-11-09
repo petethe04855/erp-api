@@ -6,17 +6,18 @@ import (
 )
 
 type User struct {
-	ID          uint       `json:"id" gorm:"primaryKey"`
-	Email       string     `json:"email" gorm:"uniqueIndex;not null;size:255"`
-	Password    string     `json:"-" gorm:"not null"`
-	Firstname   string     `json:"firstname" gorm:"size:100"`
-	Lastname    string     `json:"lastname" gorm:"size:100"`
-	Name        string     `json:"name" gorm:"size:255"`
-	Role        string     `json:"role" gorm:"size:50;default:'sales'"`
-	IsActive    bool       `json:"isActive" gorm:"not null;default:true"`
-	LastLoginAt *time.Time `json:"lastLoginAt"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	ID                uint       `json:"id" gorm:"primaryKey"`
+	Email             string     `json:"email" gorm:"uniqueIndex;not null;size:255"`
+	Password          string     `json:"-" gorm:"not null"`
+	Firstname         string     `json:"firstname" gorm:"size:100"`
+	Lastname          string     `json:"lastname" gorm:"size:100"`
+	Name              string     `json:"name" gorm:"size:255"`
+	Role              string     `json:"role" gorm:"size:50;default:'sales'"`
+	IsActive          bool       `json:"isActive" gorm:"not null;default:true"`
+	MustResetPassword bool       `json:"mustResetPassword" gorm:"not null;default:false"`
+	LastLoginAt       *time.Time `json:"lastLoginAt"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
 }
 
 type Repository interface {

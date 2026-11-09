@@ -242,3 +242,12 @@ func TestUpdateUser_PreventSelfDeactivationOrRoleChange(t *testing.T) {
 	})
 	assert.ErrorIs(t, err, appErrors.ErrCannotModifySelf)
 }
+
+func TestUserEntity_MustResetPassword(t *testing.T) {
+	u := &domainAuth.User{
+		Email:             "test@example.com",
+		MustResetPassword: true,
+	}
+	assert.True(t, u.MustResetPassword)
+}
+
