@@ -1,15 +1,65 @@
 package middleware_test
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"chawy-erp-api/internal/delivery/http/middleware"
+	"chawy-erp-api/pkg/jwt"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/stretchr/testify/assert"
 )
+
+type mockUserStatusLoaderWithReset struct {
+	role      string
+	active    bool
+	mustReset bool
+}
+
+func (m *mockUserStatusLoaderWithReset) FindActiveUserRole(ctx context.Context, userID uint) (string, bool, error) {
+	return m.role, m.active, nil
+}
+
+func (m *mockUserStatusLoaderWithReset) FindActiveUserStatus(ctx context.Context, userID uint) (string, bool, bool, error) {
+	return m.role, m.active, m.mustReset, nil
+}
+
+func TestAuthMiddleware_MustResetPasswordEnforcement(t *testing.T) {
+	secret := "test-secret"
+	token, _ := jwt.GenerateToken(1, "user@example.com", "sales", secret, 24)
+
+	app := fiber.New()
+	loader := &mockUserStatusLoaderWithReset{role: "sales", active: true, mustReset: true}
+	api := app.Group("/api/v1", middleware.AuthMiddleware(secret, loader))
+	api.Get("/orders", func(c *fiber.Ctx) error { return c.SendString("orders") })
+	api.Post("/auth/change-password", func(c *fiber.Ctx) error { return c.SendString("password changed") })
+	api.Get("/auth/me", func(c *fiber.Ctx) error { return c.SendString("me") })
+
+	// Accessing /orders with mustReset = true should be 403 Forbidden
+	reqOrders := httptest.NewRequest(http.MethodGet, "/api/v1/orders", nil)
+	reqOrders.Header.Set("Authorization", "Bearer "+token)
+	respOrders, err := app.Test(reqOrders)
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusForbidden, respOrders.StatusCode)
+
+	// Accessing /auth/change-password with mustReset = true should be allowed
+	reqPass := httptest.NewRequest(http.MethodPost, "/api/v1/auth/change-password", nil)
+	reqPass.Header.Set("Authorization", "Bearer "+token)
+	respPass, err := app.Test(reqPass)
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusOK, respPass.StatusCode)
+
+	// Accessing /auth/me with mustReset = true should be allowed
+	reqMe := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+	reqMe.Header.Set("Authorization", "Bearer "+token)
+	respMe, err := app.Test(reqMe)
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusOK, respMe.StatusCode)
+}
+
 
 func TestRequireRole(t *testing.T) {
 	app := fiber.New()

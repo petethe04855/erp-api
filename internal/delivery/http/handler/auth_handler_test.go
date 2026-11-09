@@ -105,6 +105,13 @@ func (m *mockRepo) FindActiveUserRole(ctx context.Context, userID uint) (string,
 	return "", false, nil
 }
 
+func (m *mockRepo) FindActiveUserStatus(ctx context.Context, userID uint) (string, bool, bool, error) {
+	if u, ok := m.users[userID]; ok {
+		return u.Role, u.IsActive, u.MustResetPassword, nil
+	}
+	return "", false, false, nil
+}
+
 func (m *mockRepo) ExistsByEmail(ctx context.Context, email string) (bool, error) {
 	for _, u := range m.users {
 		if u.Email == email {

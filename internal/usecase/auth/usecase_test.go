@@ -107,6 +107,13 @@ func (m *mockAuthRepo) FindActiveUserRole(ctx context.Context, userID uint) (str
 	return "", false, nil
 }
 
+func (m *mockAuthRepo) FindActiveUserStatus(ctx context.Context, userID uint) (string, bool, bool, error) {
+	if u, ok := m.users[userID]; ok {
+		return u.Role, u.IsActive, u.MustResetPassword, nil
+	}
+	return "", false, false, nil
+}
+
 func TestRegister_FirstUserBecomesOwner(t *testing.T) {
 	repo := newMockAuthRepo()
 	uc := usecaseAuth.NewAuthUsecase(repo, "test-secret", "24", nil)

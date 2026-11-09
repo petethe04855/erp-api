@@ -34,4 +34,5 @@ type Repository interface {
 	// FindActiveUserRole exposes current persisted role/active for per-request
 	// authorization (FULL-03 token revocation).
 	FindActiveUserRole(ctx context.Context, userID uint) (string, bool, error)
+	FindActiveUserStatus(ctx context.Context, userID uint) (string, bool, bool, error)
 }
