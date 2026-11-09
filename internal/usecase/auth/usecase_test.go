@@ -272,6 +272,43 @@ func TestAuthUsecase_CreateUser_SetsMustResetPassword(t *testing.T) {
 	assert.True(t, created.MustResetPassword)
 }
 
+// API-35: An admin password reset must force the user to set their own
+// password on next login, mirroring admin-created users.
+func TestAuthUsecase_UpdateUser_PasswordSetsMustResetPassword(t *testing.T) {
+	repo := newMockAuthRepo()
+	uc := usecaseAuth.NewAuthUsecase(repo, "secret", "24", nil)
+
+	owner := &domainAuth.User{
+		Email:    "owner@example.com",
+		Role:     "owner",
+		IsActive: true,
+	}
+	assert.NoError(t, repo.Create(context.Background(), owner))
+
+	target, err := uc.CreateUser(context.Background(), usecaseAuth.CreateUserInput{
+		Email: "target@example.com",
+		Role:  "sales",
+	})
+	assert.NoError(t, err)
+	assert.True(t, target.MustResetPassword)
+
+	// Flag already cleared by a first-login password change.
+	err = uc.ChangePassword(context.Background(), target.ID, "SelfPass123!")
+	assert.NoError(t, err)
+
+	// Admin resets the target's password -> flag must be armed again.
+	newPass := "AdminPass123!"
+	_, err = uc.UpdateUser(context.Background(), owner.ID, target.ID, usecaseAuth.UpdateUserInput{
+		Password: &newPass,
+	})
+	assert.NoError(t, err)
+
+	updatedUser, err := repo.FindByID(context.Background(), target.ID)
+	assert.NoError(t, err)
+	assert.True(t, updatedUser.MustResetPassword)
+	assert.NoError(t, bcrypt.CompareHashAndPassword([]byte(updatedUser.Password), []byte("AdminPass123!")))
+}
+
 func TestAuthUsecase_ChangePassword(t *testing.T) {
 	repo := newMockAuthRepo()
 	uc := usecaseAuth.NewAuthUsecase(repo, "secret", "24", nil)

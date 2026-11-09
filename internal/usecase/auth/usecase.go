@@ -359,6 +359,9 @@ func (u *authUsecase) UpdateUser(ctx context.Context, currentUserID, id uint, in
 			return nil, err
 		}
 		user.Password = string(hashedPassword)
+		// Admin-side password reset: force the user to set their own
+		// password on next login (same rule as admin-created users).
+		user.MustResetPassword = true
 	}
 
 	if input.Firstname != nil {
