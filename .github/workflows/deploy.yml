@@ -79,8 +79,8 @@ jobs:
           TIKTOK_OAUTH_SUCCESS_URL: ${{ vars.TIKTOK_OAUTH_SUCCESS_URL }}
           TIKTOK_TOKEN_ENCRYPTION_KEY: ${{ secrets.TIKTOK_TOKEN_ENCRYPTION_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          SMTP_HOST: ${{ vars.SMTP_HOST }}
-          SMTP_PORT: ${{ vars.SMTP_PORT }}
+          SMTP_HOST: ${{ vars.SMTP_HOST || 'smtp.gmail.com' }}
+          SMTP_PORT: ${{ vars.SMTP_PORT || '465' }}
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           EMAIL_SEND: ${{ vars.EMAIL_SEND }}
@@ -105,10 +105,12 @@ jobs:
               "TIKTOK_TOKEN_ENCRYPTION_KEY", "GEMINI_API_KEY",
               "SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD", "EMAIL_SEND",
           )
+          defaults = {"SMTP_HOST": "smtp.gmail.com", "SMTP_PORT": "465"}
           for name in names:
               value = os.environ.get(name, "")
               if "\n" in value or "\r" in value:
                   raise ValueError(f"{name} must be a single line")
+              value = value or defaults.get(name, "")
               if value:
                   settings[name] = value
           for name, value in settings.items():
