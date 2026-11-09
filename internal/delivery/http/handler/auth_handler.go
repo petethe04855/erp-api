@@ -135,6 +135,9 @@ func (h *AuthHandler) ChangePassword(c *fiber.Ctx) error {
 	}
 
 	if err := h.usecase.ChangePassword(c.Context(), userID, req.NewPassword); err != nil {
+		if errors.Is(err, appErrors.ErrWeakPassword) {
+			return response.BadRequest(c, err.Error(), "WEAK_PASSWORD")
+		}
 		if errors.Is(err, appErrors.ErrValidation) {
 			return response.BadRequest(c, "Password must be at least 6 characters")
 		}
@@ -212,6 +215,9 @@ func (h *AuthHandler) CreateUser(c *fiber.Ctx) error {
 		if errors.Is(err, appErrors.ErrInvalidRole) {
 			return response.BadRequest(c, err.Error(), "INVALID_ROLE")
 		}
+		if errors.Is(err, appErrors.ErrWeakPassword) {
+			return response.BadRequest(c, err.Error(), "WEAK_PASSWORD")
+		}
 		if errors.Is(err, appErrors.ErrValidation) {
 			return response.BadRequest(c, "Password must be at least 6 characters")
 		}
@@ -259,6 +265,9 @@ func (h *AuthHandler) UpdateUser(c *fiber.Ctx) error {
 		}
 		if errors.Is(err, appErrors.ErrInvalidRole) {
 			return response.BadRequest(c, err.Error(), "INVALID_ROLE")
+		}
+		if errors.Is(err, appErrors.ErrWeakPassword) {
+			return response.BadRequest(c, err.Error(), "WEAK_PASSWORD")
 		}
 		if errors.Is(err, appErrors.ErrValidation) {
 			return response.BadRequest(c, "Password must be at least 6 characters")

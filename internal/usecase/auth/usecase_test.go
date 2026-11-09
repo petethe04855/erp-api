@@ -320,9 +320,15 @@ func TestAuthUsecase_ChangePassword(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, created.MustResetPassword)
 
-	// Short password should fail
+	// Weak passwords must be rejected per the password policy
 	err = uc.ChangePassword(context.Background(), created.ID, "123")
-	assert.ErrorIs(t, err, appErrors.ErrValidation)
+	assert.ErrorIs(t, err, appErrors.ErrWeakPassword)
+
+	err = uc.ChangePassword(context.Background(), created.ID, "abc123") // no uppercase
+	assert.ErrorIs(t, err, appErrors.ErrWeakPassword)
+
+	err = uc.ChangePassword(context.Background(), created.ID, "ABC123") // no lowercase
+	assert.ErrorIs(t, err, appErrors.ErrWeakPassword)
 
 	// Non-existent user should return ErrNotFound
 	err = uc.ChangePassword(context.Background(), 99999, "ValidPass123!")

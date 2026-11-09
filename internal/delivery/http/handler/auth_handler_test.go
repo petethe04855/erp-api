@@ -308,7 +308,7 @@ func TestAuthHandler_ChangePassword(t *testing.T) {
 			c.Locals("userID", uint(999))
 			return authH.ChangePassword(c)
 		})
-		reqBody, _ := json.Marshal(dto.ChangePasswordRequest{NewPassword: "newpassword123"})
+		reqBody, _ := json.Marshal(dto.ChangePasswordRequest{NewPassword: "NewPassword123"})
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/change-password", bytes.NewReader(reqBody))
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := appNotFound.Test(req)
@@ -318,7 +318,7 @@ func TestAuthHandler_ChangePassword(t *testing.T) {
 
 	// 5. Valid password succeeds
 	t.Run("Valid password returns 200 and updates user", func(t *testing.T) {
-		reqBody, _ := json.Marshal(dto.ChangePasswordRequest{NewPassword: "newpassword123"})
+		reqBody, _ := json.Marshal(dto.ChangePasswordRequest{NewPassword: "NewPassword123"})
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/change-password", bytes.NewReader(reqBody))
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := app.Test(req)
@@ -339,7 +339,7 @@ func TestAuthHandler_ChangePassword(t *testing.T) {
 	t.Run("Unauthorized if no userID in context", func(t *testing.T) {
 		appNoAuth := fiber.New()
 		appNoAuth.Post("/api/v1/auth/change-password", authH.ChangePassword)
-		reqBody, _ := json.Marshal(dto.ChangePasswordRequest{NewPassword: "newpassword123"})
+		reqBody, _ := json.Marshal(dto.ChangePasswordRequest{NewPassword: "NewPassword123"})
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/change-password", bytes.NewReader(reqBody))
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := appNoAuth.Test(req)
@@ -396,7 +396,7 @@ func TestChangePassword_RouteIntegration(t *testing.T) {
 
 	// 3. /api/v1/auth/change-password should be ALLOWED through middleware even when mustReset is true
 	changeBody, _ := json.Marshal(dto.ChangePasswordRequest{
-		NewPassword: "newpassword123",
+		NewPassword: "NewPassword123",
 	})
 	reqChange := httptest.NewRequest(http.MethodPost, "/api/v1/auth/change-password", bytes.NewReader(changeBody))
 	reqChange.Header.Set("Authorization", "Bearer "+token)

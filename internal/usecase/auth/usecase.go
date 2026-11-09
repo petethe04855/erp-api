@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	domainAuth "chawy-erp-api/internal/domain/auth"
 	appErrors "chawy-erp-api/pkg/errors"
@@ -238,6 +239,29 @@ func generateRandomPassword(length int) (string, error) {
 	return string(bytes), nil
 }
 
+// validatePasswordStrength enforces the account password policy: minimum 6
+// characters with at least one uppercase and one lowercase letter.
+// Public registration / generated temp passwords never pass through here —
+// only user-chosen passwords from CreateUser, UpdateUser and ChangePassword.
+func validatePasswordStrength(password string) error {
+	if len(password) < 6 {
+		return appErrors.ErrWeakPassword
+	}
+	hasUpper, hasLower := false, false
+	for _, r := range password {
+		switch {
+		case unicode.IsUpper(r):
+			hasUpper = true
+		case unicode.IsLower(r):
+			hasLower = true
+		}
+	}
+	if !hasUpper || !hasLower {
+		return appErrors.ErrWeakPassword
+	}
+	return nil
+}
+
 func (u *authUsecase) CreateUser(ctx context.Context, input CreateUserInput) (*domainAuth.User, error) {
 	email := strings.ToLower(strings.TrimSpace(input.Email))
 	exists, err := u.repo.ExistsByEmail(ctx, email)
@@ -264,8 +288,8 @@ func (u *authUsecase) CreateUser(ctx context.Context, input CreateUserInput) (*d
 			return nil, err
 		}
 		rawPassword = genPass
-	} else if len(rawPassword) < 6 {
-		return nil, appErrors.ErrValidation
+	} else if err := validatePasswordStrength(rawPassword); err != nil {
+		return nil, err
 	}
 
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(rawPassword), bcrypt.DefaultCost)
@@ -351,8 +375,8 @@ func (u *authUsecase) UpdateUser(ctx context.Context, currentUserID, id uint, in
 	}
 
 	if input.Password != nil && *input.Password != "" {
-		if len(*input.Password) < 6 {
-			return nil, appErrors.ErrValidation
+		if err := validatePasswordStrength(*input.Password); err != nil {
+			return nil, err
 		}
 		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(*input.Password), bcrypt.DefaultCost)
 		if err != nil {
@@ -421,8 +445,8 @@ func (u *authUsecase) DeleteUser(ctx context.Context, currentUserID, targetID ui
 
 func (u *authUsecase) ChangePassword(ctx context.Context, userID uint, newPassword string) error {
 	trimmed := strings.TrimSpace(newPassword)
-	if len(trimmed) < 6 {
-		return appErrors.ErrValidation
+	if err := validatePasswordStrength(trimmed); err != nil {
+		return err
 	}
 
 	user, err := u.repo.FindByID(ctx, userID)
