@@ -24,15 +24,16 @@ func NewAuthHandler(usecase usecaseAuth.Usecase) *AuthHandler {
 
 func toUserResponse(u *domainAuth.User) dto.UserResponse {
 	return dto.UserResponse{
-		ID:          u.ID,
-		Email:       u.Email,
-		Firstname:   u.Firstname,
-		Lastname:    u.Lastname,
-		Name:        u.Name,
-		Role:        u.Role,
-		IsActive:    u.IsActive,
-		LastLoginAt: u.LastLoginAt,
-		CreatedAt:   u.CreatedAt,
+		ID:                u.ID,
+		Email:             u.Email,
+		Firstname:         u.Firstname,
+		Lastname:          u.Lastname,
+		Name:              u.Name,
+		Role:              u.Role,
+		IsActive:          u.IsActive,
+		MustResetPassword: u.MustResetPassword,
+		LastLoginAt:       u.LastLoginAt,
+		CreatedAt:         u.CreatedAt,
 	}
 }
 
@@ -118,6 +119,34 @@ func (h *AuthHandler) Me(c *fiber.Ctx) error {
 	return response.OK(c, toUserResponse(user))
 }
 
+func (h *AuthHandler) ChangePassword(c *fiber.Ctx) error {
+	userID, ok := c.Locals("userID").(uint)
+	if !ok {
+		return response.Unauthorized(c, "Unauthorized")
+	}
+
+	var req dto.ChangePasswordRequest
+	if err := c.BodyParser(&req); err != nil {
+		return response.BadRequest(c, "Invalid request body")
+	}
+
+	if req.NewPassword == "" {
+		return response.BadRequest(c, "New password is required")
+	}
+
+	if err := h.usecase.ChangePassword(c.Context(), userID, req.NewPassword); err != nil {
+		if errors.Is(err, appErrors.ErrValidation) {
+			return response.BadRequest(c, "Password must be at least 6 characters")
+		}
+		if errors.Is(err, appErrors.ErrNotFound) {
+			return response.NotFound(c, "User not found")
+		}
+		return err
+	}
+
+	return response.OK(c, nil, "Password changed successfully")
+}
+
 // GetPermissionMatrix returns the RBAC Permission Matrix for frontend consumption (API-01)
 func (h *AuthHandler) GetPermissionMatrix(c *fiber.Ctx) error {
 	return response.OK(c, middleware.PermissionMatrix)
@@ -154,6 +183,34 @@ func (h *AuthHandler) GetUserByID(c *fiber.Ctx) error {
 	}
 
 	return response.OK(c, toUserResponse(user))
+}
+
+func (h *AuthHandler) ChangePassword(c *fiber.Ctx) error {
+	userID, ok := c.Locals("userID").(uint)
+	if !ok {
+		return response.Unauthorized(c, "Unauthorized")
+	}
+
+	var req dto.ChangePasswordRequest
+	if err := c.BodyParser(&req); err != nil {
+		return response.BadRequest(c, "Invalid request body")
+	}
+
+	if req.NewPassword == "" {
+		return response.BadRequest(c, "New password is required")
+	}
+
+	if err := h.usecase.ChangePassword(c.Context(), userID, req.NewPassword); err != nil {
+		if errors.Is(err, appErrors.ErrValidation) {
+			return response.BadRequest(c, "Password must be at least 6 characters")
+		}
+		if errors.Is(err, appErrors.ErrNotFound) {
+			return response.NotFound(c, "User not found")
+		}
+		return err
+	}
+
+	return response.OK(c, nil, "Password changed successfully")
 }
 
 // CreateUser handles admin creation of users with assigned roles (API-01)
