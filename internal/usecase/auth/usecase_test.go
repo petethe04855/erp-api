@@ -251,3 +251,47 @@ func TestUserEntity_MustResetPassword(t *testing.T) {
 	assert.True(t, u.MustResetPassword)
 }
 
+func TestAuthUsecase_CreateUser_SetsMustResetPassword(t *testing.T) {
+	repo := newMockAuthRepo()
+	uc := usecaseAuth.NewAuthUsecase(repo, "secret", "24", nil)
+
+	created, err := uc.CreateUser(context.Background(), usecaseAuth.CreateUserInput{
+		Email:     "newuser@example.com",
+		Firstname: "John",
+		Lastname:  "Doe",
+		Role:      "sales",
+	})
+	assert.NoError(t, err)
+	assert.True(t, created.MustResetPassword)
+}
+
+func TestAuthUsecase_ChangePassword(t *testing.T) {
+	repo := newMockAuthRepo()
+	uc := usecaseAuth.NewAuthUsecase(repo, "secret", "24", nil)
+
+	created, err := uc.CreateUser(context.Background(), usecaseAuth.CreateUserInput{
+		Email: "change@example.com",
+		Role:  "sales",
+	})
+	assert.NoError(t, err)
+	assert.True(t, created.MustResetPassword)
+
+	// Short password should fail
+	err = uc.ChangePassword(context.Background(), created.ID, "123")
+	assert.ErrorIs(t, err, appErrors.ErrValidation)
+
+	// Non-existent user should return ErrNotFound
+	err = uc.ChangePassword(context.Background(), 99999, "ValidPass123!")
+	assert.ErrorIs(t, err, appErrors.ErrNotFound)
+
+	// Valid password should succeed and clear MustResetPassword
+	err = uc.ChangePassword(context.Background(), created.ID, "ValidPass123!")
+	assert.NoError(t, err)
+
+	updatedUser, err := repo.FindByID(context.Background(), created.ID)
+	assert.NoError(t, err)
+	assert.False(t, updatedUser.MustResetPassword)
+	assert.NoError(t, bcrypt.CompareHashAndPassword([]byte(updatedUser.Password), []byte("ValidPass123!")))
+}
+
+

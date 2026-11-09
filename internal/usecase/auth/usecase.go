@@ -67,6 +67,7 @@ type Usecase interface {
 	UpdateUser(ctx context.Context, currentUserID, id uint, input UpdateUserInput) (*domainAuth.User, error)
 	UpdateUserStatus(ctx context.Context, currentUserID, targetID uint, isActive bool) error
 	DeleteUser(ctx context.Context, currentUserID, targetID uint) error
+	ChangePassword(ctx context.Context, userID uint, newPassword string) error
 }
 
 type authUsecase struct {
@@ -275,13 +276,14 @@ func (u *authUsecase) CreateUser(ctx context.Context, input CreateUserInput) (*d
 	name, fn, ln := resolveName(input.Name, input.Firstname, input.Lastname)
 
 	user := &domainAuth.User{
-		Email:     email,
-		Password:  string(hashedPassword),
-		Firstname: fn,
-		Lastname:  ln,
-		Name:      name,
-		Role:      role,
-		IsActive:  true,
+		Email:             email,
+		Password:          string(hashedPassword),
+		Firstname:         fn,
+		Lastname:          ln,
+		Name:              name,
+		Role:              role,
+		IsActive:          true,
+		MustResetPassword: true,
 	}
 
 	if err := u.repo.Create(ctx, user); err != nil {
@@ -413,3 +415,28 @@ func (u *authUsecase) DeleteUser(ctx context.Context, currentUserID, targetID ui
 
 	return u.repo.Delete(ctx, targetID)
 }
+
+func (u *authUsecase) ChangePassword(ctx context.Context, userID uint, newPassword string) error {
+	trimmed := strings.TrimSpace(newPassword)
+	if len(trimmed) < 6 {
+		return appErrors.ErrValidation
+	}
+
+	user, err := u.repo.FindByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if user == nil {
+		return appErrors.ErrNotFound
+	}
+
+	hashed, err := bcrypt.GenerateFromPassword([]byte(trimmed), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+
+	user.Password = string(hashed)
+	user.MustResetPassword = false
+	return u.repo.Update(ctx, user)
+}
+
