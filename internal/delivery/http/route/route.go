@@ -64,6 +64,9 @@ func RegisterRoutes(cfg Config) {
 	// Protected Routes Group
 	protected := api.Group("/", middleware.AuthMiddleware(cfg.JWTSecret, cfg.UserStatusLoader))
 
+	// Auth routes (protected)
+	protected.Post("/auth/change-password", cfg.AuthHandler.ChangePassword)
+
 	// RBAC Matrix (API-01)
 	protected.Get("/rbac/permission-matrix", cfg.AuthHandler.GetPermissionMatrix)
 

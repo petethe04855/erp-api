@@ -17,6 +17,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/stretchr/testify/assert"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type mockRepo struct {
@@ -103,6 +104,13 @@ func (m *mockRepo) FindActiveUserRole(ctx context.Context, userID uint) (string,
 		return u.Role, u.IsActive, nil
 	}
 	return "", false, nil
+}
+
+func (m *mockRepo) FindActiveUserStatus(ctx context.Context, userID uint) (string, bool, bool, error) {
+	if u, ok := m.users[userID]; ok {
+		return u.Role, u.IsActive, u.MustResetPassword, nil
+	}
+	return "", false, false, nil
 }
 
 func (m *mockRepo) ExistsByEmail(ctx context.Context, email string) (bool, error) {
@@ -240,4 +248,180 @@ func TestAuthFlowAndUserManagement(t *testing.T) {
 	respPutSelfDeact, err := app.Test(reqPutSelfDeact)
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusBadRequest, respPutSelfDeact.StatusCode)
+}
+
+func TestAuthHandler_ChangePassword(t *testing.T) {
+	repo := newMockRepo()
+	jwtSecret := "test-secret-key-12345"
+	uc := usecaseAuth.NewAuthUsecase(repo, jwtSecret, "24", nil)
+	authH := handler.NewAuthHandler(uc)
+
+	app := fiber.New()
+	app.Post("/api/v1/auth/change-password", func(c *fiber.Ctx) error {
+		c.Locals("userID", uint(1))
+		return authH.ChangePassword(c)
+	})
+
+	user := &domainAuth.User{
+		ID:                1,
+		Email:             "reset@erp.local",
+		Password:          "initialHashedPassword",
+		Role:              "sales",
+		IsActive:          true,
+		MustResetPassword: true,
+	}
+	repo.users[1] = user
+
+	// 1. Missing body
+	t.Run("Invalid body returns 400", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/change-password", bytes.NewReader([]byte("invalid json")))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := app.Test(req)
+		assert.NoError(t, err)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	// 2. Empty password returns 400
+	t.Run("Empty password returns 400", func(t *testing.T) {
+		reqBody, _ := json.Marshal(dto.ChangePasswordRequest{NewPassword: ""})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/change-password", bytes.NewReader(reqBody))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := app.Test(req)
+		assert.NoError(t, err)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	// 3. Short password returns 400
+	t.Run("Short password returns 400", func(t *testing.T) {
+		reqBody, _ := json.Marshal(dto.ChangePasswordRequest{NewPassword: "123"})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/change-password", bytes.NewReader(reqBody))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := app.Test(req)
+		assert.NoError(t, err)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	// 4. User not found returns 404
+	t.Run("User not found returns 404", func(t *testing.T) {
+		appNotFound := fiber.New()
+		appNotFound.Post("/api/v1/auth/change-password", func(c *fiber.Ctx) error {
+			c.Locals("userID", uint(999))
+			return authH.ChangePassword(c)
+		})
+		reqBody, _ := json.Marshal(dto.ChangePasswordRequest{NewPassword: "NewPassword123"})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/change-password", bytes.NewReader(reqBody))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := appNotFound.Test(req)
+		assert.NoError(t, err)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	// 5. Valid password succeeds
+	t.Run("Valid password returns 200 and updates user", func(t *testing.T) {
+		reqBody, _ := json.Marshal(dto.ChangePasswordRequest{NewPassword: "NewPassword123"})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/change-password", bytes.NewReader(reqBody))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := app.Test(req)
+		assert.NoError(t, err)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var res struct {
+			Success bool   `json:"success"`
+			Message string `json:"message"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&res)
+		assert.True(t, res.Success)
+		assert.Equal(t, "Password changed successfully", res.Message)
+		assert.False(t, user.MustResetPassword)
+	})
+
+	// 6. Unauthorized if no userID in context
+	t.Run("Unauthorized if no userID in context", func(t *testing.T) {
+		appNoAuth := fiber.New()
+		appNoAuth.Post("/api/v1/auth/change-password", authH.ChangePassword)
+		reqBody, _ := json.Marshal(dto.ChangePasswordRequest{NewPassword: "NewPassword123"})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/change-password", bytes.NewReader(reqBody))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := appNoAuth.Test(req)
+		assert.NoError(t, err)
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	})
+}
+
+func TestChangePassword_RouteIntegration(t *testing.T) {
+	repo := newMockRepo()
+	jwtSecret := "test-secret-key-12345"
+	app := setupTestApp(repo, jwtSecret)
+
+	// Create user with mustResetPassword = true
+	hashed, _ := bcrypt.GenerateFromPassword([]byte("initialPass"), bcrypt.DefaultCost)
+	user := &domainAuth.User{
+		ID:                1,
+		Email:             "mustreset@erp.local",
+		Password:          string(hashed),
+		Name:              "Reset User",
+		Role:              "sales",
+		IsActive:          true,
+		MustResetPassword: true,
+	}
+	repo.users[1] = user
+
+	// 1. Login should return mustResetPassword = true in UserResponse
+	loginBody, _ := json.Marshal(dto.LoginRequest{
+		Email:    "mustreset@erp.local",
+		Password: "initialPass",
+	})
+	reqLogin := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(loginBody))
+	reqLogin.Header.Set("Content-Type", "application/json")
+	respLogin, err := app.Test(reqLogin)
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusOK, respLogin.StatusCode)
+
+	var loginRes struct {
+		Data struct {
+			Token string           `json:"token"`
+			User  dto.UserResponse `json:"user"`
+		} `json:"data"`
+	}
+	_ = json.NewDecoder(respLogin.Body).Decode(&loginRes)
+	assert.True(t, loginRes.Data.User.MustResetPassword)
+	token := loginRes.Data.Token
+
+	// 2. Accessing other protected route (e.g. /api/v1/rbac/permission-matrix) should return 403 PASSWORD_RESET_REQUIRED
+	reqBlocked := httptest.NewRequest(http.MethodGet, "/api/v1/rbac/permission-matrix", nil)
+	reqBlocked.Header.Set("Authorization", "Bearer "+token)
+	respBlocked, err := app.Test(reqBlocked)
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusForbidden, respBlocked.StatusCode)
+
+	// 3. /api/v1/auth/change-password should be ALLOWED through middleware even when mustReset is true
+	changeBody, _ := json.Marshal(dto.ChangePasswordRequest{
+		NewPassword: "NewPassword123",
+	})
+	reqChange := httptest.NewRequest(http.MethodPost, "/api/v1/auth/change-password", bytes.NewReader(changeBody))
+	reqChange.Header.Set("Authorization", "Bearer "+token)
+	reqChange.Header.Set("Content-Type", "application/json")
+	respChange, err := app.Test(reqChange)
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusOK, respChange.StatusCode)
+
+	// 4. After password change, /api/v1/auth/me should return mustResetPassword = false
+	reqMe := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+	reqMe.Header.Set("Authorization", "Bearer "+token)
+	respMe, err := app.Test(reqMe)
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusOK, respMe.StatusCode)
+
+	var meRes struct {
+		Data dto.UserResponse `json:"data"`
+	}
+	_ = json.NewDecoder(respMe.Body).Decode(&meRes)
+	assert.False(t, meRes.Data.MustResetPassword)
+
+	// 5. Subsequent access to protected routes should now be allowed
+	reqAllowed := httptest.NewRequest(http.MethodGet, "/api/v1/rbac/permission-matrix", nil)
+	reqAllowed.Header.Set("Authorization", "Bearer "+token)
+	respAllowed, err := app.Test(reqAllowed)
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusOK, respAllowed.StatusCode)
 }
