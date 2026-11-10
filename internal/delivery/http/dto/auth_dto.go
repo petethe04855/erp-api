@@ -17,15 +17,16 @@ type LoginRequest struct {
 }
 
 type UserResponse struct {
-	ID          uint       `json:"id"`
-	Email       string     `json:"email"`
-	Firstname   string     `json:"firstname"`
-	Lastname    string     `json:"lastname"`
-	Name        string     `json:"name"`
-	Role        string     `json:"role"`
-	IsActive    bool       `json:"isActive"`
-	LastLoginAt *time.Time `json:"lastLoginAt"`
-	CreatedAt   time.Time  `json:"created_at"`
+	ID                uint       `json:"id"`
+	Email             string     `json:"email"`
+	Firstname         string     `json:"firstname"`
+	Lastname          string     `json:"lastname"`
+	Name              string     `json:"name"`
+	Role              string     `json:"role"`
+	IsActive          bool       `json:"isActive"`
+	MustResetPassword bool       `json:"mustResetPassword"`
+	LastLoginAt       *time.Time `json:"lastLoginAt"`
+	CreatedAt         time.Time  `json:"created_at"`
 }
 
 type AuthResponse struct {
@@ -55,3 +56,8 @@ type UpdateUserRequest struct {
 type UpdateUserStatusRequest struct {
 	IsActive bool `json:"isActive"`
 }
+
+type ChangePasswordRequest struct {
+	NewPassword string `json:"newPassword"`
+}
+

@@ -81,6 +81,18 @@ func (r *AuthRepository) FindActiveUserRole(ctx context.Context, userID uint) (s
 	return user.Role, user.IsActive, nil
 }
 
+func (r *AuthRepository) FindActiveUserStatus(ctx context.Context, userID uint) (string, bool, bool, error) {
+	var user auth.User
+	err := r.db.WithContext(ctx).Select("role", "is_active", "must_reset_password").First(&user, userID).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", false, false, nil
+		}
+		return "", false, false, err
+	}
+	return user.Role, user.IsActive, user.MustResetPassword, nil
+}
+
 func (r *AuthRepository) ExistsByEmail(ctx context.Context, email string) (bool, error) {
 	var count int64
 	err := r.db.WithContext(ctx).Model(&auth.User{}).Where("email = ?", email).Count(&count).Error

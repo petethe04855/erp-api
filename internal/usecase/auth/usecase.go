@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	domainAuth "chawy-erp-api/internal/domain/auth"
 	appErrors "chawy-erp-api/pkg/errors"
@@ -67,6 +68,7 @@ type Usecase interface {
 	UpdateUser(ctx context.Context, currentUserID, id uint, input UpdateUserInput) (*domainAuth.User, error)
 	UpdateUserStatus(ctx context.Context, currentUserID, targetID uint, isActive bool) error
 	DeleteUser(ctx context.Context, currentUserID, targetID uint) error
+	ChangePassword(ctx context.Context, userID uint, newPassword string) error
 }
 
 type authUsecase struct {
@@ -237,6 +239,29 @@ func generateRandomPassword(length int) (string, error) {
 	return string(bytes), nil
 }
 
+// validatePasswordStrength enforces the account password policy: minimum 6
+// characters with at least one uppercase and one lowercase letter.
+// Public registration / generated temp passwords never pass through here —
+// only user-chosen passwords from CreateUser, UpdateUser and ChangePassword.
+func validatePasswordStrength(password string) error {
+	if len(password) < 6 {
+		return appErrors.ErrWeakPassword
+	}
+	hasUpper, hasLower := false, false
+	for _, r := range password {
+		switch {
+		case unicode.IsUpper(r):
+			hasUpper = true
+		case unicode.IsLower(r):
+			hasLower = true
+		}
+	}
+	if !hasUpper || !hasLower {
+		return appErrors.ErrWeakPassword
+	}
+	return nil
+}
+
 func (u *authUsecase) CreateUser(ctx context.Context, input CreateUserInput) (*domainAuth.User, error) {
 	email := strings.ToLower(strings.TrimSpace(input.Email))
 	exists, err := u.repo.ExistsByEmail(ctx, email)
@@ -263,8 +288,8 @@ func (u *authUsecase) CreateUser(ctx context.Context, input CreateUserInput) (*d
 			return nil, err
 		}
 		rawPassword = genPass
-	} else if len(rawPassword) < 6 {
-		return nil, appErrors.ErrValidation
+	} else if err := validatePasswordStrength(rawPassword); err != nil {
+		return nil, err
 	}
 
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(rawPassword), bcrypt.DefaultCost)
@@ -275,13 +300,14 @@ func (u *authUsecase) CreateUser(ctx context.Context, input CreateUserInput) (*d
 	name, fn, ln := resolveName(input.Name, input.Firstname, input.Lastname)
 
 	user := &domainAuth.User{
-		Email:     email,
-		Password:  string(hashedPassword),
-		Firstname: fn,
-		Lastname:  ln,
-		Name:      name,
-		Role:      role,
-		IsActive:  true,
+		Email:             email,
+		Password:          string(hashedPassword),
+		Firstname:         fn,
+		Lastname:          ln,
+		Name:              name,
+		Role:              role,
+		IsActive:          true,
+		MustResetPassword: true,
 	}
 
 	if err := u.repo.Create(ctx, user); err != nil {
@@ -349,14 +375,17 @@ func (u *authUsecase) UpdateUser(ctx context.Context, currentUserID, id uint, in
 	}
 
 	if input.Password != nil && *input.Password != "" {
-		if len(*input.Password) < 6 {
-			return nil, appErrors.ErrValidation
+		if err := validatePasswordStrength(*input.Password); err != nil {
+			return nil, err
 		}
 		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(*input.Password), bcrypt.DefaultCost)
 		if err != nil {
 			return nil, err
 		}
 		user.Password = string(hashedPassword)
+		// Admin-side password reset: force the user to set their own
+		// password on next login (same rule as admin-created users).
+		user.MustResetPassword = true
 	}
 
 	if input.Firstname != nil {
@@ -413,3 +442,28 @@ func (u *authUsecase) DeleteUser(ctx context.Context, currentUserID, targetID ui
 
 	return u.repo.Delete(ctx, targetID)
 }
+
+func (u *authUsecase) ChangePassword(ctx context.Context, userID uint, newPassword string) error {
+	trimmed := strings.TrimSpace(newPassword)
+	if err := validatePasswordStrength(trimmed); err != nil {
+		return err
+	}
+
+	user, err := u.repo.FindByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if user == nil {
+		return appErrors.ErrNotFound
+	}
+
+	hashed, err := bcrypt.GenerateFromPassword([]byte(trimmed), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+
+	user.Password = string(hashed)
+	user.MustResetPassword = false
+	return u.repo.Update(ctx, user)
+}
+

@@ -14,6 +14,7 @@ import (
 // state without depending on a concrete repository (FULL-03).
 type UserStatusLoader interface {
 	FindActiveUserRole(ctx context.Context, userID uint) (role string, active bool, err error)
+	FindActiveUserStatus(ctx context.Context, userID uint) (role string, active bool, mustReset bool, err error)
 }
 
 // AuthMiddleware validates the JWT and then re-checks the user's current
@@ -48,7 +49,7 @@ func AuthMiddleware(secret string, users UserStatusLoader) fiber.Handler {
 		}
 
 		if users != nil {
-			role, active, err := users.FindActiveUserRole(c.UserContext(), claims.UserID)
+			role, active, mustReset, err := users.FindActiveUserStatus(c.UserContext(), claims.UserID)
 			if err != nil || !active {
 				return response.Unauthorized(c, "Account is disabled or no longer exists", "ACCOUNT_DISABLED")
 			}
@@ -57,6 +58,14 @@ func AuthMiddleware(secret string, users UserStatusLoader) fiber.Handler {
 				c.Locals("role", role)
 			} else {
 				c.Locals("role", claims.Role)
+			}
+
+			c.Locals("mustResetPassword", mustReset)
+
+			if mustReset {
+				if path != "/api/v1/auth/change-password" && path != "/api/v1/auth/me" {
+					return response.Forbidden(c, "Password reset required before accessing this resource", "PASSWORD_RESET_REQUIRED")
+				}
 			}
 		} else {
 			c.Locals("role", claims.Role)

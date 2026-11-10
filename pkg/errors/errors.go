@@ -19,6 +19,7 @@ var (
 	ErrAccountDisabled    = errors.New("this account has been disabled")
 	ErrCannotModifySelf   = errors.New("cannot disable or delete your own account")
 	ErrInvalidRole        = errors.New("invalid user role")
+	ErrWeakPassword       = errors.New("password must be at least 6 characters and contain at least one uppercase and one lowercase letter")
 )
 
 // AppError is an error with machine-readable code and HTTP status code
