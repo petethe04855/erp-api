@@ -161,47 +161,145 @@ func (u *financeUsecase) CreateExpense(ctx context.Context, in CreateExpenseInpu
 		InvoiceRef:  in.InvoiceRef,
 		Description: in.Description,
 		CreatedBy:   in.CreatedBy,
+		Status:      domainFinance.ExpenseStatusActive,
 	}
 
 	run := func(txCtx context.Context) error {
 		if err := u.repo.CreateExpense(txCtx, exp); err != nil {
 			return err
 		}
-
-		journalSubject := exp.Vendor
-		if journalSubject == "" {
-			journalSubject = exp.ProductName
-		} else if exp.ProductName != "" {
-			journalSubject = fmt.Sprintf("%s (%s)", exp.Vendor, exp.ProductName)
-		}
-
-		// Auto-post journal for this expense
-		_, err := u.PostJournal(txCtx, PostingRequest{
-			Date:        exp.Date,
-			SourceType:  "expense",
-			SourceID:    exp.ID,
-			SourceRef:   exp.Code,
-			Description: fmt.Sprintf("[%s] %s - %s", exp.Category, journalSubject, exp.Description),
-			CreatedBy:   exp.CreatedBy,
-			Lines: []PostingLineInput{
-				{AccountCode: AccountOperatingExpense, Debit: exp.Amount, Channel: string(exp.Channel)},
-				{AccountCode: AccountCash, Credit: exp.Amount, Channel: string(exp.Channel)},
-			},
-		})
+		_, err := u.PostJournal(txCtx, expensePostingRequest(exp, "expense", exp.ID, exp.CreatedBy))
 		return err
 	}
 
+	if err := u.inTx(ctx, run); err != nil {
+		return nil, err
+	}
+	return exp, nil
+}
+
+// Journal source types used for the expense lifecycle. Every entry carries
+// SourceRef = expense code, so the full history of an expense can be found
+// with FindJournalEntriesByRef. (source_type, source_id) is unique, so each
+// type keys off a different ID:
+//   - expense:          source_id = expense ID (first posting)
+//   - expense_reversal: source_id = ID of the journal entry being reversed
+//   - expense_revision: source_id = ID of the reversal it follows (re-post after edit)
+const (
+	sourceExpense         = "expense"
+	sourceExpenseReversal = "expense_reversal"
+	sourceExpenseRevision = "expense_revision"
+)
+
+// truncateRunes caps s at max characters without splitting a multi-byte (Thai) rune.
+func truncateRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max])
+}
+
+func (u *financeUsecase) inTx(ctx context.Context, fn func(context.Context) error) error {
 	if u.txMgr != nil {
-		if err := u.txMgr.Transaction(ctx, run); err != nil {
-			return nil, err
-		}
-	} else {
-		if err := run(ctx); err != nil {
-			return nil, err
+		return u.txMgr.Transaction(ctx, fn)
+	}
+	return fn(ctx)
+}
+
+func expensePostingRequest(exp *domainFinance.Expense, sourceType string, sourceID uint, by string) PostingRequest {
+	subject := exp.Vendor
+	if subject == "" {
+		subject = exp.ProductName
+	} else if exp.ProductName != "" {
+		subject = fmt.Sprintf("%s (%s)", exp.Vendor, exp.ProductName)
+	}
+	return PostingRequest{
+		Date:        exp.Date,
+		SourceType:  sourceType,
+		SourceID:    sourceID,
+		SourceRef:   exp.Code,
+		Description: fmt.Sprintf("[%s] %s - %s", exp.Category, subject, exp.Description),
+		CreatedBy:   by,
+		Lines: []PostingLineInput{
+			{AccountCode: AccountOperatingExpense, Debit: exp.Amount, Channel: string(exp.Channel)},
+			{AccountCode: AccountCash, Credit: exp.Amount, Channel: string(exp.Channel)},
+		},
+	}
+}
+
+// activeExpenseJournal returns the expense's journal entry that currently
+// counts in the books (posted, not itself a reversal, and not yet reversed),
+// or nil when the expense has none (e.g. legacy rows created before posting).
+func (u *financeUsecase) activeExpenseJournal(ctx context.Context, exp *domainFinance.Expense) (*domainFinance.JournalEntry, error) {
+	entries, err := u.repo.FindJournalEntriesByRef(ctx, exp.Code)
+	if err != nil {
+		return nil, err
+	}
+	reversed := make(map[uint]bool)
+	for _, e := range entries {
+		if e.ReversalOfID != nil {
+			reversed[*e.ReversalOfID] = true
 		}
 	}
+	var active *domainFinance.JournalEntry
+	for i := range entries {
+		e := &entries[i]
+		if e.SourceType != sourceExpense && e.SourceType != sourceExpenseRevision {
+			continue
+		}
+		if e.ReversalOfID != nil || reversed[e.ID] || e.Status != domainFinance.JournalStatusPosted {
+			continue
+		}
+		active = e // latest wins (entries are ordered by id)
+	}
+	return active, nil
+}
 
-	return exp, nil
+// reverseJournal posts a mirror entry (debits and credits swapped) for the
+// given entry, dated on the original date so period reports net to zero.
+// The original entry is left untouched, which keeps the audit trail intact.
+func (u *financeUsecase) reverseJournal(ctx context.Context, orig *domainFinance.JournalEntry, by, reason string) (*domainFinance.JournalEntry, error) {
+	if existing, err := u.repo.FindJournalEntryBySource(ctx, sourceExpenseReversal, orig.ID); err == nil && existing != nil {
+		return nil, appErrors.NewAppError("JOURNAL_ALREADY_REVERSED", fmt.Sprintf("Journal %s has already been reversed", orig.Code), 409)
+	}
+
+	origID := orig.ID
+	desc := fmt.Sprintf("กลับรายการ %s", orig.Code)
+	if reason != "" {
+		desc = fmt.Sprintf("%s: %s", desc, reason)
+	}
+	desc = truncateRunes(desc, 255)
+
+	rev := &domainFinance.JournalEntry{
+		Code:         orig.Code + "-R",
+		Date:         orig.Date,
+		SourceType:   sourceExpenseReversal,
+		SourceID:     orig.ID,
+		SourceRef:    orig.SourceRef,
+		Description:  desc,
+		Status:       domainFinance.JournalStatusPosted,
+		ReversalOfID: &origID,
+		CreatedBy:    by,
+		PostedAt:     time.Now().UTC(),
+		Lines:        make([]domainFinance.JournalLine, 0, len(orig.Lines)),
+	}
+	for _, l := range orig.Lines {
+		rev.Lines = append(rev.Lines, domainFinance.JournalLine{
+			AccountID:   l.AccountID,
+			AccountCode: l.AccountCode,
+			AccountName: l.AccountName,
+			Debit:       l.Credit,
+			Credit:      l.Debit,
+			SKU:         l.SKU,
+			Lot:         l.Lot,
+			Channel:     l.Channel,
+		})
+	}
+	if err := u.repo.CreateJournalEntry(ctx, rev); err != nil {
+		return nil, err
+	}
+	return rev, nil
 }
 
 func (u *financeUsecase) UpdateExpense(ctx context.Context, id uint, in UpdateExpenseInput) (*domainFinance.Expense, error) {
@@ -212,10 +310,17 @@ func (u *financeUsecase) UpdateExpense(ctx context.Context, id uint, in UpdateEx
 	if exp == nil {
 		return nil, appErrors.ErrNotFound
 	}
+	if exp.Status == domainFinance.ExpenseStatusVoided {
+		return nil, appErrors.NewAppError("EXPENSE_VOIDED", "Voided expenses cannot be edited", 409)
+	}
 
 	if in.Amount <= 0 {
 		return nil, appErrors.NewAppError("INVALID_AMOUNT", "Expense amount must be greater than zero", 400)
 	}
+
+	// Only these fields change the posted journal lines.
+	oldAmount, oldDate, oldChannel := exp.Amount, exp.Date, exp.Channel
+
 	if in.Category != "" {
 		exp.Category = in.Category
 	}
@@ -236,26 +341,112 @@ func (u *financeUsecase) UpdateExpense(ctx context.Context, id uint, in UpdateEx
 		exp.CreatedBy = strings.TrimSpace(in.CreatedBy)
 	}
 
-	if err := u.repo.UpdateExpense(ctx, exp); err != nil {
-		return nil, err
+	actor := strings.TrimSpace(in.UpdatedBy)
+	if actor == "" {
+		actor = exp.CreatedBy
+	}
+	needsRepost := math.Abs(oldAmount-exp.Amount) > 0.005 || oldDate != exp.Date || oldChannel != exp.Channel
+
+	run := func(txCtx context.Context) error {
+		if err := u.repo.UpdateExpense(txCtx, exp); err != nil {
+			return err
+		}
+		if !needsRepost {
+			return nil
+		}
+
+		active, err := u.activeExpenseJournal(txCtx, exp)
+		if err != nil {
+			return err
+		}
+		if active == nil {
+			// Legacy expense that was never posted: post it now.
+			if existing, _ := u.repo.FindJournalEntryBySource(txCtx, sourceExpense, exp.ID); existing == nil {
+				_, err := u.PostJournal(txCtx, expensePostingRequest(exp, sourceExpense, exp.ID, actor))
+				return err
+			}
+			return appErrors.NewAppError("JOURNAL_STATE_INVALID", fmt.Sprintf("Cannot find the active journal entry for expense %s", exp.Code), 409)
+		}
+
+		rev, err := u.reverseJournal(txCtx, active, actor, "แก้ไขค่าใช้จ่าย")
+		if err != nil {
+			return err
+		}
+		_, err = u.PostJournal(txCtx, expensePostingRequest(exp, sourceExpenseRevision, rev.ID, actor))
+		return err
 	}
 
+	if err := u.inTx(ctx, run); err != nil {
+		return nil, err
+	}
 	return exp, nil
 }
 
-func (u *financeUsecase) DeleteExpense(ctx context.Context, id uint) error {
+func (u *financeUsecase) VoidExpense(ctx context.Context, id uint, actor, reason string) (*domainFinance.Expense, error) {
 	exp, err := u.repo.GetExpenseByID(ctx, id)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if exp == nil {
-		return appErrors.ErrNotFound
+		return nil, appErrors.ErrNotFound
 	}
-	return u.repo.DeleteExpense(ctx, id)
+	if exp.Status == domainFinance.ExpenseStatusVoided {
+		return nil, appErrors.NewAppError("EXPENSE_ALREADY_VOIDED", "Expense has already been voided", 409)
+	}
+
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		actor = "system"
+	}
+	reason = truncateRunes(strings.TrimSpace(reason), 255)
+
+	run := func(txCtx context.Context) error {
+		active, err := u.activeExpenseJournal(txCtx, exp)
+		if err != nil {
+			return err
+		}
+		if active != nil {
+			revReason := "ยกเลิกค่าใช้จ่าย"
+			if reason != "" {
+				revReason = revReason + " - " + reason
+			}
+			if _, err := u.reverseJournal(txCtx, active, actor, revReason); err != nil {
+				return err
+			}
+		}
+
+		now := time.Now().UTC()
+		exp.Status = domainFinance.ExpenseStatusVoided
+		exp.VoidedAt = &now
+		exp.VoidedBy = actor
+		exp.VoidReason = reason
+		return u.repo.UpdateExpense(txCtx, exp)
+	}
+
+	if err := u.inTx(ctx, run); err != nil {
+		return nil, err
+	}
+	return exp, nil
 }
 
 func (u *financeUsecase) GetExpenseByID(ctx context.Context, id uint) (*domainFinance.Expense, error) {
 	exp, err := u.repo.GetExpenseByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if exp == nil {
+		return nil, appErrors.ErrNotFound
+	}
+	return exp, nil
+}
+
+// GetExpenseByCode looks up the source expense of a journal entry (its source_ref).
+func (u *financeUsecase) GetExpenseByCode(ctx context.Context, code string) (*domainFinance.Expense, error) {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return nil, appErrors.ErrNotFound
+	}
+	exp, err := u.repo.GetExpenseByCode(ctx, code)
 	if err != nil {
 		return nil, err
 	}

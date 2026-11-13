@@ -298,6 +298,16 @@ func main() {
 		AllowCredentials: corsAllowCredentials,
 	}))
 
+	// Payment slips (/uploads/expenses, /uploads/incomes) contain bank details and
+	// amounts, so they are NOT served publicly. Owner/accountant fetch them via the
+	// authenticated GET /api/v1/finance/slips/:folder/:filename route instead.
+	app.Use("/uploads", func(c *fiber.Ctx) error {
+		if handler.IsProtectedUploadPath(c.Path()) {
+			return c.SendStatus(fiber.StatusNotFound)
+		}
+		return c.Next()
+	})
+
 	// Serve uploaded files statically (from own directory and shared expense upload directory)
 	app.Static("/uploads", "./uploads")
 	app.Static("/uploads", "../erp-expense-api/uploads")

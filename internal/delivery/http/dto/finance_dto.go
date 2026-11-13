@@ -150,8 +150,17 @@ type ExpenseResponse struct {
 	InvoiceRef  string                   `json:"invoice_ref"`
 	Description string                   `json:"description"`
 	CreatedBy   string                   `json:"created_by"`
+	Status      domainFinance.ExpenseStatus `json:"status"`
+	VoidedAt    *time.Time               `json:"voided_at,omitempty"`
+	VoidedBy    string                   `json:"voided_by,omitempty"`
+	VoidReason  string                   `json:"void_reason,omitempty"`
 	CreatedAt   time.Time                `json:"created_at"`
 	UpdatedAt   time.Time                `json:"updated_at"`
+}
+
+// VoidExpenseRequest is the optional body for DELETE /finance/expenses/:id.
+type VoidExpenseRequest struct {
+	Reason string `json:"reason"`
 }
 
 // NewExpenseResponse maps a domain expense to the API contract.
@@ -170,6 +179,10 @@ func NewExpenseResponse(e *domainFinance.Expense) ExpenseResponse {
 		InvoiceRef:  e.InvoiceRef,
 		Description: e.Description,
 		CreatedBy:   e.CreatedBy,
+		Status:      e.Status,
+		VoidedAt:    e.VoidedAt,
+		VoidedBy:    e.VoidedBy,
+		VoidReason:  e.VoidReason,
 		CreatedAt:   e.CreatedAt,
 		UpdatedAt:   e.UpdatedAt,
 	}

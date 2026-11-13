@@ -86,7 +86,10 @@ func (r *financeRepository) FindJournalEntries(ctx context.Context, filter domai
 	if filter.To != "" {
 		q = q.Where("date <= ?", filter.To)
 	}
-	if filter.SourceType != "" {
+	if filter.SourceType == "expense" {
+		// "Expense" includes its corrections (reversals and re-posts after edit).
+		q = q.Where("source_type IN ?", []string{"expense", "expense_reversal", "expense_revision"})
+	} else if filter.SourceType != "" {
 		q = q.Where("source_type = ?", filter.SourceType)
 	}
 	if filter.Search != "" {
@@ -126,6 +129,12 @@ func (r *financeRepository) FindJournalEntryBySource(ctx context.Context, source
 		return nil, err
 	}
 	return &entry, nil
+}
+
+func (r *financeRepository) FindJournalEntriesByRef(ctx context.Context, sourceRef string) ([]domainFinance.JournalEntry, error) {
+	var entries []domainFinance.JournalEntry
+	err := r.getDB(ctx).Preload("Lines").Where("source_ref = ?", sourceRef).Order("id ASC").Find(&entries).Error
+	return entries, err
 }
 
 func (r *financeRepository) GetJournalLinesForReport(ctx context.Context, filter domainFinance.ReportFilter) ([]domainFinance.JournalLine, error) {
@@ -189,13 +198,21 @@ func (r *financeRepository) UpdateExpense(ctx context.Context, exp *domainFinanc
 	return r.getDB(ctx).Save(exp).Error
 }
 
-func (r *financeRepository) DeleteExpense(ctx context.Context, id uint) error {
-	return r.getDB(ctx).Delete(&domainFinance.Expense{}, id).Error
-}
-
 func (r *financeRepository) GetExpenseByID(ctx context.Context, id uint) (*domainFinance.Expense, error) {
 	var exp domainFinance.Expense
 	err := r.getDB(ctx).First(&exp, id).Error
+	if err != nil {
+		return nil, err
+	}
+	return &exp, nil
+}
+
+func (r *financeRepository) GetExpenseByCode(ctx context.Context, code string) (*domainFinance.Expense, error) {
+	var exp domainFinance.Expense
+	err := r.getDB(ctx).Where("code = ?", code).First(&exp).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -219,6 +236,9 @@ func (r *financeRepository) ListExpenses(ctx context.Context, filter domainFinan
 	}
 	if filter.Channel != "" {
 		q = q.Where("channel = ?", filter.Channel)
+	}
+	if filter.Status != "" {
+		q = q.Where("status = ?", filter.Status)
 	}
 	if filter.Search != "" {
 		searchPattern := "%" + filter.Search + "%"

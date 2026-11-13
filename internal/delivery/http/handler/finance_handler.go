@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -37,6 +38,52 @@ func NewFinanceHandler(usecase usecaseFinance.Usecase, geminiKey ...string) *Fin
 		geminiKey: key,
 		scanner:   gemini.NewScanner(),
 	}
+}
+
+// SlipRoots are the upload roots searched for payment slips. They mirror the
+// directories main.go serves under /uploads (own uploads + erp-expense-api's).
+var SlipRoots = []string{
+	filepath.Join(".", "uploads"),
+	filepath.Join("..", "erp-expense-api", "uploads"),
+}
+
+// slipFolders are the upload sub-folders that hold payment slips. They are
+// blocked from the public /uploads static route and served only via GetSlip.
+var slipFolders = map[string]bool{"expenses": true, "incomes": true}
+
+// IsProtectedUploadPath reports whether a /uploads/... request path points at
+// a slip folder that must not be served publicly.
+func IsProtectedUploadPath(p string) bool {
+	clean := strings.ToLower(path.Clean("/" + strings.ReplaceAll(p, `\`, "/")))
+	for folder := range slipFolders {
+		prefix := "/uploads/" + folder
+		if clean == prefix || strings.HasPrefix(clean, prefix+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// GetSlip streams a payment slip image to an authenticated owner/accountant.
+// GET /finance/slips/:folder/:filename  (e.g. /finance/slips/expenses/expense-123.jpg)
+func (h *FinanceHandler) GetSlip(c *fiber.Ctx) error {
+	folder := strings.ToLower(c.Params("folder"))
+	if !slipFolders[folder] {
+		return response.NotFound(c, "Slip not found")
+	}
+	name := c.Params("filename")
+	if name == "" || name != filepath.Base(name) || strings.Contains(name, "..") || strings.ContainsAny(name, `/\`) {
+		return response.BadRequest(c, "Invalid slip filename")
+	}
+
+	for _, root := range SlipRoots {
+		p := filepath.Join(root, folder, name)
+		if info, err := os.Stat(p); err == nil && !info.IsDir() {
+			c.Set(fiber.HeaderCacheControl, "private, no-store")
+			return c.SendFile(p)
+		}
+	}
+	return response.NotFound(c, "Slip not found")
 }
 
 // Journal Entries
@@ -77,6 +124,16 @@ func (h *FinanceHandler) GetJournalEntryByID(c *fiber.Ctx) error {
 	return response.OK(c, dto.NewJournalEntryResponse(entry))
 }
 
+// GetExpenseByCode returns one expense by its document code (e.g. EXP-2026-0001),
+// used by the General Journal to show the source expense, slip and uploader.
+func (h *FinanceHandler) GetExpenseByCode(c *fiber.Ctx) error {
+	exp, err := h.usecase.GetExpenseByCode(c.Context(), c.Params("code"))
+	if err != nil {
+		return err
+	}
+	return response.OK(c, dto.NewExpenseResponse(exp))
+}
+
 // Expenses
 func (h *FinanceHandler) ListExpenses(c *fiber.Ctx) error {
 	page, _ := strconv.Atoi(c.Query("page", "1"))
@@ -86,12 +143,14 @@ func (h *FinanceHandler) ListExpenses(c *fiber.Ctx) error {
 	category := c.Query("category", "")
 	channel := c.Query("channel", "")
 	search := c.Query("search", "")
+	status := c.Query("status", "")
 
 	expenses, total, err := h.usecase.ListExpenses(c.Context(), domainFinance.ExpenseFilter{
 		From:     from,
 		To:       to,
 		Category: category,
 		Channel:  channel,
+		Status:   status,
 		Search:   search,
 		Page:     page,
 		Limit:    limit,
@@ -161,6 +220,7 @@ func (h *FinanceHandler) UpdateExpense(c *fiber.Ctx) error {
 		InvoiceRef:  req.InvoiceRef,
 		Description: req.Description,
 		CreatedBy:   strings.TrimSpace(req.CreatedBy),
+		UpdatedBy:   currentUserEmail(c),
 	})
 	if err != nil {
 		return err
@@ -169,17 +229,34 @@ func (h *FinanceHandler) UpdateExpense(c *fiber.Ctx) error {
 	return response.OK(c, dto.NewExpenseResponse(exp), "Expense updated successfully")
 }
 
+// DeleteExpense voids the expense (reverses its journal entry and keeps the
+// record with status Voided). The DELETE verb is kept for API compatibility.
+// Optional reason: JSON body {"reason": "..."} or ?reason=...
 func (h *FinanceHandler) DeleteExpense(c *fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
 	if err != nil {
 		return response.BadRequest(c, "Invalid expense ID")
 	}
 
-	if err := h.usecase.DeleteExpense(c.Context(), uint(id)); err != nil {
+	var req dto.VoidExpenseRequest
+	if len(c.Body()) > 0 {
+		_ = c.BodyParser(&req)
+	}
+	if req.Reason == "" {
+		req.Reason = c.Query("reason", "")
+	}
+
+	exp, err := h.usecase.VoidExpense(c.Context(), uint(id), currentUserEmail(c), req.Reason)
+	if err != nil {
 		return err
 	}
 
-	return response.OK(c, fiber.Map{"id": id}, "Expense deleted successfully")
+	return response.OK(c, dto.NewExpenseResponse(exp), "Expense voided successfully")
+}
+
+func currentUserEmail(c *fiber.Ctx) string {
+	email, _ := c.Locals("email").(string)
+	return strings.TrimSpace(email)
 }
 
 // ScanReceipt handles uploading receipt/slip image and running Gemini Vision OCR.
@@ -390,7 +467,7 @@ func (h *FinanceHandler) ExportExpenses(c *fiber.Ctx) error {
 	sheet := "Expenses"
 	f.SetSheetName("Sheet1", sheet)
 
-	headers := []interface{}{"Date", "Code", "Product", "Category", "Channel", "Amount", "Purchase URL", "Slip URL", "Vendor", "Invoice Ref", "Description", "Created By"}
+	headers := []interface{}{"Date", "Code", "Product", "Category", "Channel", "Amount", "Purchase URL", "Slip URL", "Vendor", "Invoice Ref", "Description", "Created By", "Status", "Voided By", "Void Reason"}
 	f.SetSheetRow(sheet, "A1", &headers)
 
 	rowIdx := 2
@@ -408,6 +485,9 @@ func (h *FinanceHandler) ExportExpenses(c *fiber.Ctx) error {
 			exp.InvoiceRef,
 			exp.Description,
 			exp.CreatedBy,
+			string(exp.Status),
+			exp.VoidedBy,
+			exp.VoidReason,
 		}
 		cell := fmt.Sprintf("A%d", rowIdx)
 		f.SetSheetRow(sheet, cell, &row)
