@@ -18,6 +18,7 @@ type ExpenseFilter struct {
 	To       string
 	Category string
 	Channel  string
+	Status   string
 	Search   string
 	Page     int
 	Limit    int
@@ -43,13 +44,15 @@ type Repository interface {
 	FindJournalEntries(ctx context.Context, filter JournalFilter) ([]JournalEntry, int64, error)
 	FindJournalEntryByID(ctx context.Context, id uint) (*JournalEntry, error)
 	FindJournalEntryBySource(ctx context.Context, sourceType string, sourceID uint) (*JournalEntry, error)
+	FindJournalEntriesByRef(ctx context.Context, sourceRef string) ([]JournalEntry, error)
 	GetJournalLinesForReport(ctx context.Context, filter ReportFilter) ([]JournalLine, error)
 	GetOpeningBalances(ctx context.Context, beforeDate string) (map[string]float64, error)
 
 	// Expenses
 	CreateExpense(ctx context.Context, exp *Expense) error
 	UpdateExpense(ctx context.Context, exp *Expense) error
-	DeleteExpense(ctx context.Context, id uint) error
 	GetExpenseByID(ctx context.Context, id uint) (*Expense, error)
+	// GetExpenseByCode returns (nil, nil) when no expense has that code.
+	GetExpenseByCode(ctx context.Context, code string) (*Expense, error)
 	ListExpenses(ctx context.Context, filter ExpenseFilter) ([]Expense, int64, error)
 }

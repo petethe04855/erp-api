@@ -202,10 +202,14 @@ func RegisterRoutes(cfg Config) {
 
 	// Expenses
 	financeGroup.Get("/expenses", cfg.FinanceHandler.ListExpenses)
+	financeGroup.Get("/expenses/by-code/:code", cfg.FinanceHandler.GetExpenseByCode)
 	financeGroup.Post("/expenses", cfg.FinanceHandler.CreateExpense)
 	financeGroup.Post("/expenses/scan-receipt", cfg.FinanceHandler.ScanReceipt)
 	financeGroup.Put("/expenses/:id", cfg.FinanceHandler.UpdateExpense)
 	financeGroup.Delete("/expenses/:id", cfg.FinanceHandler.DeleteExpense)
+
+	// Payment slips (expense / income) — served only to owner & accountant.
+	financeGroup.Get("/slips/:folder/:filename", cfg.FinanceHandler.GetSlip)
 
 	// Financial Reports
 	financeGroup.Get("/reports/general-ledger", cfg.FinanceHandler.GetGeneralLedger)

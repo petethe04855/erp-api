@@ -52,6 +52,9 @@ type UpdateExpenseInput struct {
 	InvoiceRef  string                         `json:"invoice_ref"`
 	Description string                         `json:"description"`
 	CreatedBy   string                         `json:"created_by"`
+	// UpdatedBy is the logged-in user making the change; it is recorded on
+	// any reversal / revision journal entries the edit produces.
+	UpdatedBy string `json:"-"`
 }
 
 type GeneralLedgerRow struct {
@@ -115,8 +118,11 @@ type Usecase interface {
 
 	CreateExpense(ctx context.Context, in CreateExpenseInput) (*domainFinance.Expense, error)
 	UpdateExpense(ctx context.Context, id uint, in UpdateExpenseInput) (*domainFinance.Expense, error)
-	DeleteExpense(ctx context.Context, id uint) error
+	// VoidExpense cancels an expense: its journal entry is reversed and the
+	// record is kept with status Voided. Expenses are never hard-deleted.
+	VoidExpense(ctx context.Context, id uint, actor, reason string) (*domainFinance.Expense, error)
 	GetExpenseByID(ctx context.Context, id uint) (*domainFinance.Expense, error)
+	GetExpenseByCode(ctx context.Context, code string) (*domainFinance.Expense, error)
 	ListExpenses(ctx context.Context, filter domainFinance.ExpenseFilter) ([]domainFinance.Expense, int64, error)
 
 	GetGeneralLedger(ctx context.Context, from, to string, accountID uint) ([]GeneralLedgerRow, error)

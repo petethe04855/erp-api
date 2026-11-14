@@ -90,13 +90,21 @@ func (m *mockFinanceRepo) UpdateExpense(ctx context.Context, exp *domainFinance.
 	return args.Error(0)
 }
 
-func (m *mockFinanceRepo) DeleteExpense(ctx context.Context, id uint) error {
-	args := m.Called(ctx, id)
-	return args.Error(0)
+func (m *mockFinanceRepo) FindJournalEntriesByRef(ctx context.Context, sourceRef string) ([]domainFinance.JournalEntry, error) {
+	args := m.Called(ctx, sourceRef)
+	return args.Get(0).([]domainFinance.JournalEntry), args.Error(1)
 }
 
 func (m *mockFinanceRepo) GetExpenseByID(ctx context.Context, id uint) (*domainFinance.Expense, error) {
 	args := m.Called(ctx, id)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*domainFinance.Expense), args.Error(1)
+}
+
+func (m *mockFinanceRepo) GetExpenseByCode(ctx context.Context, code string) (*domainFinance.Expense, error) {
+	args := m.Called(ctx, code)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}

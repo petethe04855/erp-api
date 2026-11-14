@@ -26,6 +26,16 @@ const (
 	ExpenseChannelGeneral ExpenseChannel = "ทั่วไป"
 )
 
+type ExpenseStatus string
+
+const (
+	// ExpenseStatusActive is a live expense whose journal entry counts in reports.
+	ExpenseStatusActive ExpenseStatus = "Active"
+	// ExpenseStatusVoided is a cancelled expense. Its journal entry has been
+	// reversed; the record is kept for the audit trail instead of being deleted.
+	ExpenseStatusVoided ExpenseStatus = "Voided"
+)
+
 // Expense represents an operating or financial expense record.
 type Expense struct {
 	ID          uint            `gorm:"primaryKey;autoIncrement" json:"id"`
@@ -41,6 +51,10 @@ type Expense struct {
 	InvoiceRef  string          `gorm:"size:100" json:"invoice_ref"`
 	Description string          `gorm:"size:255" json:"description"`
 	CreatedBy   string          `gorm:"size:100" json:"created_by"`
+	Status      ExpenseStatus   `gorm:"size:20;index;not null;default:'Active'" json:"status"`
+	VoidedAt    *time.Time      `json:"voided_at,omitempty"`
+	VoidedBy    string          `gorm:"size:100" json:"voided_by,omitempty"`
+	VoidReason  string          `gorm:"size:255" json:"void_reason,omitempty"`
 	CreatedAt   time.Time       `json:"created_at"`
 	UpdatedAt   time.Time       `json:"updated_at"`
 }
