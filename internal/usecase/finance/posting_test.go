@@ -116,6 +116,11 @@ func (m *mockFinanceRepo) ListExpenses(ctx context.Context, filter domainFinance
 	return args.Get(0).([]domainFinance.Expense), args.Get(1).(int64), args.Error(2)
 }
 
+func (m *mockFinanceRepo) CreateIncome(ctx context.Context, inc *domainFinance.Income) error {
+	args := m.Called(ctx, inc)
+	return args.Error(0)
+}
+
 func TestValidatePostingLines(t *testing.T) {
 	t.Run("fails on less than 2 lines", func(t *testing.T) {
 		err := validatePostingLines([]PostingLineInput{

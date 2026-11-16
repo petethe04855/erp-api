@@ -197,6 +197,33 @@ func (h *FinanceHandler) CreateExpense(c *fiber.Ctx) error {
 	return response.Created(c, dto.NewExpenseResponse(exp), "Expense created successfully")
 }
 
+// CreateIncome records an income slip submitted from the LINE OA / LIFF app.
+func (h *FinanceHandler) CreateIncome(c *fiber.Ctx) error {
+	var req dto.CreateIncomeRequest
+	if err := c.BodyParser(&req); err != nil {
+		return response.BadRequest(c, "Invalid request body")
+	}
+
+	inc, err := h.usecase.CreateIncome(c.Context(), usecaseFinance.CreateIncomeInput{
+		Date:        req.Date,
+		Category:    domainFinance.IncomeCategory(req.Category),
+		Channel:     domainFinance.ExpenseChannel(req.Channel),
+		Amount:      req.Amount,
+		ProductName: req.ProductName,
+		PurchaseURL: req.PurchaseURL,
+		SlipURL:     req.SlipURL,
+		Vendor:      req.Vendor,
+		InvoiceRef:  req.InvoiceRef,
+		Description: req.Description,
+		CreatedBy:   req.CreatedBy,
+	})
+	if err != nil {
+		return err
+	}
+
+	return response.OK(c, dto.NewIncomeResponse(inc), "บันทึกรายรับสำเร็จ")
+}
+
 func (h *FinanceHandler) UpdateExpense(c *fiber.Ctx) error {
 	id, err := strconv.ParseUint(c.Params("id"), 10, 32)
 	if err != nil {
@@ -261,6 +288,18 @@ func currentUserEmail(c *fiber.Ctx) string {
 
 // ScanReceipt handles uploading receipt/slip image and running Gemini Vision OCR.
 func (h *FinanceHandler) ScanReceipt(c *fiber.Ctx) error {
+	return h.scanSlip(c, "expenses", "expense", "วิเคราะห์ข้อมูลจากใบเสร็จสำเร็จ")
+}
+
+// ScanIncomeSlip handles uploading an income slip image and running Gemini
+// Vision OCR. Served publicly for the LINE OA / erp-expense-upload /income page.
+func (h *FinanceHandler) ScanIncomeSlip(c *fiber.Ctx) error {
+	return h.scanSlip(c, "incomes", "income", "วิเคราะห์ข้อมูลจากสลิปรายรับสำเร็จ")
+}
+
+// scanSlip reads a multipart slip image, stores it under ./uploads/<folder> and
+// returns the Gemini-OCR fields plus the stored slip_url.
+func (h *FinanceHandler) scanSlip(c *fiber.Ctx, folder, prefix, successMsg string) error {
 	file, err := c.FormFile("image")
 	if err != nil {
 		file, err = c.FormFile("slip")
@@ -293,19 +332,19 @@ func (h *FinanceHandler) ScanReceipt(c *fiber.Ctx) error {
 		return response.BadRequest(c, "ไม่สามารถอ่านข้อมูลไฟล์รูปภาพได้")
 	}
 
-	// Save file locally to ./uploads/expenses
-	targetDir := filepath.Join(".", "uploads", "expenses")
+	// Save file locally to ./uploads/<folder>
+	targetDir := filepath.Join(".", "uploads", folder)
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		return response.InternalServerError(c, "ไม่สามารถสร้างโฟลเดอร์สำหรับจัดเก็บรูปภาพได้")
 	}
 
-	filename := fmt.Sprintf("expense-%d-%s%s", time.Now().UnixNano(), uuid.New().String()[:8], ext)
+	filename := fmt.Sprintf("%s-%d-%s%s", prefix, time.Now().UnixNano(), uuid.New().String()[:8], ext)
 	savedPath := filepath.Join(targetDir, filename)
 	if err := os.WriteFile(savedPath, fileBytes, 0644); err != nil {
 		return response.InternalServerError(c, "ไม่สามารถบันทึกไฟล์รูปภาพได้")
 	}
 
-	slipURL := fmt.Sprintf("/uploads/expenses/%s", filename)
+	slipURL := fmt.Sprintf("/uploads/%s/%s", folder, filename)
 
 	if strings.TrimSpace(h.geminiKey) == "" {
 		return response.BadRequest(c, "กรุณาตั้งค่า GEMINI_API_KEY ในไฟล์ .env ของระบบหลังบ้านเพื่อเปิดใช้งาน AI สแกนใบเสร็จ")
@@ -334,7 +373,7 @@ func (h *FinanceHandler) ScanReceipt(c *fiber.Ctx) error {
 	return response.OK(c, ScanResponse{
 		ReceiptData: scanResult,
 		SlipURL:     slipURL,
-	}, "วิเคราะห์ข้อมูลจากใบเสร็จสำเร็จ")
+	}, successMsg)
 }
 
 // Reports
