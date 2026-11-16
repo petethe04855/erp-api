@@ -34,6 +34,21 @@ type UpdateExpenseRequest struct {
 	CreatedBy   string  `json:"created_by"`
 }
 
+// CreateIncomeRequest is the body for POST /public/incomes (income slip upload).
+type CreateIncomeRequest struct {
+	Date        string  `json:"date"`
+	Category    string  `json:"category"`
+	Channel     string  `json:"channel"`
+	Amount      float64 `json:"amount"`
+	ProductName string  `json:"product_name"`
+	PurchaseURL string  `json:"purchase_url"`
+	SlipURL     string  `json:"slip_url"`
+	Vendor      string  `json:"vendor"`
+	InvoiceRef  string  `json:"invoice_ref"`
+	Description string  `json:"description"`
+	CreatedBy   string  `json:"created_by"`
+}
+
 type JournalQueryRequest struct {
 	From       string `json:"from"`
 	To         string `json:"to"`
@@ -195,4 +210,44 @@ func NewExpenseResponses(items []domainFinance.Expense) []ExpenseResponse {
 		out[i] = NewExpenseResponse(&items[i])
 	}
 	return out
+}
+
+// IncomeResponse is the API contract for an income record.
+type IncomeResponse struct {
+	ID          uint                        `json:"id"`
+	Code        string                      `json:"code"`
+	Date        string                      `json:"date"`
+	Category    domainFinance.IncomeCategory `json:"category"`
+	Channel     domainFinance.ExpenseChannel `json:"channel"`
+	Amount      float64                     `json:"amount"`
+	ProductName string                      `json:"product_name"`
+	PurchaseURL string                      `json:"purchase_url"`
+	SlipURL     string                      `json:"slip_url"`
+	Vendor      string                      `json:"vendor"`
+	InvoiceRef  string                      `json:"invoice_ref"`
+	Description string                      `json:"description"`
+	CreatedBy   string                      `json:"created_by"`
+	CreatedAt   time.Time                   `json:"created_at"`
+	UpdatedAt   time.Time                   `json:"updated_at"`
+}
+
+// NewIncomeResponse maps a domain income to the API contract.
+func NewIncomeResponse(inc *domainFinance.Income) IncomeResponse {
+	return IncomeResponse{
+		ID:          inc.ID,
+		Code:        inc.Code,
+		Date:        inc.Date,
+		Category:    inc.Category,
+		Channel:     inc.Channel,
+		Amount:      inc.Amount,
+		ProductName: inc.ProductName,
+		PurchaseURL: inc.PurchaseURL,
+		SlipURL:     inc.SlipURL,
+		Vendor:      inc.Vendor,
+		InvoiceRef:  inc.InvoiceRef,
+		Description: inc.Description,
+		CreatedBy:   inc.CreatedBy,
+		CreatedAt:   inc.CreatedAt,
+		UpdatedAt:   inc.UpdatedAt,
+	}
 }

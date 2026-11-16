@@ -40,6 +40,20 @@ type CreateExpenseInput struct {
 	CreatedBy   string                         `json:"created_by"`
 }
 
+type CreateIncomeInput struct {
+	Date        string                          `json:"date"`
+	Category    domainFinance.IncomeCategory    `json:"category"`
+	Channel     domainFinance.ExpenseChannel    `json:"channel"`
+	Amount      float64                         `json:"amount"`
+	ProductName string                          `json:"product_name"`
+	PurchaseURL string                          `json:"purchase_url"`
+	SlipURL     string                          `json:"slip_url"`
+	Vendor      string                          `json:"vendor"`
+	InvoiceRef  string                          `json:"invoice_ref"`
+	Description string                          `json:"description"`
+	CreatedBy   string                          `json:"created_by"`
+}
+
 type UpdateExpenseInput struct {
 	Date        string                         `json:"date"`
 	Category    domainFinance.ExpenseCategory  `json:"category"`
@@ -124,6 +138,10 @@ type Usecase interface {
 	GetExpenseByID(ctx context.Context, id uint) (*domainFinance.Expense, error)
 	GetExpenseByCode(ctx context.Context, code string) (*domainFinance.Expense, error)
 	ListExpenses(ctx context.Context, filter domainFinance.ExpenseFilter) ([]domainFinance.Expense, int64, error)
+
+	// CreateIncome records an income slip. Journal posting is not implemented
+	// yet (TODO(finance): post income journal).
+	CreateIncome(ctx context.Context, in CreateIncomeInput) (*domainFinance.Income, error)
 
 	GetGeneralLedger(ctx context.Context, from, to string, accountID uint) ([]GeneralLedgerRow, error)
 	GetTrialBalance(ctx context.Context, from, to string) ([]TrialBalanceRow, error)

@@ -55,4 +55,7 @@ type Repository interface {
 	// GetExpenseByCode returns (nil, nil) when no expense has that code.
 	GetExpenseByCode(ctx context.Context, code string) (*Expense, error)
 	ListExpenses(ctx context.Context, filter ExpenseFilter) ([]Expense, int64, error)
+
+	// Incomes
+	CreateIncome(ctx context.Context, inc *Income) error
 }

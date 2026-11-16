@@ -119,6 +119,7 @@ func main() {
 		&domainFinance.JournalEntry{},
 		&domainFinance.JournalLine{},
 		&domainFinance.Expense{},
+		&domainFinance.Income{},
 		&domainLive.LiveSession{},
 		&domainLive.ContentItem{},
 		&domainFormula.InventoryFormula{},

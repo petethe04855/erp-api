@@ -61,6 +61,12 @@ func RegisterRoutes(cfg Config) {
 	// Direct public scan alias for erp-expense-upload
 	api.Post("/scan", cfg.FinanceHandler.ScanReceipt)
 
+	// Public Income Upload Routes (for LINE OA / erp-expense-upload /income)
+	publicIncomes := api.Group("/public/incomes")
+	publicIncomes.Post("/scan-slip", cfg.FinanceHandler.ScanIncomeSlip)
+	publicIncomes.Post("/", cfg.FinanceHandler.CreateIncome)
+	publicIncomes.Post("", cfg.FinanceHandler.CreateIncome)
+
 	// Protected Routes Group
 	protected := api.Group("/", middleware.AuthMiddleware(cfg.JWTSecret, cfg.UserStatusLoader))
 

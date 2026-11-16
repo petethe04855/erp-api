@@ -261,6 +261,11 @@ func (r *financeRepository) ListExpenses(ctx context.Context, filter domainFinan
 	return expenses, total, err
 }
 
+// Incomes
+func (r *financeRepository) CreateIncome(ctx context.Context, inc *domainFinance.Income) error {
+	return r.getDB(ctx).Create(inc).Error
+}
+
 // NextJournalCode generates JE-YYYY-XXXX
 func NextJournalCode(db *gorm.DB, dateStr string) (string, error) {
 	year := time.Now().Format("2006")
