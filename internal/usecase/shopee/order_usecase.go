@@ -281,6 +281,21 @@ func groupRowsToOrders(parsed []parsedRow) []domainShopee.ShopeeOrder {
 	return orderList
 }
 
+// dedupeParsedRows keeps the first occurrence of each row hash, dropping rows
+// that are exact duplicates of an earlier row in the same file.
+func dedupeParsedRows(parsed []parsedRow) []parsedRow {
+	seen := make(map[string]bool, len(parsed))
+	out := make([]parsedRow, 0, len(parsed))
+	for _, r := range parsed {
+		if seen[r.RawRowHash] {
+			continue
+		}
+		seen[r.RawRowHash] = true
+		out = append(out, r)
+	}
+	return out
+}
+
 func detectOrderDuplicates(ctx context.Context, orderRepo domainShopee.OrderRepository, parsed []parsedRow, orders []domainShopee.ShopeeOrder) (int, []string, []DuplicateDetail) {
 	var details []DuplicateDetail
 	dupOrderMap := make(map[string]bool)
@@ -398,7 +413,9 @@ func (u *orderUsecase) ImportOrderFile(ctx context.Context, reader io.Reader, fi
 	orders := groupRowsToOrders(parsed)
 	dupCount, dupOrders, dupDetails := detectOrderDuplicates(ctx, u.orderRepo, parsed, orders)
 
-	inserted, skipped, err := u.orderRepo.BulkInsert(ctx, orders)
+	// Skip rows duplicated within the file; rows already in the DB are skipped by BulkInsert.
+	unique := dedupeParsedRows(parsed)
+	inserted, skipped, err := u.orderRepo.BulkInsert(ctx, groupRowsToOrders(unique))
 	if err != nil {
 		return nil, err
 	}
