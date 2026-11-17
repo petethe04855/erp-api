@@ -29,6 +29,7 @@ type Config struct {
 	ShopeeHandler         *handler.ShopeeHandler
 	SKUCostHistoryHandler *handler.SKUCostHistoryHandler
 	CRMHandler            *handler.CRMHandler
+	SalesAnalyticsHandler *handler.SalesAnalyticsHandler
 	JWTSecret             string
 	UserStatusLoader      middleware.UserStatusLoader
 }
@@ -398,5 +399,7 @@ func RegisterRoutes(cfg Config) {
 	crmGroup := protected.Group("/crm")
 	crmGroup.Get("/tiktok/provinces", middleware.RequireRole("owner", "sales"), cfg.CRMHandler.GetTiktokProvinceReport)
 	crmGroup.Post("/tiktok/provinces/search", middleware.RequireRole("owner", "sales"), cfg.CRMHandler.SearchProvinceReport)
+	// Order facts for the CRM sales dashboard; crm-core computes every KPI.
+	crmGroup.Get("/sales-analytics", middleware.RequireRole("owner", "sales", "accountant"), cfg.SalesAnalyticsHandler.GetSalesAnalytics)
 
 }
