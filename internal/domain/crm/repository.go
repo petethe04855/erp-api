@@ -8,4 +8,5 @@ import (
 type Repository interface {
 	GetTiktokProvinceReport(ctx context.Context, query ProvinceQuery) (*TiktokProvinceReport, error)
 	SearchProvinceReport(ctx context.Context, req ProvinceSearchRequest) (*TiktokProvinceReport, error)
+	GetDailyChannelSales(ctx context.Context, query ProvinceQuery) ([]DailyChannelSales, error)
 }

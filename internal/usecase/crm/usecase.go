@@ -3,10 +3,13 @@ package crm
 import (
 	"context"
 	"errors"
+	"math"
+	"sort"
 	"strings"
 	"time"
 
 	"chawy-erp-api/internal/domain/crm"
+	"chawy-erp-api/pkg/province"
 )
 
 var (
@@ -74,7 +77,81 @@ func (u *crmUsecase) GetTiktokProvinceReport(ctx context.Context, query crm.Prov
 		Channel:  query.Channel,
 	}
 
-	return u.crmRepo.GetTiktokProvinceReport(ctx, validatedQuery)
+	report, err := u.crmRepo.GetTiktokProvinceReport(ctx, validatedQuery)
+	if err != nil {
+		return nil, err
+	}
+	if report == nil {
+		report = &crm.TiktokProvinceReport{}
+	}
+	enrichProvinceReport(report)
+
+	daily, err := u.crmRepo.GetDailyChannelSales(ctx, validatedQuery)
+	if err != nil {
+		return nil, err
+	}
+	report.Trend = buildSalesTrend(daily, dateFrom, dateTo)
+	return report, nil
+}
+
+// enrichProvinceReport derives region, AOV, sales share, coverage and the
+// per-region breakdown from the aggregated province rows.
+func enrichProvinceReport(report *crm.TiktokProvinceReport) {
+	if report == nil {
+		return
+	}
+
+	totalProvinces := province.TotalProvinces()
+	report.Summary.TotalProvinces = totalProvinces
+	if report.Summary.TotalOrders > 0 {
+		report.Summary.AvgOrderValue = round2(report.Summary.GrossSales / float64(report.Summary.TotalOrders))
+	}
+	if totalProvinces > 0 {
+		report.Summary.CoveragePercent = round2(float64(report.Summary.ProvinceCount) / float64(totalProvinces) * 100)
+	}
+
+	regionMap := make(map[string]*crm.ProvinceRegionRow)
+	for i := range report.Provinces {
+		row := &report.Provinces[i]
+		row.Region = province.RegionOf(row.Province)
+		if row.OrderCount > 0 {
+			row.AvgOrderValue = round2(row.GrossSales / float64(row.OrderCount))
+		}
+		if report.Summary.GrossSales > 0 {
+			row.SalesSharePercent = round2(row.GrossSales / report.Summary.GrossSales * 100)
+		}
+
+		reg, ok := regionMap[row.Region]
+		if !ok {
+			reg = &crm.ProvinceRegionRow{Region: row.Region}
+			regionMap[row.Region] = reg
+		}
+		if row.Province != province.UnknownProvince {
+			reg.ProvinceCount++
+		}
+		reg.OrderCount += row.OrderCount
+		reg.GrossSales += row.GrossSales
+	}
+
+	regions := make([]crm.ProvinceRegionRow, 0, len(regionMap))
+	for _, reg := range regionMap {
+		reg.GrossSales = round2(reg.GrossSales)
+		if report.Summary.TotalOrders > 0 {
+			reg.SharePercent = round2(float64(reg.OrderCount) / float64(report.Summary.TotalOrders) * 100)
+		}
+		regions = append(regions, *reg)
+	}
+	sort.SliceStable(regions, func(i, j int) bool {
+		if regions[i].OrderCount != regions[j].OrderCount {
+			return regions[i].OrderCount > regions[j].OrderCount
+		}
+		return regions[i].Region < regions[j].Region
+	})
+	report.Regions = regions
+}
+
+func round2(v float64) float64 {
+	return math.Round(v*100) / 100
 }
 
 func (u *crmUsecase) SearchProvinceReport(ctx context.Context, req crm.ProvinceSearchRequest) (*crm.TiktokProvinceReport, error) {
