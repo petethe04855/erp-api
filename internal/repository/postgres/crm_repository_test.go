@@ -233,3 +233,29 @@ func TestGetProvinceReportChannelFilter(t *testing.T) {
 		assert.Equal(t, "ชลบุรี", rep.Summary.TopProvince)
 	})
 }
+
+func TestGetProvinceReportMergesPrefixedProvinceNames(t *testing.T) {
+	db := setupCRMTestDB(t)
+	repo := postgres.NewCRMRepository(db)
+
+	for _, o := range []domainTikTok.TiktokOrder{
+		{ID: "TK201", Date: "2026-10-01", Status: "DELIVERED", RecipientProvince: "กรุงเทพมหานคร", Qty: 1, Amount: 100},
+		{ID: "TK202", Date: "2026-10-01", Status: "DELIVERED", RecipientProvince: "จังหวัดกรุงเทพมหานคร", Qty: 1, Amount: 200},
+		{ID: "TK203", Date: "2026-10-01", Status: "DELIVERED", RecipientProvince: "จังหวัดสมุทรปราการ", Qty: 1, Amount: 50},
+	} {
+		require.NoError(t, db.Create(&o).Error)
+	}
+
+	rep, err := repo.GetTiktokProvinceReport(context.Background(), crm.ProvinceQuery{
+		DateFrom: "2026-10-01",
+		DateTo:   "2026-10-01",
+		Channel:  "tiktok",
+	})
+	require.NoError(t, err)
+	require.Len(t, rep.Provinces, 2)
+	assert.Equal(t, "กรุงเทพมหานคร", rep.Provinces[0].Province)
+	assert.Equal(t, int64(2), rep.Provinces[0].OrderCount)
+	assert.Equal(t, 300.0, rep.Provinces[0].GrossSales)
+	assert.Equal(t, "สมุทรปราการ", rep.Provinces[1].Province)
+	assert.Equal(t, 2, rep.Summary.ProvinceCount)
+}
