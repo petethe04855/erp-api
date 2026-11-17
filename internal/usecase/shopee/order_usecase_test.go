@@ -119,3 +119,38 @@ func TestOrderUsecase_DuplicateDetection(t *testing.T) {
 	assert.Contains(t, preview.DuplicateOrders, "260301DUP01")
 	assert.Contains(t, preview.DuplicateOrders, "260301EXISTING")
 }
+
+func TestOrderUsecase_ImportSkipsDuplicateRows(t *testing.T) {
+	ctx := context.Background()
+	orderRepo := new(mockShopeeOrderRepo)
+	uc := usecaseShopee.NewOrderUsecase(orderRepo)
+
+	csvContent := `หมายเลขคำสั่งซื้อ,วันที่ทำการสั่งซื้อ,เลขอ้างอิง SKU,ชื่อสินค้า,จำนวน,ราคาขาย,ชื่อผู้ใช้ (ผู้ซื้อ),จังหวัด
+260301DUP01,2026-03-01 10:30:00,SKU-A01,สินค้าทดสอบ,1,100.00,user1,กทม
+260301DUP01,2026-03-01 10:30:00,SKU-A01,สินค้าทดสอบ,1,100.00,user1,กทม
+260301EXISTING,2026-03-02 10:30:00,SKU-B01,สินค้ามีในระบบแล้ว,1,150.00,user2,เชียงใหม่
+260301NEW01,2026-03-03 10:30:00,SKU-C01,สินค้าใหม่,1,80.00,user3,ภูเก็ต
+`
+
+	orderRepo.On("FindByOrderIDs", ctx, mock.Anything).Return([]domainShopee.ShopeeOrder{{ID: "260301EXISTING"}}, nil)
+	// The in-file duplicate row is dropped before insert; the DB-existing order is
+	// still passed so BulkInsert can skip it, and the rest is imported normally.
+	orderRepo.On("BulkInsert", ctx, mock.MatchedBy(func(orders []domainShopee.ShopeeOrder) bool {
+		if len(orders) != 3 {
+			return false
+		}
+		for _, o := range orders {
+			if o.ID == "260301DUP01" && len(o.Items) != 1 {
+				return false
+			}
+		}
+		return true
+	})).Return(2, 1, nil).Once()
+
+	res, err := uc.ImportOrderFile(ctx, strings.NewReader(csvContent), "orders.csv")
+	assert.NoError(t, err)
+	assert.Equal(t, 2, res.InsertedCount)
+	assert.Equal(t, 1, res.SkippedCount)
+	assert.True(t, res.DuplicateCount >= 2)
+	orderRepo.AssertExpectations(t)
+}
