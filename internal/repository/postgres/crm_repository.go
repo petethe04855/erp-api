@@ -130,6 +130,40 @@ func (r *CRMRepository) GetTiktokProvinceReport(ctx context.Context, query crm.P
 
 // queryTiktok aggregates tiktok_orders by recipient province.
 func (r *CRMRepository) queryTiktok(ctx context.Context, query crm.ProvinceQuery) ([]provinceQueryResult, error) {
+	db := r.tiktokFiltered(ctx, query)
+
+	var results []provinceQueryResult
+	err := db.Select(`
+		COALESCE(NULLIF(TRIM(recipient_province), ''), '` + province.UnknownProvince + `') AS province,
+		COUNT(DISTINCT id) AS order_count,
+		COALESCE(SUM(qty), 0) AS item_qty,
+		COALESCE(SUM(amount), 0) AS gross_sales
+	`).
+		Group("COALESCE(NULLIF(TRIM(recipient_province), ''), '" + province.UnknownProvince + "')").
+		Scan(&results).Error
+
+	return results, err
+}
+
+// queryShopee aggregates shopee_orders (+ their line items) by province.
+func (r *CRMRepository) queryShopee(ctx context.Context, query crm.ProvinceQuery) ([]provinceQueryResult, error) {
+	db := r.shopeeFiltered(ctx, query)
+
+	var results []provinceQueryResult
+	err := db.Select(`
+		COALESCE(NULLIF(TRIM(shopee_orders.province), ''), '` + province.UnknownProvince + `') AS province,
+		COUNT(DISTINCT shopee_orders.id) AS order_count,
+		COALESCE(SUM(shopee_order_items.qty), 0) AS item_qty,
+		COALESCE(SUM(shopee_order_items.sale_price), 0) AS gross_sales
+	`).
+		Group("COALESCE(NULLIF(TRIM(shopee_orders.province), ''), '" + province.UnknownProvince + "')").
+		Scan(&results).Error
+
+	return results, err
+}
+
+// tiktokFiltered builds a tiktok_orders query with date, status and province filters.
+func (r *CRMRepository) tiktokFiltered(ctx context.Context, query crm.ProvinceQuery) *gorm.DB {
 	db := r.handle(ctx).Model(&tiktok.TiktokOrder{})
 
 	// 1. Date Filter
@@ -152,22 +186,11 @@ func (r *CRMRepository) queryTiktok(ctx context.Context, query crm.ProvinceQuery
 	}
 
 	db = applyProvinceFilter(db, "recipient_province", query.Province)
-
-	var results []provinceQueryResult
-	err := db.Select(`
-		COALESCE(NULLIF(TRIM(recipient_province), ''), '` + province.UnknownProvince + `') AS province,
-		COUNT(DISTINCT id) AS order_count,
-		COALESCE(SUM(qty), 0) AS item_qty,
-		COALESCE(SUM(amount), 0) AS gross_sales
-	`).
-		Group("COALESCE(NULLIF(TRIM(recipient_province), ''), '" + province.UnknownProvince + "')").
-		Scan(&results).Error
-
-	return results, err
+	return db
 }
 
-// queryShopee aggregates shopee_orders (+ their line items) by province.
-func (r *CRMRepository) queryShopee(ctx context.Context, query crm.ProvinceQuery) ([]provinceQueryResult, error) {
+// shopeeFiltered builds a shopee_orders (+ items) query with date, status and province filters.
+func (r *CRMRepository) shopeeFiltered(ctx context.Context, query crm.ProvinceQuery) *gorm.DB {
 	db := r.handle(ctx).Model(&shopee.ShopeeOrder{}).
 		Joins("LEFT JOIN shopee_order_items ON shopee_order_items.order_id = shopee_orders.id")
 
@@ -191,18 +214,45 @@ func (r *CRMRepository) queryShopee(ctx context.Context, query crm.ProvinceQuery
 	}
 
 	db = applyProvinceFilter(db, "shopee_orders.province", query.Province)
+	return db
+}
 
-	var results []provinceQueryResult
-	err := db.Select(`
-		COALESCE(NULLIF(TRIM(shopee_orders.province), ''), '` + province.UnknownProvince + `') AS province,
-		COUNT(DISTINCT shopee_orders.id) AS order_count,
-		COALESCE(SUM(shopee_order_items.qty), 0) AS item_qty,
-		COALESCE(SUM(shopee_order_items.sale_price), 0) AS gross_sales
-	`).
-		Group("COALESCE(NULLIF(TRIM(shopee_orders.province), ''), '" + province.UnknownProvince + "')").
-		Scan(&results).Error
+// GetDailyChannelSales returns order count and gross sales per day per channel.
+func (r *CRMRepository) GetDailyChannelSales(ctx context.Context, query crm.ProvinceQuery) ([]crm.DailyChannelSales, error) {
+	channel := strings.ToLower(strings.TrimSpace(query.Channel))
+	if channel == "" {
+		channel = "all"
+	}
 
-	return results, err
+	var out []crm.DailyChannelSales
+	if channel == "all" || channel == "tiktok" {
+		var rows []crm.DailyChannelSales
+		// tiktok_orders.date is stored as "YYYY-MM-DD[ HH:MM:SS]"
+		err := r.tiktokFiltered(ctx, query).Select(`
+			LEFT(date, 10) AS day,
+			'tiktok' AS channel,
+			COUNT(DISTINCT id) AS order_count,
+			COALESCE(SUM(amount), 0) AS gross_sales
+		`).Group("LEFT(date, 10)").Scan(&rows).Error
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rows...)
+	}
+	if channel == "all" || channel == "shopee" {
+		var rows []crm.DailyChannelSales
+		err := r.shopeeFiltered(ctx, query).Select(`
+			TO_CHAR(shopee_orders.order_date, 'YYYY-MM-DD') AS day,
+			'shopee' AS channel,
+			COUNT(DISTINCT shopee_orders.id) AS order_count,
+			COALESCE(SUM(shopee_order_items.sale_price), 0) AS gross_sales
+		`).Group("TO_CHAR(shopee_orders.order_date, 'YYYY-MM-DD')").Scan(&rows).Error
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rows...)
+	}
+	return out, nil
 }
 
 func applyProvinceFilter(db *gorm.DB, column, rawProvince string) *gorm.DB {
@@ -225,6 +275,9 @@ func mergeProvinceResults(rows []provinceQueryResult) []provinceQueryResult {
 	byProvince := make(map[string]*provinceQueryResult, len(rows))
 	order := make([]string, 0, len(rows))
 	for _, row := range rows {
+		// Stored names vary ("จังหวัดกรุงเทพมหานคร", "Bangkok", ...); merge
+		// them under the official Thai province name.
+		row.Province = province.NormalizeProvince(row.Province, "")
 		if existing, ok := byProvince[row.Province]; ok {
 			existing.OrderCount += row.OrderCount
 			existing.ItemQty += row.ItemQty
