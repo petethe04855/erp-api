@@ -10,11 +10,11 @@ import (
 )
 
 type DashboardAnalyticsResult struct {
-	FromMonth     string                         `json:"from_month"`
-	ToMonth       string                         `json:"to_month"`
-	YTDSummary    domainShopee.MonthlySummary    `json:"ytd_summary"`
-	MonthlyTrends []domainShopee.MonthlySummary  `json:"monthly_trends"`
-	TopSKUs       []domainShopee.TopSKUStat      `json:"top_skus"`
+	FromMonth     string                        `json:"from_month"`
+	ToMonth       string                        `json:"to_month"`
+	YTDSummary    domainShopee.MonthlySummary   `json:"ytd_summary"`
+	MonthlyTrends []domainShopee.MonthlySummary `json:"monthly_trends"`
+	TopSKUs       []domainShopee.TopSKUStat     `json:"top_skus"`
 }
 
 type DashboardUsecase interface {
@@ -43,7 +43,7 @@ func (u *dashboardUsecase) GetDashboardAnalytics(ctx context.Context, fromYear, 
 	skuMap := make(map[string]*domainShopee.TopSKUStat)
 
 	curr := startDate
-	var ytdGross, ytdFees, ytdNet, ytdCost, ytdProfit float64
+	var ytdGross, ytdFees, ytdNet, ytdCost, ytdProfit, ytdMatchedProfit float64
 	var ytdOrders, ytdItems int
 
 	for !curr.After(endDate) {
@@ -62,6 +62,7 @@ func (u *dashboardUsecase) GetDashboardAnalytics(ctx context.Context, fromYear, 
 			ytdNet += summary.NetReceive
 			ytdCost += summary.TotalCost
 			ytdProfit += summary.NetProfit
+			ytdMatchedProfit += summary.MatchedNetProfit
 			ytdOrders += summary.OrderCount
 			ytdItems += summary.ItemCount
 		}
@@ -91,19 +92,20 @@ func (u *dashboardUsecase) GetDashboardAnalytics(ctx context.Context, fromYear, 
 	ytdMargin := 0.0
 	// Net Profit Margin = Net Profit / Gross Sales × 100
 	if ytdGross > 0 {
-		ytdMargin = round2((ytdProfit / ytdGross) * 100)
+		ytdMargin = round2((ytdMatchedProfit / ytdGross) * 100)
 	}
 
 	ytdSummary := domainShopee.MonthlySummary{
-		Month:           fmt.Sprintf("%04d-%02d to %04d-%02d", startDate.Year(), startDate.Month(), endDate.Year(), endDate.Month()),
-		OrderCount:      ytdOrders,
-		ItemCount:       ytdItems,
-		GrossSale:       round2(ytdGross),
-		PlatformFees:    round2(ytdFees),
-		NetReceive:      round2(ytdNet),
-		TotalCost:       round2(ytdCost),
-		NetProfit:       round2(ytdProfit),
-		ProfitMarginPct: ytdMargin,
+		Month:            fmt.Sprintf("%04d-%02d to %04d-%02d", startDate.Year(), startDate.Month(), endDate.Year(), endDate.Month()),
+		OrderCount:       ytdOrders,
+		ItemCount:        ytdItems,
+		GrossSale:        round2(ytdGross),
+		PlatformFees:     round2(ytdFees),
+		NetReceive:       round2(ytdNet),
+		TotalCost:        round2(ytdCost),
+		NetProfit:        round2(ytdProfit),
+		ProfitMarginPct:  ytdMargin,
+		MatchedNetProfit: round2(ytdMatchedProfit),
 	}
 
 	// Sort Top SKUs by NetProfit DESC

@@ -74,6 +74,9 @@ func (u *matchingUsecase) calculateMonth(ctx context.Context, year int, month in
 
 	var rows []domainShopee.MatchingItemRow
 	orderCountSet := make(map[string]bool)
+	// Net Payout of transfers that matched an order; the margin numerator
+	// excludes MISSING_ORDER payouts because they have no Gross Sales.
+	var matchedNet float64
 
 	for _, inc := range incomes {
 		orderCountSet[inc.OrderID] = true
@@ -82,13 +85,13 @@ func (u *matchingUsecase) calculateMonth(ctx context.Context, year int, month in
 		if !hasOrder || len(ord.Items) == 0 {
 			// Income exists without matching Order
 			row := domainShopee.MatchingItemRow{
-				OrderID:       inc.OrderID,
-				TransferDate:  inc.TransferDate,
-				OrderNet:      inc.NetAmount,
-				AllocatedNet:  inc.NetAmount,
-				Profit:        inc.NetAmount,
-				MarginPct:     0, // no order → no Gross Sales to divide by
-				Status:        "MISSING_ORDER",
+				OrderID:      inc.OrderID,
+				TransferDate: inc.TransferDate,
+				OrderNet:     inc.NetAmount,
+				AllocatedNet: inc.NetAmount,
+				Profit:       inc.NetAmount,
+				MarginPct:    0, // no order → no Gross Sales to divide by
+				Status:       "MISSING_ORDER",
 			}
 			if inc.OrderDate != nil {
 				row.OrderDate = *inc.OrderDate
@@ -127,6 +130,7 @@ func (u *matchingUsecase) calculateMonth(ctx context.Context, year int, month in
 		summary.GrossSale += orderGross
 		summary.PlatformFees += orderFees
 		summary.NetReceive += inc.NetAmount
+		matchedNet += inc.NetAmount
 		summary.TotalCost += orderCost
 
 		// Multi-item allocation
@@ -179,9 +183,11 @@ func (u *matchingUsecase) calculateMonth(ctx context.Context, year int, month in
 	summary.OrderCount = len(orderCountSet)
 	summary.ItemCount = len(rows)
 	summary.NetProfit = round2(summary.NetReceive - summary.TotalCost)
-	// Net Profit = Net Payout − COGS; Net Profit Margin = Net Profit / Gross Sales × 100
+	// Net Profit = Net Payout − COGS; Net Profit Margin = Net Profit / Gross Sales × 100,
+	// counting only matched orders on both sides.
+	summary.MatchedNetProfit = round2(matchedNet - summary.TotalCost)
 	if summary.GrossSale > 0 {
-		summary.ProfitMarginPct = round2((summary.NetProfit / summary.GrossSale) * 100)
+		summary.ProfitMarginPct = round2((summary.MatchedNetProfit / summary.GrossSale) * 100)
 	}
 
 	summary.GrossSale = round2(summary.GrossSale)
