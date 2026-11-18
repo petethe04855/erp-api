@@ -2,10 +2,13 @@ package catalog
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
+
+	appErrors "chawy-erp-api/pkg/errors"
 
 	domainBundle "chawy-erp-api/internal/domain/bundle"
 	domainSKU "chawy-erp-api/internal/domain/sku"
@@ -550,6 +553,63 @@ func (u *usecase) Delete(ctx context.Context, code string) error {
 		return productNotFound404()
 	}
 	return u.deleteProduct(ctx, s)
+}
+
+// BulkDeleteByIDs deletes several products by record ID. Each product runs
+// through the same reference-checked delete in its own transaction, so a
+// product that is still in use (stock, movements, orders, PO, quotations,
+// bundles, accessories) is reported as failed while the rest are deleted.
+func (u *usecase) BulkDeleteByIDs(ctx context.Context, ids []uint) (*BulkDeleteSummary, error) {
+	seen := make(map[uint]bool, len(ids))
+	unique := make([]uint, 0, len(ids))
+	for _, id := range ids {
+		if id == 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		unique = append(unique, id)
+	}
+	if len(unique) == 0 {
+		return nil, appErr("VALIDATION_ERROR", "กรุณาเลือกสินค้าที่ต้องการลบอย่างน้อย 1 รายการ", 400)
+	}
+	if len(unique) > MaxBulkDelete {
+		return nil, appErr("VALIDATION_ERROR", fmt.Sprintf("ลบได้สูงสุด %d รายการต่อครั้ง", MaxBulkDelete), 400)
+	}
+
+	summary := &BulkDeleteSummary{Requested: len(unique), Results: make([]BulkDeleteItem, 0, len(unique))}
+	for _, id := range unique {
+		item := BulkDeleteItem{ID: id}
+		s, err := u.repo.FindByID(ctx, id)
+		if err != nil || s == nil {
+			item.Code, item.Error = "NOT_FOUND", "ไม่พบสินค้านี้ในระบบ"
+		} else {
+			item.SKU, item.Name = s.SKU, s.Name
+			if err := u.deleteProduct(ctx, s); err != nil {
+				item.Code, item.Error = bulkDeleteErr(err)
+			} else {
+				item.Deleted = true
+			}
+		}
+		if item.Deleted {
+			summary.Deleted++
+		} else {
+			summary.Failed++
+		}
+		summary.Results = append(summary.Results, item)
+	}
+	return summary, nil
+}
+
+func bulkDeleteErr(err error) (string, string) {
+	var appE *appErrors.AppError
+	if errors.As(err, &appE) {
+		return appE.Code, appE.Message
+	}
+	var dbe *DBError
+	if errors.As(err, &dbe) {
+		return "DB_ERROR", dbe.Message
+	}
+	return "INTERNAL_ERROR", err.Error()
 }
 
 // deleteProduct deletes a resolved SKU with the FULL-13 reference check

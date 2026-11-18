@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"chawy-erp-api/internal/delivery/http/dto"
 	domainCatalog "chawy-erp-api/internal/domain/catalog"
 	usecaseCatalog "chawy-erp-api/internal/usecase/catalog"
 	appErrors "chawy-erp-api/pkg/errors"
@@ -214,6 +215,35 @@ func (h *WorkspaceHandler) DeleteProductByID(c *fiber.Ctx) error {
 		return respondCatalogError(c, err)
 	}
 	return response.OK(c, nil, "Product deleted successfully")
+}
+
+// BulkDeleteProducts deletes several products by record ID and reports the
+// outcome per product (products still in use are skipped, not fatal).
+func (h *WorkspaceHandler) BulkDeleteProducts(c *fiber.Ctx) error {
+	var req dto.BulkDeleteProductsRequest
+	if err := c.BodyParser(&req); err != nil {
+		return response.BadRequest(c, "Invalid request body")
+	}
+	res, err := h.catalogUsecase.BulkDeleteByIDs(c.Context(), req.IDs)
+	if err != nil {
+		return respondCatalogError(c, err)
+	}
+	return response.OK(c, dto.BulkDeleteProductsResponse{
+		Requested: res.Requested,
+		Deleted:   res.Deleted,
+		Failed:    res.Failed,
+		Results:   toBulkDeleteItemResponses(res.Results),
+	}, "Bulk delete completed")
+}
+
+func toBulkDeleteItemResponses(items []usecaseCatalog.BulkDeleteItem) []dto.BulkDeleteProductItemResponse {
+	out := make([]dto.BulkDeleteProductItemResponse, len(items))
+	for i, it := range items {
+		out[i] = dto.BulkDeleteProductItemResponse{
+			ID: it.ID, SKU: it.SKU, Name: it.Name, Deleted: it.Deleted, Code: it.Code, Error: it.Error,
+		}
+	}
+	return out
 }
 
 // UpdateProductReorder updates a product's reorder point by SKU code.
