@@ -111,6 +111,8 @@ func TestMatchingUsecase_MultiItemAllocationAndFormulas(t *testing.T) {
 	assert.Equal(t, 135.00, summary.NetReceive)
 	assert.Equal(t, 80.00, summary.TotalCost)
 	assert.Equal(t, 55.00, summary.NetProfit)
+	// Net Profit Margin = Net Profit / Gross Sales × 100 → 55 / 150
+	assert.Equal(t, 36.67, summary.ProfitMarginPct)
 
 	// Verify Item 1 allocations
 	assert.Equal(t, 100.00, rows[0].LineSale)
@@ -118,6 +120,7 @@ func TestMatchingUsecase_MultiItemAllocationAndFormulas(t *testing.T) {
 	assert.Equal(t, 90.00, rows[0].AllocatedNet)
 	assert.Equal(t, 10.00, rows[0].AllocatedFee)
 	assert.Equal(t, 30.00, rows[0].Profit)
+	assert.Equal(t, 30.00, rows[0].MarginPct) // 30 / 100
 
 	// Verify Item 2 allocations
 	assert.Equal(t, 50.00, rows[1].LineSale)
@@ -125,6 +128,7 @@ func TestMatchingUsecase_MultiItemAllocationAndFormulas(t *testing.T) {
 	assert.Equal(t, 45.00, rows[1].AllocatedNet)
 	assert.Equal(t, 5.00, rows[1].AllocatedFee)
 	assert.Equal(t, 25.00, rows[1].Profit)
+	assert.Equal(t, 50.00, rows[1].MarginPct) // 25 / 50
 
 	// Test CSV Export
 	incomeRepo.On("FindByMonth", ctx, 2026, 3).Return(incomes, nil).Once()
@@ -137,4 +141,46 @@ func TestMatchingUsecase_MultiItemAllocationAndFormulas(t *testing.T) {
 	assert.Equal(t, "shopee_matching_2026_03.csv", filename)
 	assert.Contains(t, string(csvBytes), "ORDER-001")
 	assert.Contains(t, string(csvBytes), "SKU-A")
+}
+
+func TestMatchingUsecase_MarginExcludesMissingOrderPayouts(t *testing.T) {
+	ctx := context.Background()
+	incomeRepo := new(mockShopeeIncomeRepo)
+	orderRepo := new(mockShopeeOrderRepo)
+	costUsecase := new(mockCostUsecase)
+	uc := usecaseShopee.NewMatchingUsecase(incomeRepo, orderRepo, costUsecase)
+
+	transferDate, _ := time.Parse("2006-01-02", "2026-04-05")
+	orderDate, _ := time.Parse("2006-01-02", "2026-04-01")
+
+	// ORDER-1: Gross 200, Net 180, Cost 80 -> matched profit 100
+	// ORDER-X: payout 50 with no matching order (MISSING_ORDER)
+	incomes := []domainShopee.ShopeeIncome{
+		{ID: 1, OrderID: "ORDER-1", TransferDate: transferDate, NetAmount: 180},
+		{ID: 2, OrderID: "ORDER-X", TransferDate: transferDate, NetAmount: 50},
+	}
+	orders := []domainShopee.ShopeeOrder{{
+		ID: "ORDER-1", OrderDate: orderDate,
+		Items: []domainShopee.ShopeeOrderItem{{ID: 1, OrderID: "ORDER-1", SKU: "SKU-A", Qty: 1, SalePrice: 200}},
+	}}
+
+	incomeRepo.On("FindByMonth", ctx, 2026, 4).Return(incomes, nil).Once()
+	orderRepo.On("FindByOrderIDs", ctx, []string{"ORDER-1", "ORDER-X"}).Return(orders, nil).Once()
+	costUsecase.On("GetEffectiveCost", ctx, "SKU-A", orderDate).Return(80.00, nil).Once()
+
+	rows, summary, err := uc.GetMonthlyMatching(ctx, 2026, 4)
+	assert.NoError(t, err)
+	assert.Equal(t, 2, len(rows))
+
+	// Net Profit still includes the unmatched payout...
+	assert.Equal(t, 150.00, summary.NetProfit) // (180 + 50) - 80
+	// ...but the margin only counts matched orders: 100 / 200 × 100
+	assert.Equal(t, 100.00, summary.MatchedNetProfit)
+	assert.Equal(t, 50.00, summary.ProfitMarginPct)
+
+	for _, r := range rows {
+		if r.Status == "MISSING_ORDER" {
+			assert.Equal(t, 0.0, r.MarginPct)
+		}
+	}
 }

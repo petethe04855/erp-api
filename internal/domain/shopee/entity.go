@@ -74,6 +74,10 @@ type MonthlySummary struct {
 	TotalCost       float64 `json:"total_cost"`
 	NetProfit       float64 `json:"net_profit"`
 	ProfitMarginPct float64 `json:"profit_margin_pct"`
+	// MatchedNetProfit is Net Profit from transfers that matched an order only
+	// (excludes MISSING_ORDER payouts, which have no Gross Sales). It is the
+	// numerator of ProfitMarginPct; internal only, not part of the API contract.
+	MatchedNetProfit float64 `json:"-"`
 }
 
 type TopSKUStat struct {
