@@ -299,9 +299,18 @@ type ShopeeIncomePreviewResponse struct {
 
 // ShopeeDashboardResponse is the API contract for Shopee analytics.
 type ShopeeDashboardResponse struct {
-	FromMonth     string                          `json:"from_month"`
-	ToMonth       string                          `json:"to_month"`
-	YTDSummary    ShopeeMonthlySummaryResponse    `json:"ytd_summary"`
-	MonthlyTrends []ShopeeMonthlySummaryResponse  `json:"monthly_trends"`
-	TopSKUs       []ShopeeTopSKUStatResponse      `json:"top_skus"`
+	FromMonth     string                         `json:"from_month"`
+	ToMonth       string                         `json:"to_month"`
+	YTDSummary    ShopeeMonthlySummaryResponse   `json:"ytd_summary"`
+	MonthlyTrends []ShopeeMonthlySummaryResponse `json:"monthly_trends"`
+	TopSKUs       []ShopeeTopSKUStatResponse     `json:"top_skus"`
+	DailySales    []ShopeeDailySaleResponse      `json:"daily_sales"`
+}
+
+// ShopeeDailySaleResponse is Shopee sales for one transfer date.
+type ShopeeDailySaleResponse struct {
+	Date       string  `json:"date"`
+	GrossSale  float64 `json:"gross_sale"`
+	NetReceive float64 `json:"net_receive"`
+	NetProfit  float64 `json:"net_profit"`
 }

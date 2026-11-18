@@ -15,6 +15,16 @@ type DashboardAnalyticsResult struct {
 	YTDSummary    domainShopee.MonthlySummary   `json:"ytd_summary"`
 	MonthlyTrends []domainShopee.MonthlySummary `json:"monthly_trends"`
 	TopSKUs       []domainShopee.TopSKUStat     `json:"top_skus"`
+	DailySales    []DailySale                   `json:"daily_sales"`
+}
+
+// DailySale is Shopee sales per transfer date. Gross sums the order lines of
+// the payouts received that day, so the series adds up to the summary GrossSale.
+type DailySale struct {
+	Date       string  `json:"date"` // YYYY-MM-DD (transfer date)
+	GrossSale  float64 `json:"gross_sale"`
+	NetReceive float64 `json:"net_receive"`
+	NetProfit  float64 `json:"net_profit"`
 }
 
 type DashboardUsecase interface {
@@ -41,6 +51,7 @@ func (u *dashboardUsecase) GetDashboardAnalytics(ctx context.Context, fromYear, 
 
 	var monthlyTrends []domainShopee.MonthlySummary
 	skuMap := make(map[string]*domainShopee.TopSKUStat)
+	dailyMap := make(map[string]*DailySale)
 
 	curr := startDate
 	var ytdGross, ytdFees, ytdNet, ytdCost, ytdProfit, ytdMatchedProfit float64
@@ -67,8 +78,18 @@ func (u *dashboardUsecase) GetDashboardAnalytics(ctx context.Context, fromYear, 
 			ytdItems += summary.ItemCount
 		}
 
-		// Aggregate SKU statistics
+		// Aggregate SKU statistics and daily sales
 		for _, r := range rows {
+			day := r.TransferDate.UTC().Format("2006-01-02") // same UTC bounds as FindByMonth
+			d, ok := dailyMap[day]
+			if !ok {
+				d = &DailySale{Date: day}
+				dailyMap[day] = d
+			}
+			d.GrossSale += r.LineSale
+			d.NetReceive += r.AllocatedNet
+			d.NetProfit += r.Profit
+
 			if r.SKU == "" {
 				continue
 			}
@@ -128,11 +149,23 @@ func (u *dashboardUsecase) GetDashboardAnalytics(ctx context.Context, fromYear, 
 		topSKUList = topSKUList[:5]
 	}
 
+	dailySales := make([]DailySale, 0, len(dailyMap))
+	for _, d := range dailyMap {
+		dailySales = append(dailySales, DailySale{
+			Date:       d.Date,
+			GrossSale:  round2(d.GrossSale),
+			NetReceive: round2(d.NetReceive),
+			NetProfit:  round2(d.NetProfit),
+		})
+	}
+	sort.Slice(dailySales, func(i, j int) bool { return dailySales[i].Date < dailySales[j].Date })
+
 	return &DashboardAnalyticsResult{
 		FromMonth:     fmt.Sprintf("%04d-%02d", startDate.Year(), startDate.Month()),
 		ToMonth:       fmt.Sprintf("%04d-%02d", endDate.Year(), endDate.Month()),
 		YTDSummary:    ytdSummary,
 		MonthlyTrends: monthlyTrends,
 		TopSKUs:       topSKUList,
+		DailySales:    dailySales,
 	}, nil
 }
