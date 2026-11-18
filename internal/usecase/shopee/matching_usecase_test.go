@@ -111,6 +111,8 @@ func TestMatchingUsecase_MultiItemAllocationAndFormulas(t *testing.T) {
 	assert.Equal(t, 135.00, summary.NetReceive)
 	assert.Equal(t, 80.00, summary.TotalCost)
 	assert.Equal(t, 55.00, summary.NetProfit)
+	// Net Profit Margin = Net Profit / Gross Sales × 100 → 55 / 150
+	assert.Equal(t, 36.67, summary.ProfitMarginPct)
 
 	// Verify Item 1 allocations
 	assert.Equal(t, 100.00, rows[0].LineSale)
@@ -118,6 +120,7 @@ func TestMatchingUsecase_MultiItemAllocationAndFormulas(t *testing.T) {
 	assert.Equal(t, 90.00, rows[0].AllocatedNet)
 	assert.Equal(t, 10.00, rows[0].AllocatedFee)
 	assert.Equal(t, 30.00, rows[0].Profit)
+	assert.Equal(t, 30.00, rows[0].MarginPct) // 30 / 100
 
 	// Verify Item 2 allocations
 	assert.Equal(t, 50.00, rows[1].LineSale)
@@ -125,6 +128,7 @@ func TestMatchingUsecase_MultiItemAllocationAndFormulas(t *testing.T) {
 	assert.Equal(t, 45.00, rows[1].AllocatedNet)
 	assert.Equal(t, 5.00, rows[1].AllocatedFee)
 	assert.Equal(t, 25.00, rows[1].Profit)
+	assert.Equal(t, 50.00, rows[1].MarginPct) // 25 / 50
 
 	// Test CSV Export
 	incomeRepo.On("FindByMonth", ctx, 2026, 3).Return(incomes, nil).Once()

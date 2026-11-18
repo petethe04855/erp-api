@@ -87,7 +87,7 @@ func (u *matchingUsecase) calculateMonth(ctx context.Context, year int, month in
 				OrderNet:      inc.NetAmount,
 				AllocatedNet:  inc.NetAmount,
 				Profit:        inc.NetAmount,
-				MarginPct:     100.0,
+				MarginPct:     0, // no order → no Gross Sales to divide by
 				Status:        "MISSING_ORDER",
 			}
 			if inc.OrderDate != nil {
@@ -141,9 +141,10 @@ func (u *matchingUsecase) calculateMonth(ctx context.Context, year int, month in
 			totalCost := round2(itemCosts[idx])
 			profit := round2(allocatedNet - totalCost)
 
+			// Net Profit Margin = Net Profit / Gross Sales × 100
 			marginPct := 0.0
-			if allocatedNet > 0 {
-				marginPct = round2((profit / allocatedNet) * 100)
+			if item.SalePrice > 0 {
+				marginPct = round2((profit / item.SalePrice) * 100)
 			}
 
 			status := "OK"
@@ -178,8 +179,9 @@ func (u *matchingUsecase) calculateMonth(ctx context.Context, year int, month in
 	summary.OrderCount = len(orderCountSet)
 	summary.ItemCount = len(rows)
 	summary.NetProfit = round2(summary.NetReceive - summary.TotalCost)
-	if summary.NetReceive > 0 {
-		summary.ProfitMarginPct = round2((summary.NetProfit / summary.NetReceive) * 100)
+	// Net Profit = Net Payout − COGS; Net Profit Margin = Net Profit / Gross Sales × 100
+	if summary.GrossSale > 0 {
+		summary.ProfitMarginPct = round2((summary.NetProfit / summary.GrossSale) * 100)
 	}
 
 	summary.GrossSale = round2(summary.GrossSale)

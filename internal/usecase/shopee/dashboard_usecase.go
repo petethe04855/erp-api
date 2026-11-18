@@ -89,8 +89,9 @@ func (u *dashboardUsecase) GetDashboardAnalytics(ctx context.Context, fromYear, 
 	}
 
 	ytdMargin := 0.0
-	if ytdNet > 0 {
-		ytdMargin = round2((ytdProfit / ytdNet) * 100)
+	// Net Profit Margin = Net Profit / Gross Sales × 100
+	if ytdGross > 0 {
+		ytdMargin = round2((ytdProfit / ytdGross) * 100)
 	}
 
 	ytdSummary := domainShopee.MonthlySummary{
