@@ -28,12 +28,14 @@ import (
 	domainShopee "chawy-erp-api/internal/domain/shopee"
 	domainSKU "chawy-erp-api/internal/domain/sku"
 	domainStock "chawy-erp-api/internal/domain/stock"
+	domainCRMIntegration "chawy-erp-api/internal/domain/crmintegration"
 	domainTikTok "chawy-erp-api/internal/domain/tiktok"
 	"chawy-erp-api/internal/repository/postgres"
 	usecaseAuth "chawy-erp-api/internal/usecase/auth"
 	usecaseBundle "chawy-erp-api/internal/usecase/bundle"
 	usecaseCatalog "chawy-erp-api/internal/usecase/catalog"
 	usecaseCRM "chawy-erp-api/internal/usecase/crm"
+	usecaseCRMIntegration "chawy-erp-api/internal/usecase/crmintegration"
 	usecaseCustomer "chawy-erp-api/internal/usecase/customer"
 	usecaseFinance "chawy-erp-api/internal/usecase/finance"
 	usecaseFormula "chawy-erp-api/internal/usecase/formula"
@@ -126,6 +128,7 @@ func main() {
 		&domainSalesReturn.SalesReturn{},
 		&domainSalesReturn.SalesReturnLine{},
 		&domainSeq.DocumentSequence{},
+		&domainCRMIntegration.GoodsIssue{},
 	); err != nil {
 		// Fail-closed: running on an incompatible schema causes partial data
 		// failures at runtime; it is safer to refuse to start.
@@ -258,6 +261,8 @@ func main() {
 	skuCostHistoryHdl := handler.NewSKUCostHistoryHandler(skuCostHistoryUsecase)
 	crmHdl := handler.NewCRMHandler(crmUsecase)
 	salesAnalyticsHdl := handler.NewSalesAnalyticsHandler(salesAnalyticsUsecase)
+	crmIntegrationHdl := handler.NewCRMIntegrationHandler(usecaseCRMIntegration.New(
+		skuRepo, stockRepo, postgres.NewCRMIntegrationRepository(db), txManager))
 
 	// 7. Initialize Fiber App
 	app := fiber.New(fiber.Config{
@@ -337,6 +342,8 @@ func main() {
 		SKUCostHistoryHandler: skuCostHistoryHdl,
 		CRMHandler:            crmHdl,
 		SalesAnalyticsHandler: salesAnalyticsHdl,
+		CRMIntegrationHandler: crmIntegrationHdl,
+		CRMServiceToken:       cfg.CRMServiceToken,
 		JWTSecret:             cfg.JWTSecret,
 		UserStatusLoader:      authRepo,
 	})

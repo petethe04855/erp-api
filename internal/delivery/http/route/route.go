@@ -30,6 +30,8 @@ type Config struct {
 	SKUCostHistoryHandler *handler.SKUCostHistoryHandler
 	CRMHandler            *handler.CRMHandler
 	SalesAnalyticsHandler *handler.SalesAnalyticsHandler
+	CRMIntegrationHandler *handler.CRMIntegrationHandler
+	CRMServiceToken       string
 	JWTSecret             string
 	UserStatusLoader      middleware.UserStatusLoader
 }
@@ -67,6 +69,15 @@ func RegisterRoutes(cfg Config) {
 	publicIncomes.Post("/scan-slip", cfg.FinanceHandler.ScanIncomeSlip)
 	publicIncomes.Post("/", cfg.FinanceHandler.CreateIncome)
 	publicIncomes.Post("", cfg.FinanceHandler.CreateIncome)
+
+	// CRM backoffice integration (service token, not a staff JWT). Registered
+	// before the protected group so its routes answer before AuthMiddleware.
+	if cfg.CRMIntegrationHandler != nil {
+		crmIntegration := api.Group("/integrations/crm", middleware.ServiceToken(cfg.CRMServiceToken))
+		crmIntegration.Get("/skus", cfg.CRMIntegrationHandler.SearchSKUs)
+		crmIntegration.Get("/stock", cfg.CRMIntegrationHandler.Stock)
+		crmIntegration.Post("/goods-issues", cfg.CRMIntegrationHandler.CreateGoodsIssue)
+	}
 
 	// Protected Routes Group
 	protected := api.Group("/", middleware.AuthMiddleware(cfg.JWTSecret, cfg.UserStatusLoader))
