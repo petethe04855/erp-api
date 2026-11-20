@@ -15,6 +15,9 @@ const (
 	TypeQuotation     DocumentType = "QT"
 	TypeSalesReturn   DocumentType = "RT"
 	TypePurchaseOrder DocumentType = "PO"
+	TypeExpense       DocumentType = "EXP"
+	TypeIncome        DocumentType = "INC"
+	TypeJournal       DocumentType = "JE"
 )
 
 // DocumentSequence records the last running sequence number for a document type and business date.
