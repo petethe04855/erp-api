@@ -213,7 +213,7 @@ func main() {
 	reportUsecase := usecaseReport.NewReportUsecase(reportRepo)
 	tiktokUsecase := usecaseTikTok.NewTikTokUsecase(cfg, db, tiktokRepo, orderRepo, formulaRepo, skuRepo, bundleRepo, stockRepo)
 	settingsUsecase := usecaseSettings.NewSettingsUsecase(settingsRepo)
-	financeUsecase := usecaseFinance.NewFinanceUsecase(financeRepo, txManager)
+	financeUsecase := usecaseFinance.NewFinanceUsecaseWithSequence(financeRepo, txManager, sequenceUsecase)
 	quotationRepo := postgres.NewQuotationRepository(db)
 	quotationUsecase := usecaseQuotation.NewQuotationUsecaseFull(quotationRepo, skuRepo, orderRepo, txManager, stockRepo, bundleRepo, formulaRepo, sequenceUsecase)
 	liveRepo := postgres.NewLiveRepository(db)

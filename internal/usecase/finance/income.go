@@ -2,7 +2,6 @@ package finance
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
@@ -39,7 +38,10 @@ func (u *financeUsecase) CreateIncome(ctx context.Context, in CreateIncomeInput)
 		createdBy = "system"
 	}
 
-	code := fmt.Sprintf("INC-%s-%04d", time.Now().Format("2006"), time.Now().UnixNano()%10000)
+	code, err := u.nextCode(ctx, "INC", dateStr)
+	if err != nil {
+		return nil, err
+	}
 
 	inc := &domainFinance.Income{
 		Code:        code,
@@ -47,13 +49,13 @@ func (u *financeUsecase) CreateIncome(ctx context.Context, in CreateIncomeInput)
 		Category:    category,
 		Channel:     channel,
 		Amount:      in.Amount,
-		ProductName: in.ProductName,
+		ProductName: clip(in.ProductName, maxProductName),
 		PurchaseURL: in.PurchaseURL,
 		SlipURL:     in.SlipURL,
-		Vendor:      in.Vendor,
-		InvoiceRef:  in.InvoiceRef,
+		Vendor:      clip(in.Vendor, maxVendor),
+		InvoiceRef:  clip(in.InvoiceRef, maxInvoiceRef),
 		Description: in.Description,
-		CreatedBy:   createdBy,
+		CreatedBy:   clip(createdBy, maxCreatedBy),
 	}
 
 	// TODO(finance): post income journal

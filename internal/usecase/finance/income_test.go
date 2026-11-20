@@ -72,3 +72,30 @@ func TestCreateIncome_KeepsProvidedValues(t *testing.T) {
 	assert.Equal(t, "อกไก่", inc.ProductName)
 	repo.AssertExpectations(t)
 }
+
+// AI scans can return long joined vendors / order numbers; they are capped to
+// the column size (by characters, Thai-safe) instead of failing the insert,
+// while the itemized description is kept in full.
+func TestCreateIncome_ClipsLongScannedFields(t *testing.T) {
+	ctx := context.Background()
+	repo := new(mockFinanceRepo)
+	uc := NewFinanceUsecase(repo, nil)
+	repo.On("CreateIncome", ctx, mock.AnythingOfType("*finance.Income")).Return(nil)
+
+	longThai := strings.Repeat("ร้านค้า", 40) // 280 runes
+	longDesc := strings.Repeat("1. สินค้า x1 (฿10) | ", 30)
+
+	inc, err := uc.CreateIncome(ctx, CreateIncomeInput{
+		Amount:      10,
+		Vendor:      longThai,
+		InvoiceRef:  strings.Repeat("ORD123456 / ", 20),
+		ProductName: longThai,
+		Description: longDesc,
+	})
+	require.NoError(t, err)
+
+	assert.Len(t, []rune(inc.Vendor), maxVendor)
+	assert.LessOrEqual(t, len([]rune(inc.InvoiceRef)), maxInvoiceRef)
+	assert.Len(t, []rune(inc.ProductName), maxProductName)
+	assert.Equal(t, longDesc, inc.Description)
+}

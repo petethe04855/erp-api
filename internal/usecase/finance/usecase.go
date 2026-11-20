@@ -2,6 +2,7 @@ package finance
 
 import (
 	"context"
+	"time"
 
 	domainFinance "chawy-erp-api/internal/domain/finance"
 	"chawy-erp-api/pkg/database"
@@ -149,14 +150,33 @@ type Usecase interface {
 	GetRevenueByChannel(ctx context.Context, from, to string) (*RevenueByChannelReport, error)
 }
 
+// CodeGenerator issues unique running document numbers (the shared
+// document_sequences counter, see usecase/sequence).
+type CodeGenerator interface {
+	Generate(ctx context.Context, docType string, businessDate *time.Time) (string, error)
+}
+
 type financeUsecase struct {
 	repo  domainFinance.Repository
 	txMgr database.TxManager
+	seq   CodeGenerator
 }
 
+// NewFinanceUsecase builds the usecase without a sequence generator; codes then
+// fall back to a time+random suffix (used by unit tests).
 func NewFinanceUsecase(repo domainFinance.Repository, txMgr database.TxManager) Usecase {
 	return &financeUsecase{
 		repo:  repo,
 		txMgr: txMgr,
+	}
+}
+
+// NewFinanceUsecaseWithSequence numbers expenses, incomes and journal entries
+// from the shared document sequence, so codes never collide.
+func NewFinanceUsecaseWithSequence(repo domainFinance.Repository, txMgr database.TxManager, seq CodeGenerator) Usecase {
+	return &financeUsecase{
+		repo:  repo,
+		txMgr: txMgr,
+		seq:   seq,
 	}
 }

@@ -2,8 +2,10 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -297,8 +299,43 @@ func (h *FinanceHandler) ScanIncomeSlip(c *fiber.Ctx) error {
 	return h.scanSlip(c, "incomes", "income", "วิเคราะห์ข้อมูลจากสลิปรายรับสำเร็จ")
 }
 
-// scanSlip reads a multipart slip image, stores it under ./uploads/<folder> and
-// returns the Gemini-OCR fields plus the stored slip_url.
+const maxSlipFileSize = 10 * 1024 * 1024 // 10MB
+
+const (
+	errSlipTooLarge = "ขนาดไฟล์เกินกำหนด (ต้องไม่เกิน 10 MB)"
+	errSlipBadType  = "รองรับเฉพาะไฟล์ .png, .jpg, .jpeg, .webp หรือ .pdf เท่านั้น"
+	errSlipFakePDF  = "ไฟล์ .pdf ไม่ถูกต้อง (เนื้อหาไม่ใช่ PDF)"
+)
+
+// slipMimeTypes maps the accepted slip/receipt extensions to the MIME type sent to Gemini.
+var slipMimeTypes = map[string]string{
+	".png":  "image/png",
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".webp": "image/webp",
+	".pdf":  "application/pdf",
+}
+
+// validateSlipFile checks the extension and size of an uploaded slip and, for
+// .pdf, sniffs the content so a renamed non-PDF file is rejected. It returns
+// the MIME type to send to Gemini.
+func validateSlipFile(filename string, data []byte) (string, error) {
+	ext := strings.ToLower(filepath.Ext(filename))
+	mimeType, ok := slipMimeTypes[ext]
+	if !ok {
+		return "", errors.New(errSlipBadType)
+	}
+	if len(data) > maxSlipFileSize {
+		return "", errors.New(errSlipTooLarge)
+	}
+	if ext == ".pdf" && http.DetectContentType(data) != "application/pdf" {
+		return "", errors.New(errSlipFakePDF)
+	}
+	return mimeType, nil
+}
+
+// scanSlip reads a multipart slip image or PDF, stores it under ./uploads/<folder>
+// and returns the Gemini-OCR fields plus the stored slip_url.
 func (h *FinanceHandler) scanSlip(c *fiber.Ctx, folder, prefix, successMsg string) error {
 	file, err := c.FormFile("image")
 	if err != nil {
@@ -311,25 +348,29 @@ func (h *FinanceHandler) scanSlip(c *fiber.Ctx, folder, prefix, successMsg strin
 		}
 	}
 
-	const maxFileSize = 10 * 1024 * 1024 // 10MB
-	if file.Size > maxFileSize {
-		return response.BadRequest(c, "ขนาดไฟล์รูปภาพเกินกำหนด (ต้องไม่เกิน 10 MB)")
+	if file.Size > maxSlipFileSize {
+		return response.BadRequest(c, errSlipTooLarge)
 	}
 
 	ext := strings.ToLower(filepath.Ext(file.Filename))
-	if ext != ".png" && ext != ".jpg" && ext != ".jpeg" && ext != ".webp" {
-		return response.BadRequest(c, "รองรับเฉพาะไฟล์รูปภาพ .png, .jpg, .jpeg หรือ .webp เท่านั้น")
+	if _, ok := slipMimeTypes[ext]; !ok {
+		return response.BadRequest(c, errSlipBadType)
 	}
 
 	f, err := file.Open()
 	if err != nil {
-		return response.BadRequest(c, "ไม่สามารถเปิดไฟล์รูปภาพได้")
+		return response.BadRequest(c, "ไม่สามารถเปิดไฟล์ได้")
 	}
 	defer f.Close()
 
 	fileBytes, err := io.ReadAll(f)
 	if err != nil {
-		return response.BadRequest(c, "ไม่สามารถอ่านข้อมูลไฟล์รูปภาพได้")
+		return response.BadRequest(c, "ไม่สามารถอ่านข้อมูลไฟล์ได้")
+	}
+
+	mimeType, err := validateSlipFile(file.Filename, fileBytes)
+	if err != nil {
+		return response.BadRequest(c, err.Error())
 	}
 
 	// Save file locally to ./uploads/<folder>
@@ -348,13 +389,6 @@ func (h *FinanceHandler) scanSlip(c *fiber.Ctx, folder, prefix, successMsg strin
 
 	if strings.TrimSpace(h.geminiKey) == "" {
 		return response.BadRequest(c, "กรุณาตั้งค่า GEMINI_API_KEY ในไฟล์ .env ของระบบหลังบ้านเพื่อเปิดใช้งาน AI สแกนใบเสร็จ")
-	}
-
-	mimeType := "image/jpeg"
-	if ext == ".png" {
-		mimeType = "image/png"
-	} else if ext == ".webp" {
-		mimeType = "image/webp"
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)

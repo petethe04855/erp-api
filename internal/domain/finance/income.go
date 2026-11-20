@@ -28,7 +28,7 @@ type Income struct {
 	SlipURL     string         `gorm:"size:500" json:"slip_url"`
 	Vendor      string         `gorm:"size:150" json:"vendor"`
 	InvoiceRef  string         `gorm:"size:100" json:"invoice_ref"`
-	Description string         `gorm:"size:255" json:"description"`
+	Description string         `gorm:"type:text" json:"description"` // AI scans list every item; may be long
 	CreatedBy   string         `gorm:"size:100" json:"created_by"`
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`
