@@ -231,7 +231,8 @@ func main() {
 	shopeeMatchingUsecase := usecaseShopee.NewMatchingUsecase(shopeeIncomeRepo, shopeeOrderRepo, skuCostHistoryUsecase)
 	shopeeDashboardUsecase := usecaseShopee.NewDashboardUsecase(shopeeMatchingUsecase)
 	crmUsecase := usecaseCRM.NewUsecase(crmRepo)
-	salesAnalyticsUsecase := usecaseSA.NewUsecase(postgres.NewSalesAnalyticsRepository(db))
+	salesAnalyticsUsecase := usecaseSA.NewUsecase(postgres.NewSalesAnalyticsRepository(db),
+		usecaseSA.WithFlavorSources(formulaRepo, skuRepo))
 
 	// 6. Dependency Injection - Handlers
 	authHdl := handler.NewAuthHandler(authUsecase)

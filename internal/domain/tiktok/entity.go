@@ -60,23 +60,27 @@ func (TiktokSyncRun) TableName() string { return "tiktok_sync_runs" }
 
 // TiktokOrder stores order headers received from TikTok Shop
 type TiktokOrder struct {
-	ID                   string            `gorm:"primaryKey" json:"id"`
-	Date                 string            `gorm:"index:idx_tiktok_orders_date_province_status,priority:1;size:50" json:"date"`
-	Product              string            `json:"product"`
-	SKU                  string            `json:"sku"`
-	Qty                  int               `json:"qty"`
-	Amount               float64           `json:"amount"`
-	Status               string            `gorm:"index:idx_tiktok_orders_date_province_status,priority:3;size:50" json:"status"`
-	StockDeducted        bool              `json:"stockDeducted"`
-	Imported             bool              `json:"imported"`
-	NetRevenue           float64           `json:"netRevenue,omitempty"`
-	PlatformFee          float64           `json:"platformFee,omitempty"`
-	Settled              bool              `json:"settled"`
-	SettlementRef        string            `json:"settlementRef,omitempty"`
-	RecipientProvinceRaw string            `gorm:"column:recipient_province_raw;size:100" json:"recipientProvinceRaw"`
-	RecipientProvince    string            `gorm:"column:recipient_province;index:idx_tiktok_orders_date_province_status,priority:2;size:100" json:"recipientProvince"`
-	RecipientPostalCode  string            `gorm:"column:recipient_postal_code;size:20" json:"recipientPostalCode"`
-	Items                []TiktokOrderItem `gorm:"foreignKey:OrderID;references:ID;constraint:OnDelete:CASCADE" json:"items"`
+	ID                   string  `gorm:"primaryKey" json:"id"`
+	Date                 string  `gorm:"index:idx_tiktok_orders_date_province_status,priority:1;size:50" json:"date"`
+	Product              string  `json:"product"`
+	SKU                  string  `json:"sku"`
+	Qty                  int     `json:"qty"`
+	Amount               float64 `json:"amount"`
+	Status               string  `gorm:"index:idx_tiktok_orders_date_province_status,priority:3;size:50" json:"status"`
+	StockDeducted        bool    `json:"stockDeducted"`
+	Imported             bool    `json:"imported"`
+	NetRevenue           float64 `json:"netRevenue,omitempty"`
+	PlatformFee          float64 `json:"platformFee,omitempty"`
+	Settled              bool    `json:"settled"`
+	SettlementRef        string  `json:"settlementRef,omitempty"`
+	RecipientProvinceRaw string  `gorm:"column:recipient_province_raw;size:100" json:"recipientProvinceRaw"`
+	RecipientProvince    string  `gorm:"column:recipient_province;index:idx_tiktok_orders_date_province_status,priority:2;size:100" json:"recipientProvince"`
+	RecipientPostalCode  string  `gorm:"column:recipient_postal_code;size:20" json:"recipientPostalCode"`
+	// BuyerUserID is TikTok's opaque buyer id (orders API user_id). It lets the
+	// CRM dashboard group repeat TikTok buyers; no name, phone or address (PDPA).
+	// Not part of the TikTok order API response; only sales-analytics reads it.
+	BuyerUserID string            `gorm:"column:buyer_user_id;size:64;index" json:"-"`
+	Items       []TiktokOrderItem `gorm:"foreignKey:OrderID;references:ID;constraint:OnDelete:CASCADE" json:"items"`
 }
 
 func (TiktokOrder) TableName() string { return "tiktok_orders" }

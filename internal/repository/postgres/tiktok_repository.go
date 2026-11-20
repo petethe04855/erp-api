@@ -87,9 +87,13 @@ func (r *TikTokRepository) UpsertOrders(ctx context.Context, orders []tiktok.Tik
 			order := &orders[i]
 			if err := tx.Omit("Items").Clauses(clause.OnConflict{
 				Columns: []clause.Column{{Name: "id"}},
-				DoUpdates: clause.AssignmentColumns([]string{
+				DoUpdates: append(clause.AssignmentColumns([]string{
 					"date", "product", "sku", "qty", "amount", "status",
 					"recipient_province_raw", "recipient_province", "recipient_postal_code",
+				}), clause.Assignment{
+					// Keep a stored buyer id when a later sync or import has none.
+					Column: clause.Column{Name: "buyer_user_id"},
+					Value:  gorm.Expr("COALESCE(NULLIF(excluded.buyer_user_id, ''), tiktok_orders.buyer_user_id)"),
 				}),
 			}).Create(order).Error; err != nil {
 				return err

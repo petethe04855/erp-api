@@ -121,8 +121,10 @@ func (r *SalesAnalyticsRepository) shopeeOrders(ctx context.Context, q salesanal
 	return out, nil
 }
 
-// tiktokOrders loads TikTok orders and their line items. TikTok does not
-// expose the buyer username, so Buyer and BuyerID stay empty.
+// tiktokOrders loads TikTok orders and their line items. TikTok exposes no
+// buyer username, only an opaque user_id (stored by the order sync since
+// 2026-11): it fills BuyerID and Buyer so repeat buyers group together. Orders
+// synced before then, or imported from files, have no buyer.
 func (r *SalesAnalyticsRepository) tiktokOrders(ctx context.Context, q salesanalytics.Query) ([]salesanalytics.Order, error) {
 	db := r.handle(ctx).Model(&tiktok.TiktokOrder{}).Preload("Items")
 
@@ -156,6 +158,8 @@ func (r *SalesAnalyticsRepository) tiktokOrders(ctx context.Context, q salesanal
 			HasTime:     len(stamp) > 10,
 			Date:        day,
 			Amount:      o.Amount,
+			BuyerID:     o.BuyerUserID,
+			Buyer:       o.BuyerUserID,
 			Channel:     "TikTok",
 			ChannelType: salesanalytics.ChannelTikTok,
 			Province:    o.RecipientProvince,

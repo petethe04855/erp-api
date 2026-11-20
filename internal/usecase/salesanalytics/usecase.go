@@ -38,12 +38,18 @@ type Usecase interface {
 }
 
 type usecase struct {
-	repo salesanalytics.Repository
+	repo     salesanalytics.Repository
+	formulas FormulaFinder
+	skus     SKUFinder
 }
 
 // NewUsecase builds the usecase.
-func NewUsecase(repo salesanalytics.Repository) Usecase {
-	return &usecase{repo: repo}
+func NewUsecase(repo salesanalytics.Repository, opts ...Option) Usecase {
+	u := &usecase{repo: repo}
+	for _, opt := range opts {
+		opt(u)
+	}
+	return u
 }
 
 // SalesAnalytics validates the filter, loads the facts and applies the region
@@ -83,6 +89,11 @@ func (u *usecase) SalesAnalytics(ctx context.Context, q salesanalytics.Query) (*
 			}
 		}
 		orders = filtered
+	}
+	if u.formulas != nil && u.skus != nil {
+		if err := newBagCounter(u.formulas, u.skus).apply(ctx, orders); err != nil {
+			return nil, err
+		}
 	}
 	return &salesanalytics.Payload{Orders: orders}, nil
 }

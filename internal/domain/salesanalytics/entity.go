@@ -29,6 +29,9 @@ type Line struct {
 	Name   string  `json:"name"`
 	Qty    int     `json:"qty"`
 	Amount float64 `json:"amount"`
+	// Flavor of the bags in this line: chicken / tuna / rabbit, "mixed" for a
+	// set with several flavors, "" when no component SKU has a flavor set.
+	Flavor string `json:"flavor"`
 }
 
 // Order is one marketplace order fact. It carries platform usernames only, no
@@ -48,7 +51,13 @@ type Order struct {
 	Province    string   `json:"province"`
 	Sets        []string `json:"sets"`
 	Items       []string `json:"items"`
-	Lines       []Line   `json:"lines"`
+	// Bags per flavor, from the inventory formula and skus.flavor (only bags
+	// whose SKU has a flavor are counted).
+	ChickenBags int    `json:"chickenBags"`
+	TunaBags    int    `json:"tunaBags"`
+	RabbitBags  int    `json:"rabbitBags"`
+	TotalBags   int    `json:"totalBags"`
+	Lines       []Line `json:"lines"`
 }
 
 // Payload is the response body of GET /crm/sales-analytics.

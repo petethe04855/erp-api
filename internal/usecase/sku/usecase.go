@@ -14,6 +14,7 @@ type CreateInput struct {
 	Name            string
 	Barcode         string
 	Category        string
+	Flavor          string
 	Price           float64
 	CostPrice       float64
 	IsBundle        bool
@@ -27,6 +28,7 @@ type UpdateInput struct {
 	Name      *string
 	Barcode   *string
 	Category  *string
+	Flavor    *string
 	Price     *float64
 	CostPrice *float64
 	IsBundle  *bool
@@ -73,11 +75,16 @@ func (u *skuUsecase) Create(ctx context.Context, input CreateInput) (*domainSKU.
 		return nil, appErrors.ErrSKUAlreadyExists
 	}
 
+	flavor, ok := domainSKU.NormalizeFlavor(input.Flavor)
+	if !ok {
+		return nil, appErrors.NewAppError("INVALID_FLAVOR", "flavor must be chicken, tuna, rabbit or empty", 400)
+	}
 	item := &domainSKU.SKU{
 		SKU:       input.SKU,
 		Name:      input.Name,
 		Barcode:   input.Barcode,
 		Category:  input.Category,
+		Flavor:    flavor,
 		Price:     input.Price,
 		CostPrice: input.CostPrice,
 		IsBundle:  input.IsBundle,
@@ -224,6 +231,13 @@ func (u *skuUsecase) Update(ctx context.Context, id uint, input UpdateInput) (*d
 	}
 	if input.Category != nil && *input.Category != "" {
 		item.Category = *input.Category
+	}
+	if input.Flavor != nil {
+		flavor, ok := domainSKU.NormalizeFlavor(*input.Flavor)
+		if !ok {
+			return nil, appErrors.NewAppError("INVALID_FLAVOR", "flavor must be chicken, tuna, rabbit or empty", 400)
+		}
+		item.Flavor = flavor
 	}
 	if input.Price != nil && *input.Price > 0 {
 		item.Price = *input.Price
