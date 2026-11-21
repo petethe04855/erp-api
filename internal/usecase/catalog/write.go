@@ -33,6 +33,11 @@ func (u *usecase) Create(ctx context.Context, input CreateInput) (*ProductRecord
 		}
 	}
 
+	createFlavor, flavorOK := domainSKU.NormalizeFlavor(input.Flavor)
+	if !flavorOK {
+		return nil, errInvalidFlavor()
+	}
+
 	var createdAccessories []SKUAccessoryRecord
 	var skuEntity domainSKU.SKU
 	err := u.txMgr.Transaction(ctx, func(txCtx context.Context) error {
@@ -41,6 +46,7 @@ func (u *usecase) Create(ctx context.Context, input CreateInput) (*ProductRecord
 			Name:      input.Name,
 			Barcode:   strings.TrimSpace(input.Barcode),
 			Category:  input.Type,
+			Flavor:    createFlavor,
 			Price:     input.RetailPrice,
 			CostPrice: input.Cost,
 			IsBundle:  input.IsBundle,
@@ -178,6 +184,7 @@ func (u *usecase) Create(ctx context.Context, input CreateInput) (*ProductRecord
 		SKU:         skuEntity.SKU,
 		Name:        skuEntity.Name,
 		Type:        skuEntity.Category,
+		Flavor:      skuEntity.Flavor,
 		Barcode:     skuEntity.Barcode,
 		BaseUnit:    input.BaseUnit,
 		RetailPrice: skuEntity.Price,
@@ -221,6 +228,10 @@ func applyPartialFields(s *domainSKU.SKU, input UpdateInput) {
 	if input.Type != nil {
 		s.Category = *input.Type
 	}
+	if input.Flavor != nil {
+		// Validated by the caller before applyPartialFields runs.
+		s.Flavor, _ = domainSKU.NormalizeFlavor(*input.Flavor)
+	}
 	if input.RetailPrice != nil && *input.RetailPrice > 0 {
 		s.Price = *input.RetailPrice
 	}
@@ -254,6 +265,11 @@ func (u *usecase) UpdateByID(ctx context.Context, idStr string, input UpdateInpu
 	if appErrReturn != nil {
 		return nil, appErrReturn
 	}
+	if input.Flavor != nil {
+		if _, ok := domainSKU.NormalizeFlavor(*input.Flavor); !ok {
+			return nil, errInvalidFlavor()
+		}
+	}
 
 	applyPartialFields(s, input)
 
@@ -285,6 +301,11 @@ func (u *usecase) Update(ctx context.Context, code string, input UpdateInput) (*
 	skuChanged, appErrReturn := u.renameTarget(ctx, s, input)
 	if appErrReturn != nil {
 		return nil, appErrReturn
+	}
+	if input.Flavor != nil {
+		if _, ok := domainSKU.NormalizeFlavor(*input.Flavor); !ok {
+			return nil, errInvalidFlavor()
+		}
 	}
 
 	applyPartialFields(s, input)
@@ -428,6 +449,7 @@ func (u *usecase) Update(ctx context.Context, code string, input UpdateInput) (*
 		SKU:         s.SKU,
 		Name:        s.Name,
 		Type:        s.Category,
+		Flavor:      s.Flavor,
 		RetailPrice: s.Price,
 		Cost:        s.CostPrice,
 		IsBundle:    s.IsBundle,
@@ -620,4 +642,8 @@ func (u *usecase) deleteProduct(ctx context.Context, s *domainSKU.SKU) error {
 	}
 
 	return nil
+}
+
+func errInvalidFlavor() error {
+	return appErr("INVALID_FLAVOR", "flavor must be chicken, tuna, rabbit or empty", 400)
 }

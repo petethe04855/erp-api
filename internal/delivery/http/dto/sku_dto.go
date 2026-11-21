@@ -5,6 +5,7 @@ type CreateSKURequest struct {
 	Name      string  `json:"name"`
 	Barcode   string  `json:"barcode"`
 	Category  string  `json:"category"`
+	Flavor    string  `json:"flavor"`
 	Price     float64 `json:"price"`
 	CostPrice float64 `json:"cost_price"`
 	IsBundle        bool    `json:"is_bundle"`
@@ -18,6 +19,7 @@ type UpdateSKURequest struct {
 	Name      *string  `json:"name"`
 	Barcode   *string  `json:"barcode"`
 	Category  *string  `json:"category"`
+	Flavor    *string  `json:"flavor"`
 	Price     *float64 `json:"price"`
 	CostPrice *float64 `json:"cost_price"`
 	IsBundle  *bool    `json:"is_bundle"`
@@ -31,6 +33,7 @@ type SKUResponse struct {
 	Name           string     `json:"name"`
 	Barcode        string     `json:"barcode"`
 	Category       string     `json:"category"`
+	Flavor         string     `json:"flavor"`
 	Price          float64    `json:"price"`
 	CostPrice      float64    `json:"cost_price"`
 	IsBundle       bool       `json:"is_bundle"`

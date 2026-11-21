@@ -94,8 +94,10 @@ type OrderLineItem struct {
 }
 
 type OrderItem struct {
-	ID         string `json:"id"`
-	Status     string `json:"status"`
+	ID     string `json:"id"`
+	Status string `json:"status"`
+	// UserID is TikTok's opaque buyer id (no name or contact data).
+	UserID     string `json:"user_id"`
 	CreateTime int64  `json:"create_time"`
 	Payment    struct {
 		TotalAmount string `json:"total_amount"`

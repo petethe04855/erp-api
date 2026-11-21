@@ -426,6 +426,8 @@ func (u *tiktokUsecase) SyncOrders(ctx context.Context, days int) (*SyncResultRe
 				Amount:  amount,
 				Status:  src.Status,
 				Items:   items,
+				// Opaque buyer id for repeat-buyer analytics (PDPA: no PII).
+				BuyerUserID: src.UserID,
 			})
 		}
 

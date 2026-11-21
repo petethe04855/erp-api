@@ -158,7 +158,7 @@ func (h *WorkspaceHandler) GetProductByID(c *fiber.Ctx) error {
 	if err != nil {
 		return respondCatalogError(c, err)
 	}
-	return response.OK(c, fiber.Map{"id": s.ID, "sku": s.SKU, "name": s.Name, "type": s.Category, "retailPrice": s.Price, "cost": s.CostPrice, "isBundle": s.IsBundle, "isActive": s.Status == "active", "image": s.Image})
+	return response.OK(c, fiber.Map{"id": s.ID, "sku": s.SKU, "name": s.Name, "type": s.Category, "flavor": s.Flavor, "retailPrice": s.Price, "cost": s.CostPrice, "isBundle": s.IsBundle, "isActive": s.Status == "active", "image": s.Image})
 }
 
 // UpdateProductByID updates a product by numeric record ID.

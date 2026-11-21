@@ -28,13 +28,15 @@ import (
 	domainShopee "chawy-erp-api/internal/domain/shopee"
 	domainSKU "chawy-erp-api/internal/domain/sku"
 	domainStock "chawy-erp-api/internal/domain/stock"
+	domainCRMIntegration "chawy-erp-api/internal/domain/crmintegration"
 	domainTikTok "chawy-erp-api/internal/domain/tiktok"
 	"chawy-erp-api/internal/repository/postgres"
 	usecaseAuth "chawy-erp-api/internal/usecase/auth"
-	usecaseCRM "chawy-erp-api/internal/usecase/crm"
 	usecaseBundle "chawy-erp-api/internal/usecase/bundle"
-	usecaseCustomer "chawy-erp-api/internal/usecase/customer"
 	usecaseCatalog "chawy-erp-api/internal/usecase/catalog"
+	usecaseCRM "chawy-erp-api/internal/usecase/crm"
+	usecaseCRMIntegration "chawy-erp-api/internal/usecase/crmintegration"
+	usecaseCustomer "chawy-erp-api/internal/usecase/customer"
 	usecaseFinance "chawy-erp-api/internal/usecase/finance"
 	usecaseFormula "chawy-erp-api/internal/usecase/formula"
 	usecaseInvoice "chawy-erp-api/internal/usecase/invoice"
@@ -43,6 +45,7 @@ import (
 	usecasePurchasing "chawy-erp-api/internal/usecase/purchasing"
 	usecaseQuotation "chawy-erp-api/internal/usecase/quotation"
 	usecaseReport "chawy-erp-api/internal/usecase/report"
+	usecaseSA "chawy-erp-api/internal/usecase/salesanalytics"
 	usecaseSalesReturn "chawy-erp-api/internal/usecase/salesreturn"
 	usecaseSeq "chawy-erp-api/internal/usecase/sequence"
 	usecaseSettings "chawy-erp-api/internal/usecase/settings"
@@ -52,8 +55,6 @@ import (
 	usecaseTikTok "chawy-erp-api/internal/usecase/tiktok"
 	"chawy-erp-api/pkg/database"
 	"chawy-erp-api/pkg/mailer"
-
-
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
@@ -127,12 +128,12 @@ func main() {
 		&domainSalesReturn.SalesReturn{},
 		&domainSalesReturn.SalesReturnLine{},
 		&domainSeq.DocumentSequence{},
+		&domainCRMIntegration.GoodsIssue{},
 	); err != nil {
 		// Fail-closed: running on an incompatible schema causes partial data
 		// failures at runtime; it is safer to refuse to start.
 		log.Fatalf("[FATAL] AutoMigrate failed: %v", err)
 	}
-
 
 	// 3.0 Migration: Reset SKU bundle flag to Finished Product and clear legacy bundle items
 	// according to the TikTok Order Inventory Deduction spec:
@@ -230,6 +231,8 @@ func main() {
 	shopeeMatchingUsecase := usecaseShopee.NewMatchingUsecase(shopeeIncomeRepo, shopeeOrderRepo, skuCostHistoryUsecase)
 	shopeeDashboardUsecase := usecaseShopee.NewDashboardUsecase(shopeeMatchingUsecase)
 	crmUsecase := usecaseCRM.NewUsecase(crmRepo)
+	salesAnalyticsUsecase := usecaseSA.NewUsecase(postgres.NewSalesAnalyticsRepository(db),
+		usecaseSA.WithFlavorSources(formulaRepo, skuRepo))
 
 	// 6. Dependency Injection - Handlers
 	authHdl := handler.NewAuthHandler(authUsecase)
@@ -258,6 +261,9 @@ func main() {
 	shopeeHdl := handler.NewShopeeHandler(shopeeOrderUsecase, shopeeIncomeUsecase, shopeeMatchingUsecase, shopeeDashboardUsecase)
 	skuCostHistoryHdl := handler.NewSKUCostHistoryHandler(skuCostHistoryUsecase)
 	crmHdl := handler.NewCRMHandler(crmUsecase)
+	salesAnalyticsHdl := handler.NewSalesAnalyticsHandler(salesAnalyticsUsecase)
+	crmIntegrationHdl := handler.NewCRMIntegrationHandler(usecaseCRMIntegration.New(
+		skuRepo, stockRepo, postgres.NewCRMIntegrationRepository(db), txManager))
 
 	// 7. Initialize Fiber App
 	app := fiber.New(fiber.Config{
@@ -315,29 +321,32 @@ func main() {
 
 	// 9. Register Routes
 	route.RegisterRoutes(route.Config{
-		App:                app,
-		AuthHandler:        authHdl,
-		SKUHandler:         skuHdl,
-		BundleHandler:      bundleHdl,
-		FormulaHandler:     formulaHdl,
-		StockHandler:       stockHdl,
-		CustomerHandler:    customerHdl,
-		OrderHandler:       orderHdl,
-		PurchasingHandler:  purchasingHdl,
-		InvoiceHandler:     invoiceHdl,
-		ReportHandler:      reportHdl,
-		FinanceHandler:     financeHdl,
-		WorkspaceHandler:   workspaceHdl,
-		TikTokHandler:      tiktokHdl,
-		SettingsHandler:    settingsHdl,
-		UploadHandler:      uploadHdl,
-		LiveHandler:        liveHdl,
-		SalesReturnHandler: salesReturnHdl,
-		ShopeeHandler:      shopeeHdl,
+		App:                   app,
+		AuthHandler:           authHdl,
+		SKUHandler:            skuHdl,
+		BundleHandler:         bundleHdl,
+		FormulaHandler:        formulaHdl,
+		StockHandler:          stockHdl,
+		CustomerHandler:       customerHdl,
+		OrderHandler:          orderHdl,
+		PurchasingHandler:     purchasingHdl,
+		InvoiceHandler:        invoiceHdl,
+		ReportHandler:         reportHdl,
+		FinanceHandler:        financeHdl,
+		WorkspaceHandler:      workspaceHdl,
+		TikTokHandler:         tiktokHdl,
+		SettingsHandler:       settingsHdl,
+		UploadHandler:         uploadHdl,
+		LiveHandler:           liveHdl,
+		SalesReturnHandler:    salesReturnHdl,
+		ShopeeHandler:         shopeeHdl,
 		SKUCostHistoryHandler: skuCostHistoryHdl,
-		CRMHandler:         crmHdl,
-		JWTSecret:          cfg.JWTSecret,
-		UserStatusLoader:   authRepo,
+		CRMHandler:            crmHdl,
+		SalesAnalyticsHandler: salesAnalyticsHdl,
+		CRMIntegrationHandler: crmIntegrationHdl,
+		CRMServiceToken:       cfg.CRMServiceToken,
+		JWTSecret:             cfg.JWTSecret,
+		UserStatusLoader:      authRepo,
 	})
 
 	// 9.1 Start Background TikTok Sync Scheduler
