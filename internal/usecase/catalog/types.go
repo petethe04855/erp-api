@@ -69,6 +69,27 @@ type ImportSummary struct {
 	Errors    []ImportRowError `json:"errors"`
 }
 
+// MaxBulkDelete caps how many products one bulk-delete request may remove.
+const MaxBulkDelete = 100
+
+// BulkDeleteItem is the per-product outcome of a bulk delete.
+type BulkDeleteItem struct {
+	ID      uint   `json:"id"`
+	SKU     string `json:"sku"`
+	Name    string `json:"name"`
+	Deleted bool   `json:"deleted"`
+	Code    string `json:"code,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+// BulkDeleteSummary mirrors the bulk-delete response contract.
+type BulkDeleteSummary struct {
+	Requested int              `json:"requested"`
+	Deleted   int              `json:"deleted"`
+	Failed    int              `json:"failed"`
+	Results   []BulkDeleteItem `json:"results"`
+}
+
 // ComponentLine / AccessoryLine carry bundle component and accessory payloads
 // (JSON tags mirror the request body so the handler can parse straight in).
 type ComponentLine struct {

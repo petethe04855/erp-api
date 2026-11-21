@@ -47,7 +47,10 @@ func (u *sequenceUsecase) Generate(ctx context.Context, docType string, business
 		string(domainSeq.TypeInvoice),
 		string(domainSeq.TypeQuotation),
 		string(domainSeq.TypeSalesReturn),
-		string(domainSeq.TypePurchaseOrder):
+		string(domainSeq.TypePurchaseOrder),
+		string(domainSeq.TypeExpense),
+		string(domainSeq.TypeIncome),
+		string(domainSeq.TypeJournal):
 		// valid prefix
 	default:
 		return "", fmt.Errorf("unsupported document type: %s", docType)

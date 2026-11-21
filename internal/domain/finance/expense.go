@@ -49,7 +49,7 @@ type Expense struct {
 	SlipURL     string          `gorm:"size:500" json:"slip_url"`
 	Vendor      string          `gorm:"size:150" json:"vendor"`
 	InvoiceRef  string          `gorm:"size:100" json:"invoice_ref"`
-	Description string          `gorm:"size:255" json:"description"`
+	Description string          `gorm:"type:text" json:"description"` // AI scans list every item; may be long
 	CreatedBy   string          `gorm:"size:100" json:"created_by"`
 	Status      ExpenseStatus   `gorm:"size:20;index;not null;default:'Active'" json:"status"`
 	VoidedAt    *time.Time      `json:"voided_at,omitempty"`

@@ -25,6 +25,7 @@ type Usecase interface {
 	SetReorder(ctx context.Context, code string, reorder int) (*domainSKU.SKU, error)
 	DeleteByID(ctx context.Context, id string) error
 	Delete(ctx context.Context, code string) error
+	BulkDeleteByIDs(ctx context.Context, ids []uint) (*BulkDeleteSummary, error)
 	Resolve(ctx context.Context, codes []string) ([]ResolvedSKU, error)
 	Accessories(ctx context.Context, sku string) ([]SKUAccessoryRecord, error)
 	Import(ctx context.Context, totalRows int, lines []ImportLine) *ImportSummary

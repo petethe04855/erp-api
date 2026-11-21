@@ -92,7 +92,18 @@ func toShopeeDashboardResponse(res *usecaseShopee.DashboardAnalyticsResult) dto.
 		YTDSummary:    dto.NewShopeeMonthlySummaryResponse(&res.YTDSummary),
 		MonthlyTrends: dto.NewShopeeMonthlySummaryResponses(res.MonthlyTrends),
 		TopSKUs:       dto.NewShopeeTopSKUStatResponses(res.TopSKUs),
+		DailySales:    toShopeeDailySaleResponses(res.DailySales),
 	}
+}
+
+func toShopeeDailySaleResponses(items []usecaseShopee.DailySale) []dto.ShopeeDailySaleResponse {
+	out := make([]dto.ShopeeDailySaleResponse, len(items))
+	for i, d := range items {
+		out[i] = dto.ShopeeDailySaleResponse{
+			Date: d.Date, GrossSale: d.GrossSale, NetReceive: d.NetReceive, NetProfit: d.NetProfit,
+		}
+	}
+	return out
 }
 
 // PreviewOrders parses uploaded orders file and returns preview

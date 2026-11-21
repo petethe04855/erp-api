@@ -46,6 +46,11 @@ func NewScanner() *Scanner {
 const promptText = `You are an expert OCR and receipt/invoice/order/slip analysis system for Thai businesses.
 Extract expense and transaction details from the provided image (receipt, tax invoice, bank transfer slip, or e-commerce purchase order screenshot such as Shopee, Lazada, or TikTok Shop).
 
+Input format:
+- The input may be a single image OR a PDF document that can have multiple pages.
+- A multi-page PDF is ONE receipt/document: read ALL pages and return ONE single JSON object (never an array).
+  "amount" must be the SUM of the totals across all pages (do not double-count a grand total that already includes earlier pages), and "description" must list the items from EVERY page.
+
 Handling Multiple Items or Orders (สำคัญมาก):
 - If the image contains multiple items or multiple purchase orders (e.g. 2 orders on a Shopee/Lazada screen):
   1. "amount": Calculate and SUM the total net amount of ALL visible items/orders together (e.g. 240 + 48 = 288). Do not miss any item.
@@ -86,12 +91,7 @@ func (s *Scanner) ScanReceipt(ctx context.Context, apiKey string, imageBytes []b
 		return nil, errors.New("image bytes cannot be empty")
 	}
 
-	format := "jpeg"
-	if strings.Contains(strings.ToLower(mimeType), "png") {
-		format = "png"
-	} else if strings.Contains(strings.ToLower(mimeType), "webp") {
-		format = "webp"
-	}
+	mimeType = normalizeMimeType(mimeType)
 
 	client, err := genai.NewClient(ctx, option.WithAPIKey(apiKey))
 	if err != nil {
@@ -112,7 +112,7 @@ func (s *Scanner) ScanReceipt(ctx context.Context, apiKey string, imageBytes []b
 		model.Temperature = &temp
 
 		parts := []genai.Part{
-			genai.ImageData(format, imageBytes),
+			genai.Blob{MIMEType: mimeType, Data: imageBytes},
 			genai.Text(promptText),
 		}
 
@@ -146,6 +146,23 @@ func (s *Scanner) ScanReceipt(ctx context.Context, apiKey string, imageBytes []b
 	}
 
 	return nil, lastErr
+}
+
+// normalizeMimeType maps the caller's MIME type to one Gemini accepts for
+// receipts, defaulting empty or unknown values to image/jpeg.
+func normalizeMimeType(mimeType string) string {
+	m := strings.ToLower(strings.TrimSpace(mimeType))
+	if i := strings.Index(m, ";"); i >= 0 {
+		m = strings.TrimSpace(m[:i])
+	}
+	switch m {
+	case "image/png", "image/webp", "image/jpeg", "application/pdf":
+		return m
+	case "image/jpg":
+		return "image/jpeg"
+	default:
+		return "image/jpeg"
+	}
 }
 
 // cleanJSONString removes markdown codeblock wrapper if present.

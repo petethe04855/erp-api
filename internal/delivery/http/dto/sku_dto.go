@@ -62,3 +62,26 @@ type SKUReceiptResponse struct {
 	Note             string  `json:"note,omitempty"`
 }
 
+
+// BulkDeleteProductsRequest is the body of POST /products/bulk-delete.
+type BulkDeleteProductsRequest struct {
+	IDs []uint `json:"ids"`
+}
+
+// BulkDeleteProductItemResponse is the per-product outcome of a bulk delete.
+type BulkDeleteProductItemResponse struct {
+	ID      uint   `json:"id"`
+	SKU     string `json:"sku"`
+	Name    string `json:"name"`
+	Deleted bool   `json:"deleted"`
+	Code    string `json:"code,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+// BulkDeleteProductsResponse summarizes a bulk delete.
+type BulkDeleteProductsResponse struct {
+	Requested int                             `json:"requested"`
+	Deleted   int                             `json:"deleted"`
+	Failed    int                             `json:"failed"`
+	Results   []BulkDeleteProductItemResponse `json:"results"`
+}

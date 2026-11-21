@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"math/rand"
 	"strings"
 	"time"
 
@@ -73,8 +74,10 @@ func (u *financeUsecase) PostJournal(ctx context.Context, req PostingRequest) (*
 		dateStr = time.Now().Format("2006-01-02")
 	}
 
-	// Generate code JE-YYYY/MM/DD-XXXX
-	code := fmt.Sprintf("JE-%s-%04d", time.Now().Format("2006/01/02"), time.Now().UnixNano()%10000)
+	code, err := u.nextCode(ctx, "JE", dateStr)
+	if err != nil {
+		return nil, err
+	}
 
 	entry := &domainFinance.JournalEntry{
 		Code:        code,
@@ -82,7 +85,7 @@ func (u *financeUsecase) PostJournal(ctx context.Context, req PostingRequest) (*
 		SourceType:  req.SourceType,
 		SourceID:    req.SourceID,
 		SourceRef:   req.SourceRef,
-		Description: req.Description,
+		Description: truncateRunes(req.Description, 255), // column is varchar(255)
 		Status:      domainFinance.JournalStatusPosted,
 		CreatedBy:   req.CreatedBy,
 		PostedAt:    time.Now().UTC(),
@@ -146,29 +149,31 @@ func (u *financeUsecase) CreateExpense(ctx context.Context, in CreateExpenseInpu
 		dateStr = time.Now().Format("2006-01-02")
 	}
 
-	code := fmt.Sprintf("EXP-%s-%04d", time.Now().Format("2006"), time.Now().UnixNano()%10000)
-
 	exp := &domainFinance.Expense{
-		Code:        code,
 		Date:        dateStr,
 		Category:    in.Category,
 		Channel:     in.Channel,
 		Amount:      in.Amount,
-		ProductName: in.ProductName,
+		ProductName: clip(in.ProductName, maxProductName),
 		PurchaseURL: in.PurchaseURL,
 		SlipURL:     in.SlipURL,
-		Vendor:      in.Vendor,
-		InvoiceRef:  in.InvoiceRef,
+		Vendor:      clip(in.Vendor, maxVendor),
+		InvoiceRef:  clip(in.InvoiceRef, maxInvoiceRef),
 		Description: in.Description,
-		CreatedBy:   in.CreatedBy,
+		CreatedBy:   clip(in.CreatedBy, maxCreatedBy),
 		Status:      domainFinance.ExpenseStatusActive,
 	}
 
 	run := func(txCtx context.Context) error {
+		code, err := u.nextCode(txCtx, "EXP", dateStr)
+		if err != nil {
+			return err
+		}
+		exp.Code = code
 		if err := u.repo.CreateExpense(txCtx, exp); err != nil {
 			return err
 		}
-		_, err := u.PostJournal(txCtx, expensePostingRequest(exp, "expense", exp.ID, exp.CreatedBy))
+		_, err = u.PostJournal(txCtx, expensePostingRequest(exp, "expense", exp.ID, exp.CreatedBy))
 		return err
 	}
 
@@ -198,6 +203,39 @@ func truncateRunes(s string, max int) string {
 		return s
 	}
 	return string(r[:max])
+}
+
+// Column limits of the expense/income text fields (see domain/finance).
+const (
+	maxProductName = 255
+	maxVendor      = 150
+	maxInvoiceRef  = 100
+	maxCreatedBy   = 100
+)
+
+// clip trims s and caps it at max characters, so a long AI-scanned value
+// (e.g. several vendors or order numbers joined together) never fails the
+// insert with a database "value too long" error.
+func clip(s string, max int) string {
+	return truncateRunes(strings.TrimSpace(s), max)
+}
+
+// nextCode returns a unique document number such as EXP-2026-11-15-001, from
+// the shared sequence counter (row-locked, inside the caller's transaction).
+// Without a generator (unit tests) it falls back to a time+random suffix.
+func (u *financeUsecase) nextCode(ctx context.Context, docType, dateStr string) (string, error) {
+	if u.seq == nil {
+		return fmt.Sprintf("%s-%s-%d%04d", docType, time.Now().Format("2006"), time.Now().UnixNano()/1000%1000000, rand.Intn(10000)), nil
+	}
+	var day *time.Time
+	if t, err := time.Parse("2006-01-02", strings.TrimSpace(dateStr)); err == nil {
+		day = &t
+	}
+	code, err := u.seq.Generate(ctx, docType, day)
+	if err != nil {
+		return "", appErrors.NewAppError("CODE_GENERATION_FAILED", "สร้างเลขที่เอกสารไม่สำเร็จ กรุณาลองใหม่อีกครั้ง", 500)
+	}
+	return code, nil
 }
 
 func (u *financeUsecase) inTx(ctx context.Context, fn func(context.Context) error) error {
@@ -331,14 +369,14 @@ func (u *financeUsecase) UpdateExpense(ctx context.Context, id uint, in UpdateEx
 		exp.Date = in.Date
 	}
 	exp.Amount = in.Amount
-	exp.ProductName = in.ProductName
+	exp.ProductName = clip(in.ProductName, maxProductName)
 	exp.PurchaseURL = in.PurchaseURL
 	exp.SlipURL = in.SlipURL
-	exp.Vendor = in.Vendor
-	exp.InvoiceRef = in.InvoiceRef
+	exp.Vendor = clip(in.Vendor, maxVendor)
+	exp.InvoiceRef = clip(in.InvoiceRef, maxInvoiceRef)
 	exp.Description = in.Description
 	if strings.TrimSpace(in.CreatedBy) != "" {
-		exp.CreatedBy = strings.TrimSpace(in.CreatedBy)
+		exp.CreatedBy = clip(in.CreatedBy, maxCreatedBy)
 	}
 
 	actor := strings.TrimSpace(in.UpdatedBy)

@@ -61,6 +61,9 @@ type fakeRepo struct {
 	accessoryCycle     bool
 
 	deletedSKUID uint
+	deletedIDs   []uint
+	byID         map[uint]*domainSKU.SKU
+	refsBySKU    map[string]*domainCatalog.ReferenceCounts
 	deleteQuiet  bool
 	lockSKU      *domainSKU.SKU
 	refs         *domainCatalog.ReferenceCounts
@@ -90,6 +93,12 @@ func (f *fakeRepo) FindByUpperSKU(ctx context.Context, code string) (*domainSKU.
 	return f.findByUpper, f.findByUpperE
 }
 func (f *fakeRepo) FindByID(ctx context.Context, id uint) (*domainSKU.SKU, error) {
+	if f.byID != nil {
+		if s, ok := f.byID[id]; ok {
+			return s, nil
+		}
+		return nil, fmt.Errorf("record not found")
+	}
 	return f.findByID, f.findByIDE
 }
 func (f *fakeRepo) ExistsUpperExcluding(ctx context.Context, code string, id uint) (bool, error) {
@@ -163,9 +172,13 @@ func (f *fakeRepo) CreateSKU(ctx context.Context, sku *domainSKU.SKU) error {
 func (f *fakeRepo) SaveSKU(ctx context.Context, sku *domainSKU.SKU) error { return nil }
 func (f *fakeRepo) DeleteSKU(ctx context.Context, id uint) error {
 	f.deletedSKUID = id
+	f.deletedIDs = append(f.deletedIDs, id)
 	return nil
 }
 func (f *fakeRepo) LockSKU(ctx context.Context, id uint) (*domainSKU.SKU, error) {
+	if f.byID != nil {
+		return f.byID[id], nil
+	}
 	return f.lockSKU, nil
 }
 func (f *fakeRepo) CreateStock(ctx context.Context, stock *domainStock.Stock) error {
@@ -190,6 +203,12 @@ func (f *fakeRepo) CreateAccessory(ctx context.Context, item *domainSKU.SKUAcces
 }
 func (f *fakeRepo) DeleteAccessoriesBySKU(ctx context.Context, sku string) error { return nil }
 func (f *fakeRepo) CountReferences(ctx context.Context, sku *domainSKU.SKU) (*domainCatalog.ReferenceCounts, error) {
+	if r, ok := f.refsBySKU[sku.SKU]; ok {
+		return r, nil
+	}
+	if f.refs == nil {
+		return &domainCatalog.ReferenceCounts{}, nil
+	}
 	return f.refs, nil
 }
 func (f *fakeRepo) CascadeSKURename(ctx context.Context, oldSKU, newSKU string) error { return nil }
@@ -318,6 +337,56 @@ func TestDeleteByIDInvalidNumberIsNotFound(t *testing.T) {
 	var appE *appErrors.AppError
 	require.ErrorAs(t, err, &appE)
 	assert.Equal(t, "NOT_FOUND", appE.Code)
+}
+
+// ---- Bulk delete ----
+
+func TestBulkDeleteDeletesFreeAndReportsInUseAndMissing(t *testing.T) {
+	r := &fakeRepo{
+		byID: map[uint]*domainSKU.SKU{
+			1: {ID: 1, SKU: "FREE-1", Name: "Free one"},
+			2: {ID: 2, SKU: "USED-1", Name: "Used one"},
+			3: {ID: 3, SKU: "FREE-2", Name: "Free two"},
+		},
+		refsBySKU: map[string]*domainCatalog.ReferenceCounts{
+			"USED-1": {PositiveStock: 4},
+		},
+	}
+	tx := &fakeTxMgr{}
+	res, err := newTestUsecase(r, tx).BulkDeleteByIDs(context.Background(), []uint{1, 2, 3, 99, 1, 0})
+	require.NoError(t, err)
+
+	assert.Equal(t, 4, res.Requested, "duplicates and zero ids are ignored")
+	assert.Equal(t, 2, res.Deleted)
+	assert.Equal(t, 2, res.Failed)
+	assert.Equal(t, []uint{1, 3}, r.deletedIDs)
+	assert.Equal(t, 3, tx.calls, "each existing product runs in its own transaction")
+
+	require.Len(t, res.Results, 4)
+	assert.True(t, res.Results[0].Deleted)
+	assert.Equal(t, "FREE-1", res.Results[0].SKU)
+	assert.False(t, res.Results[1].Deleted)
+	assert.Equal(t, "PRODUCT_IN_USE", res.Results[1].Code)
+	assert.Contains(t, res.Results[1].Error, "มีสต็อกคงเหลือ (4 รายการ)")
+	assert.Equal(t, "Used one", res.Results[1].Name)
+	assert.Equal(t, "NOT_FOUND", res.Results[3].Code)
+}
+
+func TestBulkDeleteValidatesCount(t *testing.T) {
+	uc := newTestUsecase(&fakeRepo{}, &fakeTxMgr{})
+	var appE *appErrors.AppError
+
+	_, err := uc.BulkDeleteByIDs(context.Background(), nil)
+	require.ErrorAs(t, err, &appE)
+	assert.Equal(t, 400, appE.StatusCode)
+
+	ids := make([]uint, MaxBulkDelete+1)
+	for i := range ids {
+		ids[i] = uint(i + 1)
+	}
+	_, err = uc.BulkDeleteByIDs(context.Background(), ids)
+	require.ErrorAs(t, err, &appE)
+	assert.Contains(t, appE.Message, "ลบได้สูงสุด")
 }
 
 // ---- Create ----
