@@ -594,3 +594,19 @@ var (
 	_ pkgDatabase.TxManager    = (*fakeTxMgr)(nil)
 	_ ReceiptStatsSource       = (*fakeStats)(nil)
 )
+
+func TestCreateAndUpdateFlavor(t *testing.T) {
+	r := &fakeRepo{}
+	tx := &fakeTxMgr{}
+	u := newTestUsecase(r, tx)
+	ctx := context.Background()
+
+	_, err := u.Create(ctx, CreateInput{SKU: "B-1", Name: "Beef", Flavor: "beef"})
+	require.EqualError(t, err, "flavor must be chicken, tuna, rabbit or empty")
+	assert.Zero(t, tx.calls, "an invalid flavor never opens a transaction")
+
+	rec, err := u.Create(ctx, CreateInput{SKU: "r-1", Name: "Rabbit bag", Flavor: " Rabbit "})
+	require.NoError(t, err)
+	assert.Equal(t, "rabbit", rec.Flavor)
+	assert.Equal(t, "rabbit", r.createdSKUs[0].Flavor)
+}

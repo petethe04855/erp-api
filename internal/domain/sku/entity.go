@@ -11,6 +11,8 @@ type SKU struct {
 	Name      string    `json:"name" gorm:"not null;size:255"`
 	Barcode   string    `json:"barcode" gorm:"size:100;index"`
 	Category  string    `json:"category" gorm:"size:100"`
+	// Flavor marks single food bags (chicken / tuna / rabbit); see flavor.go.
+	Flavor    string    `json:"flavor" gorm:"size:20;index"`
 	Price     float64   `json:"price" gorm:"type:numeric(12,2);default:0"`
 	CostPrice float64   `json:"cost_price" gorm:"type:numeric(12,2);default:0"`
 	IsBundle  bool      `json:"is_bundle" gorm:"default:false"`

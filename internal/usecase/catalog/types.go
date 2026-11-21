@@ -25,6 +25,7 @@ type ProductRecord struct {
 	SKU             string               `json:"sku"`
 	Name            string               `json:"name"`
 	Type            string               `json:"type"`
+	Flavor          string               `json:"flavor"`
 	Barcode         string               `json:"barcode"`
 	BaseUnit        string               `json:"baseUnit"`
 	RetailPrice     float64              `json:"retailPrice"`
@@ -113,6 +114,7 @@ type CreateInput struct {
 	Name            string          `json:"name"`
 	Barcode         string          `json:"barcode"`
 	Type            string          `json:"type"`
+	Flavor          string          `json:"flavor"`
 	BaseUnit        string          `json:"baseUnit"`
 	RetailPrice     float64         `json:"retailPrice"`
 	Cost            float64         `json:"cost"`
@@ -131,6 +133,7 @@ type UpdateInput struct {
 	Name        *string         `json:"name"`
 	Barcode     *string         `json:"barcode"`
 	Type        *string         `json:"type"`
+	Flavor      *string         `json:"flavor"`
 	RetailPrice *float64        `json:"retailPrice"`
 	Cost        *float64        `json:"cost"`
 	IsBundle    *bool           `json:"isBundle"`

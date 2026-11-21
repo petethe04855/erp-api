@@ -23,6 +23,10 @@ type Config struct {
 	JWTExpHours    string
 	AllowedOrigins string
 
+	// CRMServiceToken authenticates backoffice-api on /api/v1/integrations/crm.
+	// Empty keeps those routes closed (503).
+	CRMServiceToken string
+
 	// TikTok Shop Integration
 	TikTokAppKey              string
 	TikTokAppSecret           string
@@ -103,6 +107,7 @@ func LoadConfig() *Config {
 		DatabaseURL:    databaseURL,
 		JWTSecret:      getEnv("JWT_SECRET", ""),
 		JWTExpHours:    getEnv("JWT_EXPIRATION_HOURS", "24"),
+		CRMServiceToken: getEnv("ERP_CRM_SERVICE_TOKEN", ""),
 		AllowedOrigins: getEnv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:3001,http://localhost:8082,http://127.0.0.1:3000,http://127.0.0.1:3001,http://127.0.0.1:8082"),
 
 		TikTokAppKey:              getEnv("TIKTOK_APP_KEY", ""),
