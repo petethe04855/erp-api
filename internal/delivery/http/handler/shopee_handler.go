@@ -127,6 +127,47 @@ func (h *ShopeeHandler) PreviewOrders(c *fiber.Ctx) error {
 	return response.OK(c, toShopeeOrderPreviewResponse(res))
 }
 
+// PreviewOrderRepair shows what re-reading an Order export would correct on
+// orders already stored (order date, quantity, variation). Nothing is saved.
+func (h *ShopeeHandler) PreviewOrderRepair(c *fiber.Ctx) error {
+	file, err := c.FormFile("file")
+	if err != nil {
+		return response.BadRequest(c, "Please upload a file (.xlsx, .xls, .csv)")
+	}
+	f, err := file.Open()
+	if err != nil {
+		return response.InternalServerError(c, fmt.Sprintf("Failed to open file: %v", err))
+	}
+	defer f.Close()
+
+	res, err := h.orderUsecase.PreviewOrderRepair(c.Context(), f, file.Filename)
+	if err != nil {
+		return response.BadRequest(c, err.Error())
+	}
+	return response.OK(c, res)
+}
+
+// ApplyOrderRepair corrects stored orders from an Order export in place and
+// records every changed field in shopee_order_repairs.
+func (h *ShopeeHandler) ApplyOrderRepair(c *fiber.Ctx) error {
+	file, err := c.FormFile("file")
+	if err != nil {
+		return response.BadRequest(c, "Please upload a file (.xlsx, .xls, .csv)")
+	}
+	f, err := file.Open()
+	if err != nil {
+		return response.InternalServerError(c, fmt.Sprintf("Failed to open file: %v", err))
+	}
+	defer f.Close()
+
+	actor, _ := c.Locals("email").(string)
+	res, err := h.orderUsecase.ApplyOrderRepair(c.Context(), f, file.Filename, actor)
+	if err != nil {
+		return response.BadRequest(c, err.Error())
+	}
+	return response.OK(c, res)
+}
+
 // ImportOrders parses uploaded orders file and commits to DB
 func (h *ShopeeHandler) ImportOrders(c *fiber.Ctx) error {
 	file, err := c.FormFile("file")

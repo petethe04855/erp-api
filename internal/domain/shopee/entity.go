@@ -17,16 +17,18 @@ type ShopeeOrder struct {
 func (ShopeeOrder) TableName() string { return "shopee_orders" }
 
 type ShopeeOrderItem struct {
-	ID           uint      `json:"id" gorm:"primaryKey;autoIncrement"`
-	OrderID      string    `json:"order_id" gorm:"index;not null;size:64"`
-	SKU          string    `json:"sku" gorm:"index;not null;size:100"`
-	ProductName  string    `json:"product_name" gorm:"size:500;not null"`
-	Qty          int       `json:"qty" gorm:"not null;default:1"`
-	SalePrice    float64   `json:"sale_price" gorm:"type:numeric(12,2);not null;default:0"` // Line Total (BR-01)
-	OriginalSKU  string    `json:"original_sku" gorm:"size:100"`
-	SKUConfirmed bool      `json:"sku_confirmed" gorm:"default:false;not null"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID          uint   `json:"id" gorm:"primaryKey;autoIncrement"`
+	OrderID     string `json:"order_id" gorm:"index;not null;size:64"`
+	SKU         string `json:"sku" gorm:"index;not null;size:100"`
+	ProductName string `json:"product_name" gorm:"size:500;not null"`
+	// VariationName is Shopee's "ชื่อตัวเลือก" (e.g. "3 ถุง", "อกไก่ 2 ทูน่า 1").
+	VariationName string    `json:"variation_name" gorm:"size:255;not null;default:''"`
+	Qty           int       `json:"qty" gorm:"not null;default:1"`
+	SalePrice     float64   `json:"sale_price" gorm:"type:numeric(12,2);not null;default:0"` // Line Total (BR-01)
+	OriginalSKU   string    `json:"original_sku" gorm:"size:100"`
+	SKUConfirmed  bool      `json:"sku_confirmed" gorm:"default:false;not null"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 func (ShopeeOrderItem) TableName() string { return "shopee_order_items" }
