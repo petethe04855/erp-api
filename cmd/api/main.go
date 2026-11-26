@@ -29,6 +29,8 @@ import (
 	domainSKU "chawy-erp-api/internal/domain/sku"
 	domainStock "chawy-erp-api/internal/domain/stock"
 	domainCRMIntegration "chawy-erp-api/internal/domain/crmintegration"
+	domainBooth "chawy-erp-api/internal/domain/booth"
+	domainStockOut "chawy-erp-api/internal/domain/stockout"
 	domainTikTok "chawy-erp-api/internal/domain/tiktok"
 	"chawy-erp-api/internal/repository/postgres"
 	usecaseAuth "chawy-erp-api/internal/usecase/auth"
@@ -36,6 +38,8 @@ import (
 	usecaseCatalog "chawy-erp-api/internal/usecase/catalog"
 	usecaseCRM "chawy-erp-api/internal/usecase/crm"
 	usecaseCRMIntegration "chawy-erp-api/internal/usecase/crmintegration"
+	usecaseBooth "chawy-erp-api/internal/usecase/booth"
+	usecaseStockOut "chawy-erp-api/internal/usecase/stockout"
 	usecaseCustomer "chawy-erp-api/internal/usecase/customer"
 	usecaseFinance "chawy-erp-api/internal/usecase/finance"
 	usecaseFormula "chawy-erp-api/internal/usecase/formula"
@@ -130,6 +134,10 @@ func main() {
 		&domainSalesReturn.SalesReturnLine{},
 		&domainSeq.DocumentSequence{},
 		&domainCRMIntegration.GoodsIssue{},
+		&domainBooth.ConfigRecord{},
+		&domainBooth.Sale{},
+		&domainStockOut.ConfigRecord{},
+		&domainStockOut.Batch{},
 	); err != nil {
 		// Fail-closed: running on an incompatible schema causes partial data
 		// failures at runtime; it is safer to refuse to start.
@@ -266,6 +274,14 @@ func main() {
 	salesAnalyticsHdl := handler.NewSalesAnalyticsHandler(salesAnalyticsUsecase)
 	crmIntegrationHdl := handler.NewCRMIntegrationHandler(usecaseCRMIntegration.New(
 		skuRepo, stockRepo, postgres.NewCRMIntegrationRepository(db), txManager))
+	boothHdl := handler.NewBoothHandler(usecaseBooth.New(
+		postgres.NewBoothRepository(db), skuRepo, stockRepo, txManager))
+	stockOutBroker := usecaseStockOut.NewBroker()
+	stockOutHdl := handler.NewStockOutHandler(usecaseStockOut.New(
+		postgres.NewStockOutRepository(db), skuRepo, stockRepo, txManager,
+		usecaseStockOut.WithBroker(stockOutBroker),
+		usecaseStockOut.WithNotifier(usecaseStockOut.NewEmailNotifier(authRepo, appMailer)),
+	), stockOutBroker)
 
 	// 7. Initialize Fiber App
 	app := fiber.New(fiber.Config{
@@ -347,6 +363,8 @@ func main() {
 		CRMHandler:            crmHdl,
 		SalesAnalyticsHandler: salesAnalyticsHdl,
 		CRMIntegrationHandler: crmIntegrationHdl,
+		BoothHandler:          boothHdl,
+		StockOutHandler:       stockOutHdl,
 		CRMServiceToken:       cfg.CRMServiceToken,
 		JWTSecret:             cfg.JWTSecret,
 		UserStatusLoader:      authRepo,

@@ -12,6 +12,7 @@ import (
 
 type Mailer interface {
 	SendUserCredentials(recipientEmail, recipientName, generatedPassword, role string) error
+	SendNotification(recipientEmail, subject, htmlBody string) error
 }
 
 type smtpMailer struct {
@@ -118,6 +119,19 @@ func (m *smtpMailer) SendUserCredentials(recipientEmail, recipientName, generate
 		time.Now().Year(),
 	)
 
+	return m.send(recipientEmail, subject, htmlBody)
+}
+
+// SendNotification sends a short HTML notice (e.g. a stock-out count that
+// needs the owner's review).
+func (m *smtpMailer) SendNotification(recipientEmail, subject, htmlBody string) error {
+	if m.host == "" || m.from == "" {
+		return fmt.Errorf("SMTP is not configured (SMTP_HOST or sender address is missing)")
+	}
+	return m.send(recipientEmail, subject, htmlBody)
+}
+
+func (m *smtpMailer) send(recipientEmail, subject, htmlBody string) error {
 	headers := make(map[string]string)
 	headers["From"] = m.from
 	headers["To"] = recipientEmail
@@ -182,7 +196,7 @@ func (m *smtpMailer) SendUserCredentials(recipientEmail, recipientName, generate
 		if err != nil {
 			return fmt.Errorf("SMTP close data failed: %w", err)
 		}
-		log.Printf("[INFO] Credentials email sent successfully to %s (via SSL/TLS port 465)", recipientEmail)
+		log.Printf("[INFO] Email sent to %s (via SSL/TLS port 465)", recipientEmail)
 		return nil
 	}
 
@@ -234,6 +248,6 @@ func (m *smtpMailer) SendUserCredentials(recipientEmail, recipientName, generate
 		return fmt.Errorf("SMTP close data failed: %w", err)
 	}
 
-	log.Printf("[INFO] Credentials email sent successfully to %s", recipientEmail)
+	log.Printf("[INFO] Email sent to %s", recipientEmail)
 	return nil
 }

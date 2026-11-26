@@ -32,6 +32,8 @@ type Config struct {
 	CRMHandler            *handler.CRMHandler
 	SalesAnalyticsHandler *handler.SalesAnalyticsHandler
 	CRMIntegrationHandler *handler.CRMIntegrationHandler
+	BoothHandler          *handler.BoothHandler
+	StockOutHandler       *handler.StockOutHandler
 	CRMServiceToken       string
 	JWTSecret             string
 	UserStatusLoader      middleware.UserStatusLoader
@@ -339,6 +341,39 @@ func RegisterRoutes(cfg Config) {
 	protected.Get("/goods-issues", cfg.WorkspaceHandler.GetGoodsIssues)
 	protected.Post("/goods-issues", middleware.RequireRole("owner", "warehouse"), cfg.WorkspaceHandler.CreateGoodsIssue)
 	protected.Get("/goods-issues/:id", cfg.WorkspaceHandler.GetGoodsIssueByID)
+
+	// Booth point of sale: every bill takes its stock out of the inventory
+	// (warehouse 1) in one transaction; a void puts it back.
+	if cfg.BoothHandler != nil {
+		booth := protected.Group("/booth", middleware.RequireRole("owner", "sales"))
+		booth.Get("/catalog", cfg.BoothHandler.GetCatalog)
+		booth.Put("/config", middleware.RequireRole("owner"), cfg.BoothHandler.UpdateConfig)
+		booth.Post("/quote", cfg.BoothHandler.Quote)
+		booth.Get("/sales", cfg.BoothHandler.ListSales)
+		booth.Post("/sales", cfg.BoothHandler.CreateSale)
+		booth.Post("/sales/:id/void", cfg.BoothHandler.VoidSale)
+	}
+
+	// Daily stock-out count: packers save what they pick as batches; the
+	// server takes them out lot by lot (FEFO). Who may count and void older
+	// batches is set in the config and checked in the usecase.
+	if cfg.StockOutHandler != nil {
+		so := protected.Group("/stock-outs", middleware.RequireRole("owner", "warehouse", "sales", "accountant"))
+		so.Get("/config", cfg.StockOutHandler.GetConfig)
+		so.Put("/config", middleware.RequireRole("owner"), cfg.StockOutHandler.SaveConfig)
+		so.Get("/summary", cfg.StockOutHandler.Summary)
+		so.Get("/history", cfg.StockOutHandler.History)
+		so.Get("/stream", cfg.StockOutHandler.Stream)
+		so.Get("/", cfg.StockOutHandler.List)
+		so.Post("/", cfg.StockOutHandler.Create)
+		so.Post("/:id/void", cfg.StockOutHandler.Void)
+		so.Post("/:id/review", middleware.RequireRole("owner"), cfg.StockOutHandler.Review)
+
+		// The paths named in the stock-out spec.
+		st := protected.Group("/stock", middleware.RequireRole("owner", "warehouse", "sales", "accountant"))
+		st.Get("/summary", cfg.StockOutHandler.Summary)
+		st.Get("/stream", cfg.StockOutHandler.Stream)
+	}
 
 	// Public TikTok Webhook & OAuth Callback (No JWT required)
 	api.Get("/integrations/tiktok/callback", cfg.TikTokHandler.Callback)
