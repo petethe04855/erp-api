@@ -1375,6 +1375,13 @@ type IssueRecord struct {
 // formatMovementChannel formats raw reference type or channel to user-friendly "Manual", "Shopee", "TikTok"
 func formatMovementChannel(channel, orderRef string) string {
 	u := strings.ToUpper(strings.TrimSpace(channel))
+	// Daily stock-out count and booth bills are goods issues too.
+	if u == "STOCK_OUT" {
+		return "นับของออก"
+	}
+	if u == "BOOTH_SALE" {
+		return "ขายหน้าบูธ"
+	}
 	if strings.Contains(u, "TIKTOK") {
 		return "TikTok"
 	}
