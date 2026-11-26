@@ -88,6 +88,7 @@ func main() {
 		&domainShopee.ShopeeOrder{},
 		&domainShopee.ShopeeOrderItem{},
 		&domainShopee.ShopeeIncome{},
+		&domainShopee.ShopeeOrderRepair{},
 		&domainBundle.BundleItem{},
 		&domainStock.Stock{},
 		&domainStock.StockLot{},
@@ -259,6 +260,7 @@ func main() {
 	liveHdl := handler.NewLiveHandler(liveUsecase)
 	salesReturnHdl := handler.NewSalesReturnHandler(salesReturnUsecase)
 	shopeeHdl := handler.NewShopeeHandler(shopeeOrderUsecase, shopeeIncomeUsecase, shopeeMatchingUsecase, shopeeDashboardUsecase)
+	shopeeInsightHdl := handler.NewShopeeInsightHandler(usecaseShopee.NewInsightUsecase(postgres.NewShopeeInsightRepository(db)))
 	skuCostHistoryHdl := handler.NewSKUCostHistoryHandler(skuCostHistoryUsecase)
 	crmHdl := handler.NewCRMHandler(crmUsecase)
 	salesAnalyticsHdl := handler.NewSalesAnalyticsHandler(salesAnalyticsUsecase)
@@ -340,6 +342,7 @@ func main() {
 		LiveHandler:           liveHdl,
 		SalesReturnHandler:    salesReturnHdl,
 		ShopeeHandler:         shopeeHdl,
+		ShopeeInsightHandler:  shopeeInsightHdl,
 		SKUCostHistoryHandler: skuCostHistoryHdl,
 		CRMHandler:            crmHdl,
 		SalesAnalyticsHandler: salesAnalyticsHdl,

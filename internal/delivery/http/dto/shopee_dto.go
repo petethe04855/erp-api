@@ -10,31 +10,33 @@ import (
 // match the previous domain-entity output exactly (consumed by
 // features/shopee/types/shopee.types.ts).
 type ShopeeOrderItemResponse struct {
-	ID           uint      `json:"id"`
-	OrderID      string    `json:"order_id"`
-	SKU          string    `json:"sku"`
-	ProductName  string    `json:"product_name"`
-	Qty          int       `json:"qty"`
-	SalePrice    float64   `json:"sale_price"`
-	OriginalSKU  string    `json:"original_sku"`
-	SKUConfirmed bool      `json:"sku_confirmed"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID            uint      `json:"id"`
+	OrderID       string    `json:"order_id"`
+	SKU           string    `json:"sku"`
+	ProductName   string    `json:"product_name"`
+	VariationName string    `json:"variation_name"`
+	Qty           int       `json:"qty"`
+	SalePrice     float64   `json:"sale_price"`
+	OriginalSKU   string    `json:"original_sku"`
+	SKUConfirmed  bool      `json:"sku_confirmed"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // NewShopeeOrderItemResponse maps a domain order item to the API contract.
 func NewShopeeOrderItemResponse(it *domainShopee.ShopeeOrderItem) ShopeeOrderItemResponse {
 	return ShopeeOrderItemResponse{
-		ID:           it.ID,
-		OrderID:      it.OrderID,
-		SKU:          it.SKU,
-		ProductName:  it.ProductName,
-		Qty:          it.Qty,
-		SalePrice:    it.SalePrice,
-		OriginalSKU:  it.OriginalSKU,
-		SKUConfirmed: it.SKUConfirmed,
-		CreatedAt:    it.CreatedAt,
-		UpdatedAt:    it.UpdatedAt,
+		ID:            it.ID,
+		OrderID:       it.OrderID,
+		SKU:           it.SKU,
+		ProductName:   it.ProductName,
+		VariationName: it.VariationName,
+		Qty:           it.Qty,
+		SalePrice:     it.SalePrice,
+		OriginalSKU:   it.OriginalSKU,
+		SKUConfirmed:  it.SKUConfirmed,
+		CreatedAt:     it.CreatedAt,
+		UpdatedAt:     it.UpdatedAt,
 	}
 }
 

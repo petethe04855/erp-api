@@ -25,10 +25,10 @@ var (
 )
 
 type DuplicateDetail struct {
-	Identifier    string `json:"identifier"`      // e.g. Order ID "260301ABC01"
-	RowIndex      int    `json:"row_index"`       // แถวที่พบในไฟล์ (ถ้ามี)
-	DuplicateType string `json:"duplicate_type"`  // "FILE_DUPLICATE" or "DB_EXISTING"
-	Message       string `json:"message"`         // ข้อความแจ้งเตือนรายละเอียด
+	Identifier    string `json:"identifier"`     // e.g. Order ID "260301ABC01"
+	RowIndex      int    `json:"row_index"`      // แถวที่พบในไฟล์ (ถ้ามี)
+	DuplicateType string `json:"duplicate_type"` // "FILE_DUPLICATE" or "DB_EXISTING"
+	Message       string `json:"message"`        // ข้อความแจ้งเตือนรายละเอียด
 }
 
 type OrderPreviewResult struct {
@@ -54,6 +54,10 @@ type OrderImportResult struct {
 type OrderUsecase interface {
 	PreviewOrderFile(ctx context.Context, reader io.Reader, filename string) (*OrderPreviewResult, error)
 	ImportOrderFile(ctx context.Context, reader io.Reader, filename string) (*OrderImportResult, error)
+	// PreviewOrderRepair shows what re-reading an export would correct on orders already stored.
+	PreviewOrderRepair(ctx context.Context, reader io.Reader, filename string) (*OrderRepairPreview, error)
+	// ApplyOrderRepair applies that correction in one transaction and logs every change.
+	ApplyOrderRepair(ctx context.Context, reader io.Reader, filename, actor string) (*OrderRepairResult, error)
 	GetOrders(ctx context.Context, filter domainShopee.OrderFilter) ([]domainShopee.ShopeeOrder, int64, error)
 	GetOrderByID(ctx context.Context, id string) (*domainShopee.ShopeeOrder, error)
 	GetProvinces(ctx context.Context) ([]string, error)
@@ -76,6 +80,7 @@ type parsedRow struct {
 	OrderDate     time.Time
 	SKU           string
 	ProductName   string
+	VariationName string
 	Qty           int
 	SalePrice     float64
 	BuyerUsername string
@@ -84,7 +89,90 @@ type parsedRow struct {
 	LineIndex     int
 }
 
+// shopeeTZ is the time zone of the timestamps in Shopee Seller Centre exports
+// (they carry no offset). A fixed zone avoids depending on tzdata being installed.
+var shopeeTZ = time.FixedZone("ICT", 7*60*60)
+
+// orderColumn says which header holds a field. Exact names are tried first, in
+// order; only when none is present are the partial patterns tried. The first
+// matching column wins, so a later header that merely contains the same word
+// (e.g. "จำนวนเงินทั้งหมด" for "จำนวน", or "เวลาที่ทำการสั่งซื้อสำเร็จ" for
+// the order time) can never take the field over.
+type orderColumn struct {
+	key      string
+	exact    []string
+	contains []string
+}
+
+var orderColumns = []orderColumn{
+	{key: "order_id", exact: []string{"หมายเลขคำสั่งซื้อ", "Order ID"}, contains: []string{"หมายเลขคำสั่งซื้อ"}},
+	{key: "order_date", exact: []string{"วันที่ทำการสั่งซื้อ", "Order Creation Date", "เวลาที่ทำการสั่งซื้อ"}, contains: []string{"วันที่ทำการสั่งซื้อ", "Order Creation Date"}},
+	{key: "sku", exact: []string{"เลขอ้างอิง SKU (SKU Reference No.)", "SKU Reference No.", "เลขอ้างอิง SKU", "SKU"}, contains: []string{"SKU Reference No.", "เลขอ้างอิง SKU", "Parent SKU"}},
+	{key: "product_name", exact: []string{"ชื่อสินค้า", "Product Name"}, contains: []string{"ชื่อสินค้า", "Product Name"}},
+	{key: "variation_name", exact: []string{"ชื่อตัวเลือก", "Variation Name"}, contains: []string{"ชื่อตัวเลือก", "Variation Name"}},
+	{key: "qty", exact: []string{"จำนวน", "Quantity", "Qty"}},
+	// "ราคาขายสุทธิ" is the line total after seller discounts (BR-01); the plain
+	// "ราคาขาย" header is kept for files that have only that column.
+	{key: "sale_price", exact: []string{"ราคาขายสุทธิ", "ราคาขาย", "Deal Price", "ราคาต่อหน่วย", "Unit Price"}, contains: []string{"ราคาขายสุทธิ", "Deal Price"}},
+	{key: "buyer_username", exact: []string{"ชื่อผู้ใช้ (ผู้ซื้อ)", "Buyer Username"}, contains: []string{"ชื่อผู้ใช้ (ผู้ซื้อ)", "Buyer Username"}},
+	{key: "province", exact: []string{"จังหวัด", "Province", "State"}},
+}
+
+// resolveOrderColumns maps each field to its column index in the header row.
+func resolveOrderColumns(header []string) map[string]int {
+	cells := make([]string, len(header))
+	for i, h := range header {
+		cells[i] = strings.TrimSpace(h)
+	}
+	find := func(match func(cell, name string) bool, names []string) (int, bool) {
+		for _, name := range names {
+			for i, cell := range cells {
+				if match(cell, name) {
+					return i, true
+				}
+			}
+		}
+		return 0, false
+	}
+	exact := func(cell, name string) bool { return strings.EqualFold(cell, name) }
+	partial := func(cell, name string) bool { return strings.Contains(cell, name) }
+
+	colIdx := map[string]int{}
+	for _, col := range orderColumns {
+		if i, ok := find(exact, col.exact); ok {
+			colIdx[col.key] = i
+		} else if i, ok := find(partial, col.contains); ok {
+			colIdx[col.key] = i
+		}
+	}
+	return colIdx
+}
+
+// parseQty reads a quantity cell, which spreadsheets may format as "2" or "2.00".
+func parseQty(raw string) int {
+	raw = strings.ReplaceAll(strings.TrimSpace(raw), ",", "")
+	if n, err := strconv.Atoi(raw); err == nil {
+		return n
+	}
+	if f, err := strconv.ParseFloat(raw, 64); err == nil {
+		return int(f)
+	}
+	return 0
+}
+
+// parseOrderDate parses a date without a zone as UTC. The Income import still
+// uses it for transfer dates, whose reports group by the stored UTC date.
 func parseOrderDate(raw string) time.Time {
+	return parseShopeeTime(raw, time.UTC)
+}
+
+// parseOrderTime parses the order time of an Order export, which is Bangkok
+// local time, so the stored instant (and the month it falls in) is right.
+func parseOrderTime(raw string) time.Time {
+	return parseShopeeTime(raw, shopeeTZ)
+}
+
+func parseShopeeTime(raw string, loc *time.Location) time.Time {
 	raw = strings.TrimSpace(raw)
 	formats := []string{
 		"2006-01-02 15:04:05",
@@ -96,12 +184,14 @@ func parseOrderDate(raw string) time.Time {
 		"02-01-2006 15:04:05",
 		"02-01-2006 15:04",
 		"02-01-2006",
-		time.RFC3339,
 	}
 	for _, f := range formats {
-		if t, err := time.Parse(f, raw); err == nil {
+		if t, err := time.ParseInLocation(f, raw, loc); err == nil {
 			return t
 		}
+	}
+	if t, err := time.Parse(time.RFC3339, raw); err == nil {
+		return t
 	}
 	return time.Now()
 }
@@ -135,28 +225,7 @@ func parseRawGrid(grid [][]string) ([]parsedRow, error) {
 		return nil, ErrHeaderNotFound
 	}
 
-	header := grid[headerRowIdx]
-	colIdx := map[string]int{}
-	for idx, col := range header {
-		c := strings.TrimSpace(col)
-		if strings.Contains(c, "หมายเลขคำสั่งซื้อ") || strings.EqualFold(c, "Order ID") {
-			colIdx["order_id"] = idx
-		} else if strings.Contains(c, "วันที่ทำการสั่งซื้อ") || strings.Contains(c, "เวลาที่ทำการสั่งซื้อ") || strings.Contains(c, "Order Creation Date") {
-			colIdx["order_date"] = idx
-		} else if strings.Contains(c, "เลขอ้างอิง SKU") || strings.Contains(c, "SKU Reference No.") || strings.Contains(c, "Parent SKU") || strings.EqualFold(c, "SKU") {
-			colIdx["sku"] = idx
-		} else if strings.Contains(c, "ชื่อสินค้า") || strings.Contains(c, "Product Name") {
-			colIdx["product_name"] = idx
-		} else if strings.Contains(c, "จำนวน") || strings.EqualFold(c, "Quantity") || strings.EqualFold(c, "Qty") {
-			colIdx["qty"] = idx
-		} else if strings.Contains(c, "ราคาขาย") || strings.Contains(c, "Deal Price") || strings.Contains(c, "ราคาต่อหน่วย") || strings.Contains(c, "Unit Price") {
-			colIdx["sale_price"] = idx
-		} else if strings.Contains(c, "ชื่อผู้ใช้ (ผู้ซื้อ)") || strings.Contains(c, "Buyer Username") {
-			colIdx["buyer_username"] = idx
-		} else if strings.Contains(c, "จังหวัด") || strings.EqualFold(c, "Province") || strings.EqualFold(c, "State") {
-			colIdx["province"] = idx
-		}
-	}
+	colIdx := resolveOrderColumns(grid[headerRowIdx])
 
 	if _, ok := colIdx["order_id"]; !ok {
 		return nil, ErrHeaderNotFound
@@ -183,8 +252,7 @@ func parseRawGrid(grid [][]string) ([]parsedRow, error) {
 			prodName = "Shopee Product " + skuCode
 		}
 
-		qtyStr := getCell(row, "qty")
-		qty, _ := strconv.Atoi(qtyStr)
+		qty := parseQty(getCell(row, "qty"))
 		if qty <= 0 {
 			qty = 1
 		}
@@ -192,7 +260,7 @@ func parseRawGrid(grid [][]string) ([]parsedRow, error) {
 		priceStr := strings.ReplaceAll(getCell(row, "sale_price"), ",", "")
 		price, _ := strconv.ParseFloat(priceStr, 64)
 
-		orderDate := parseOrderDate(getCell(row, "order_date"))
+		orderDate := parseOrderTime(getCell(row, "order_date"))
 		buyerUser := getCell(row, "buyer_username")
 		province := getCell(row, "province")
 
@@ -203,6 +271,7 @@ func parseRawGrid(grid [][]string) ([]parsedRow, error) {
 			OrderDate:     orderDate,
 			SKU:           skuCode,
 			ProductName:   prodName,
+			VariationName: getCell(row, "variation_name"),
 			Qty:           qty,
 			SalePrice:     price,
 			BuyerUsername: buyerUser,
@@ -264,13 +333,14 @@ func groupRowsToOrders(parsed []parsedRow) []domainShopee.ShopeeOrder {
 		}
 
 		ord.Items = append(ord.Items, domainShopee.ShopeeOrderItem{
-			OrderID:      row.OrderID,
-			SKU:          row.SKU,
-			ProductName:  row.ProductName,
-			Qty:          row.Qty,
-			SalePrice:    row.SalePrice, // BR-01 line total
-			OriginalSKU:  row.SKU,
-			SKUConfirmed: false,
+			OrderID:       row.OrderID,
+			SKU:           row.SKU,
+			ProductName:   row.ProductName,
+			VariationName: row.VariationName,
+			Qty:           row.Qty,
+			SalePrice:     row.SalePrice, // BR-01 line total
+			OriginalSKU:   row.SKU,
+			SKUConfirmed:  false,
 		})
 	}
 
@@ -374,11 +444,12 @@ func (u *orderUsecase) PreviewOrderFile(ctx context.Context, reader io.Reader, f
 	var sampleRows []domainShopee.ShopeeOrderItem
 	for i := 0; i < sampleLimit; i++ {
 		sampleRows = append(sampleRows, domainShopee.ShopeeOrderItem{
-			OrderID:     parsed[i].OrderID,
-			SKU:         parsed[i].SKU,
-			ProductName: parsed[i].ProductName,
-			Qty:         parsed[i].Qty,
-			SalePrice:   parsed[i].SalePrice,
+			OrderID:       parsed[i].OrderID,
+			SKU:           parsed[i].SKU,
+			ProductName:   parsed[i].ProductName,
+			VariationName: parsed[i].VariationName,
+			Qty:           parsed[i].Qty,
+			SalePrice:     parsed[i].SalePrice,
 		})
 	}
 
