@@ -1195,6 +1195,7 @@ type ReceiptRecord struct {
 	Code        string `json:"code"`
 	PORef       string `json:"poRef"`
 	ReceiveDate string `json:"receiveDate"`
+	TotalItems  int    `json:"totalItems"`
 	Note        string `json:"note"`
 }
 
@@ -1244,11 +1245,16 @@ func (h *WorkspaceHandler) GetGoodsReceives(c *fiber.Ctx) error {
 		if receiveDate == "" {
 			receiveDate = gr.CreatedAt.Format("2006-01-02")
 		}
+		totalItems := 0
+		for _, item := range gr.Items {
+			totalItems += item.Quantity
+		}
 		records[i] = ReceiptRecord{
 			ID:          gr.ID,
 			Code:        gr.Code,
 			PORef:       gr.PORef,
 			ReceiveDate: receiveDate,
+			TotalItems:  totalItems,
 			Note:        gr.Note,
 		}
 	}

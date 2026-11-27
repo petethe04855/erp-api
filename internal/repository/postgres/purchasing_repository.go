@@ -133,7 +133,7 @@ func (r *PurchasingRepository) FindAllPOs(ctx context.Context, q purchasing.POQu
 		offset = 0
 	}
 
-	err := tx.Preload("Items").Offset(offset).Limit(q.Limit).Order("id DESC").Find(&items).Error
+	err := tx.Offset(offset).Limit(q.Limit).Order("id DESC").Find(&items).Error
 	return items, total, err
 }
 
@@ -200,7 +200,7 @@ func (r *PurchasingRepository) FindAllGoodsReceives(ctx context.Context, q purch
 		offset = 0
 	}
 
-	err := tx.Offset(offset).Limit(q.Limit).Order("id DESC").Find(&items).Error
+	err := tx.Preload("Items").Offset(offset).Limit(q.Limit).Order("id DESC").Find(&items).Error
 	return items, total, err
 }
 
@@ -237,7 +237,7 @@ func (r *PurchasingRepository) FindAllGoodsIssues(ctx context.Context, q purchas
 		offset = 0
 	}
 
-	err := tx.Offset(offset).Limit(q.Limit).Order("id DESC").Find(&items).Error
+	err := tx.Preload("Items").Offset(offset).Limit(q.Limit).Order("id DESC").Find(&items).Error
 	return items, total, err
 }
 
