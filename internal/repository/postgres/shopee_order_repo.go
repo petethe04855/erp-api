@@ -3,7 +3,10 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strconv"
 	"strings"
+	"time"
 
 	"chawy-erp-api/internal/domain/shopee"
 	pkgDatabase "chawy-erp-api/pkg/database"
@@ -56,8 +59,13 @@ func (r *ShopeeOrderRepository) BulkInsert(ctx context.Context, orders []shopee.
 				// Existing order header - check if item already exists or if we should skip
 				hasNewItems := false
 				for _, item := range ord.Items {
+					// Identify the line by what the export says and users never edit:
+					// the SKU as imported (sku may have been corrected since) and the
+					// line total. Matching on qty would re-insert every line whose
+					// quantity was stored wrongly by the old parser.
 					var existingItem shopee.ShopeeOrderItem
-					err := tx.Where("order_id = ? AND sku = ? AND qty = ?", ord.ID, item.SKU, item.Qty).First(&existingItem).Error
+					err := tx.Where("order_id = ? AND (original_sku = ? OR (original_sku = '' AND sku = ?)) AND sale_price = ?",
+						ord.ID, item.SKU, item.SKU, item.SalePrice).First(&existingItem).Error
 					if errors.Is(err, gorm.ErrRecordNotFound) {
 						item.OrderID = ord.ID
 						if err := tx.Create(&item).Error; err != nil {
@@ -185,4 +193,87 @@ func (r *ShopeeOrderRepository) FindByOrderIDs(ctx context.Context, orderIDs []s
 	var orders []shopee.ShopeeOrder
 	err := r.handle(ctx).Preload("Items").Where("id IN ?", orderIDs).Find(&orders).Error
 	return orders, err
+}
+
+// ApplyRepairs rewrites the fields a repair found wrong, all or nothing. Each
+// update is guarded by the old value, so a row edited after the preview makes
+// the whole batch fail instead of being overwritten.
+func (r *ShopeeOrderRepository) ApplyRepairs(ctx context.Context, repairs []shopee.OrderRepair, batchID, actor, sourceFile string) error {
+	if len(repairs) == 0 {
+		return nil
+	}
+	return r.handle(ctx).Transaction(func(tx *gorm.DB) error {
+		var logs []shopee.ShopeeOrderRepair
+		addLog := func(orderID string, itemID *uint, field, oldV, newV string) {
+			logs = append(logs, shopee.ShopeeOrderRepair{
+				BatchID: batchID, OrderID: orderID, ItemID: itemID, Field: field,
+				OldValue: oldV, NewValue: newV, Actor: actor, SourceFile: sourceFile,
+			})
+		}
+		guard := func(res *gorm.DB, what string) error {
+			if res.Error != nil {
+				return res.Error
+			}
+			if res.RowsAffected != 1 {
+				return fmt.Errorf("%s changed since the preview; nothing was saved, preview the file again", what)
+			}
+			return nil
+		}
+		const ts = "2006-01-02T15:04:05Z07:00"
+
+		for _, rep := range repairs {
+			if rep.DateChanged {
+				res := tx.Model(&shopee.ShopeeOrder{}).
+					Where("id = ? AND order_date = ?", rep.OrderID, rep.OldOrderDate).
+					Update("order_date", rep.NewOrderDate)
+				if err := guard(res, "order "+rep.OrderID); err != nil {
+					return err
+				}
+				addLog(rep.OrderID, nil, "order_date", rep.OldOrderDate.Format(ts), rep.NewOrderDate.Format(ts))
+			}
+			for _, it := range rep.Items {
+				itemID := it.ItemID
+				if it.OldQty != it.NewQty {
+					res := tx.Model(&shopee.ShopeeOrderItem{}).
+						Where("id = ? AND order_id = ? AND qty = ?", it.ItemID, rep.OrderID, it.OldQty).
+						Update("qty", it.NewQty)
+					if err := guard(res, fmt.Sprintf("item %d of order %s", it.ItemID, rep.OrderID)); err != nil {
+						return err
+					}
+					addLog(rep.OrderID, &itemID, "qty", strconv.Itoa(it.OldQty), strconv.Itoa(it.NewQty))
+				}
+				if it.OldVariation != it.NewVariation {
+					res := tx.Model(&shopee.ShopeeOrderItem{}).
+						Where("id = ? AND order_id = ? AND variation_name = ?", it.ItemID, rep.OrderID, it.OldVariation).
+						Update("variation_name", it.NewVariation)
+					if err := guard(res, fmt.Sprintf("item %d of order %s", it.ItemID, rep.OrderID)); err != nil {
+						return err
+					}
+					addLog(rep.OrderID, &itemID, "variation_name", it.OldVariation, it.NewVariation)
+				}
+			}
+		}
+		if len(logs) == 0 {
+			return nil
+		}
+		return tx.CreateInBatches(logs, 200).Error
+	})
+}
+
+// ListInsightLines implements shopee.InsightRepository.
+func (r *ShopeeOrderRepository) ListInsightLines(ctx context.Context, until time.Time) ([]shopee.InsightLine, error) {
+	var lines []shopee.InsightLine
+	err := r.handle(ctx).
+		Table("shopee_order_items AS i").
+		Select(`o.id AS order_id, o.order_date, o.buyer_username, i.product_name, i.variation_name, i.sku, i.qty, i.sale_price`).
+		Joins("JOIN shopee_orders AS o ON o.id = i.order_id").
+		Where("o.status = ? AND o.order_date < ?", "COMPLETED", until).
+		Order("o.order_date, o.id, i.id").
+		Scan(&lines).Error
+	return lines, err
+}
+
+// NewShopeeInsightRepository returns the order repository as an InsightRepository.
+func NewShopeeInsightRepository(db *gorm.DB) shopee.InsightRepository {
+	return &ShopeeOrderRepository{db: db}
 }

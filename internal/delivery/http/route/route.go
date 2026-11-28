@@ -27,6 +27,7 @@ type Config struct {
 	LiveHandler           *handler.LiveHandler
 	SalesReturnHandler    *handler.SalesReturnHandler
 	ShopeeHandler         *handler.ShopeeHandler
+	ShopeeInsightHandler  *handler.ShopeeInsightHandler
 	SKUCostHistoryHandler *handler.SKUCostHistoryHandler
 	CRMHandler            *handler.CRMHandler
 	SalesAnalyticsHandler *handler.SalesAnalyticsHandler
@@ -420,6 +421,9 @@ func RegisterRoutes(cfg Config) {
 	shopeeGroup := protected.Group("/shopee")
 	shopeeGroup.Post("/orders/preview", cfg.ShopeeHandler.PreviewOrders)
 	shopeeGroup.Post("/orders/import", middleware.RequireRole("owner", "warehouse", "sales", "accountant"), cfg.ShopeeHandler.ImportOrders)
+	// Correct orders imported by the old parser (wrong order date / quantity) in place.
+	shopeeGroup.Post("/orders/repair/preview", middleware.RequireRole("owner", "accountant"), cfg.ShopeeHandler.PreviewOrderRepair)
+	shopeeGroup.Post("/orders/repair/apply", middleware.RequireRole("owner", "accountant"), cfg.ShopeeHandler.ApplyOrderRepair)
 	shopeeGroup.Get("/orders", cfg.ShopeeHandler.GetOrders)
 	shopeeGroup.Post("/orders/search", cfg.ShopeeHandler.GetOrders)
 	shopeeGroup.Get("/orders/provinces", cfg.ShopeeHandler.GetProvinces)
@@ -436,6 +440,16 @@ func RegisterRoutes(cfg Config) {
 	shopeeGroup.Get("/matching", cfg.ShopeeHandler.GetMatching)
 	shopeeGroup.Get("/matching/export", cfg.ShopeeHandler.ExportMatchingCSV)
 	shopeeGroup.Get("/dashboard", cfg.ShopeeHandler.GetDashboard)
+
+	// Sales insights by order date (Chawy shop only; totals, no buyer data).
+	if cfg.ShopeeInsightHandler != nil {
+		insights := shopeeGroup.Group("/insights", middleware.RequireRole("owner", "accountant", "sales"))
+		insights.Get("/summary", cfg.ShopeeInsightHandler.Summary)
+		insights.Get("/products", cfg.ShopeeInsightHandler.Products)
+		insights.Get("/sets", cfg.ShopeeInsightHandler.Sets)
+		insights.Get("/customers", cfg.ShopeeInsightHandler.Customers)
+		insights.Get("/journey", cfg.ShopeeInsightHandler.Journey)
+	}
 
 	// SKU Cost History Routes
 	protected.Post("/skus/:sku/cost-history", middleware.RequireRole("owner", "accountant"), cfg.SKUCostHistoryHandler.AddCostHistory)
