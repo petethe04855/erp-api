@@ -24,6 +24,7 @@ import (
 	domainQuotation "chawy-erp-api/internal/domain/quotation"
 	domainSalesReturn "chawy-erp-api/internal/domain/salesreturn"
 	domainSeq "chawy-erp-api/internal/domain/sequence"
+	domainPermission "chawy-erp-api/internal/domain/permission"
 	domainSettings "chawy-erp-api/internal/domain/settings"
 	domainShopee "chawy-erp-api/internal/domain/shopee"
 	domainSKU "chawy-erp-api/internal/domain/sku"
@@ -52,6 +53,7 @@ import (
 	usecaseSA "chawy-erp-api/internal/usecase/salesanalytics"
 	usecaseSalesReturn "chawy-erp-api/internal/usecase/salesreturn"
 	usecaseSeq "chawy-erp-api/internal/usecase/sequence"
+	usecasePermission "chawy-erp-api/internal/usecase/permission"
 	usecaseSettings "chawy-erp-api/internal/usecase/settings"
 	usecaseShopee "chawy-erp-api/internal/usecase/shopee"
 	usecaseSKU "chawy-erp-api/internal/usecase/sku"
@@ -138,6 +140,7 @@ func main() {
 		&domainBooth.Sale{},
 		&domainStockOut.ConfigRecord{},
 		&domainStockOut.Batch{},
+		&domainPermission.RolePermission{},
 	); err != nil {
 		// Fail-closed: running on an incompatible schema causes partial data
 		// failures at runtime; it is safer to refuse to start.
@@ -223,6 +226,7 @@ func main() {
 	reportUsecase := usecaseReport.NewReportUsecase(reportRepo)
 	tiktokUsecase := usecaseTikTok.NewTikTokUsecase(cfg, db, tiktokRepo, orderRepo, formulaRepo, skuRepo, bundleRepo, stockRepo)
 	settingsUsecase := usecaseSettings.NewSettingsUsecase(settingsRepo)
+	permissionUsecase := usecasePermission.NewUsecase(postgres.NewPermissionRepository(db))
 	financeUsecase := usecaseFinance.NewFinanceUsecaseWithSequence(financeRepo, txManager, sequenceUsecase)
 	quotationRepo := postgres.NewQuotationRepository(db)
 	quotationUsecase := usecaseQuotation.NewQuotationUsecaseFull(quotationRepo, skuRepo, orderRepo, txManager, stockRepo, bundleRepo, formulaRepo, sequenceUsecase)
@@ -264,6 +268,7 @@ func main() {
 
 	tiktokHdl := handler.NewTikTokHandler(tiktokUsecase)
 	settingsHdl := handler.NewSettingsHandler(settingsUsecase)
+	permissionHdl := handler.NewPermissionHandler(permissionUsecase)
 	uploadHdl := handler.NewUploadHandler()
 	liveHdl := handler.NewLiveHandler(liveUsecase)
 	salesReturnHdl := handler.NewSalesReturnHandler(salesReturnUsecase)
@@ -365,6 +370,8 @@ func main() {
 		CRMIntegrationHandler: crmIntegrationHdl,
 		BoothHandler:          boothHdl,
 		StockOutHandler:       stockOutHdl,
+		PermissionHandler:     permissionHdl,
+		AccessChecker:         permissionUsecase,
 		CRMServiceToken:       cfg.CRMServiceToken,
 		JWTSecret:             cfg.JWTSecret,
 		UserStatusLoader:      authRepo,
